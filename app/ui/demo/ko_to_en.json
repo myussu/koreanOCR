@@ -1,0 +1,246 @@
+[
+ {
+  "type": "started",
+  "id": 1,
+  "direction": "ko_to_en",
+  "capture": {
+   "text": "저는 학교에서 공부했어요",
+   "source": "typed",
+   "rect": null,
+   "words": [],
+   "cursor": null,
+   "app": null,
+   "confidence": null
+  },
+  "cached": false
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "morphology",
+  "ms": 1
+ },
+ {
+  "type": "breakdown",
+  "id": 1,
+  "side": "source",
+  "eojeols": [
+   {
+    "index": 0,
+    "surface": "저는",
+    "char_start": 0,
+    "char_end": 2,
+    "morphs": [
+     {
+      "form": "저",
+      "tag": "NNG",
+      "role": "stem",
+      "label": "noun",
+      "start": 0,
+      "end": 1
+     },
+     {
+      "form": "는",
+      "tag": "JX",
+      "role": "particle",
+      "label": "topic particle (marks what the sentence is about / contrast)",
+      "start": 1,
+      "end": 2
+     }
+    ],
+    "lemma": "저",
+    "pos": "noun",
+    "content": true,
+    "formula": "저 + 는 (topic particle (marks what the sentence is about / contrast))",
+    "romanization": "jeoneun",
+    "pronunciation": "저는",
+    "dict_glosses": [
+     "I (humble)"
+    ],
+    "level": "TOPIK 1",
+    "state": "known",
+    "lookups": 0,
+    "rect": null
+   },
+   {
+    "index": 1,
+    "surface": "학교에서",
+    "char_start": 3,
+    "char_end": 7,
+    "morphs": [
+     {
+      "form": "학교",
+      "tag": "NNG",
+      "role": "stem",
+      "label": "noun",
+      "start": 3,
+      "end": 5
+     },
+     {
+      "form": "에서",
+      "tag": "JKB",
+      "role": "particle",
+      "label": "'at / from' (where an action happens, or origin)",
+      "start": 5,
+      "end": 7
+     }
+    ],
+    "lemma": "학교",
+    "pos": "noun",
+    "content": true,
+    "formula": "학교 + 에서 ('at / from' (where an action happens, or origin))",
+    "romanization": "hakgyoeseo",
+    "pronunciation": "학꾜에서",
+    "dict_glosses": [
+     "school"
+    ],
+    "level": "TOPIK 1",
+    "state": "new",
+    "lookups": 0,
+    "rect": null
+   },
+   {
+    "index": 2,
+    "surface": "공부했어요",
+    "char_start": 8,
+    "char_end": 13,
+    "morphs": [
+     {
+      "form": "공부",
+      "tag": "NNG",
+      "role": "stem",
+      "label": "noun",
+      "start": 8,
+      "end": 10
+     },
+     {
+      "form": "하",
+      "tag": "XSV",
+      "role": "affix",
+      "label": "'do' (turns a noun into a verb)",
+      "start": 10,
+      "end": 11
+     },
+     {
+      "form": "았",
+      "tag": "EP",
+      "role": "ending",
+      "label": "past tense",
+      "start": 11,
+      "end": 12
+     },
+     {
+      "form": "어요",
+      "tag": "EF",
+      "role": "ending",
+      "label": "polite ending (해요체)",
+      "start": 12,
+      "end": 13
+     }
+    ],
+    "lemma": "공부하다",
+    "pos": "verb",
+    "content": true,
+    "formula": "공부 + 하다 ('do' (turns a noun into a verb)) + 았 (past tense) + 어요 (polite ending (해요체))",
+    "romanization": "gongbuhaesseoyo",
+    "pronunciation": "공부해써요",
+    "dict_glosses": [
+     "to study"
+    ],
+    "level": "TOPIK 1",
+    "state": "new",
+    "lookups": 0,
+    "rect": null
+   }
+  ],
+  "romanization": "jeoneun hakgyoeseo gongbuhaesseoyo",
+  "pronunciation": "저는 학꾜에서 공부해써요"
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "first_token",
+  "ms": 3
+ },
+ {
+  "type": "translation",
+  "id": 1,
+  "variant": "primary",
+  "delta": "I "
+ },
+ {
+  "type": "gloss",
+  "id": 1,
+  "side": "source",
+  "gloss": {
+   "index": 0,
+   "meaning": "I",
+   "note": null
+  }
+ },
+ {
+  "type": "gloss",
+  "id": 1,
+  "side": "source",
+  "gloss": {
+   "index": 1,
+   "meaning": "school",
+   "note": null
+  }
+ },
+ {
+  "type": "translation",
+  "id": 1,
+  "variant": "primary",
+  "delta": "studied "
+ },
+ {
+  "type": "translation",
+  "id": 1,
+  "variant": "primary",
+  "delta": "at "
+ },
+ {
+  "type": "translation",
+  "id": 1,
+  "variant": "primary",
+  "delta": "school."
+ },
+ {
+  "type": "gloss",
+  "id": 1,
+  "side": "source",
+  "gloss": {
+   "index": 2,
+   "meaning": "to study",
+   "note": "past tense"
+  }
+ },
+ {
+  "type": "translation_done",
+  "id": 1,
+  "variant": "primary",
+  "text": "I studied at school."
+ },
+ {
+  "type": "note",
+  "id": 1,
+  "text": "는 marks the topic."
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "llm",
+  "ms": 4
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "total",
+  "ms": 6
+ },
+ {
+  "type": "done",
+  "id": 1
+ }
+]

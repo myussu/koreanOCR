@@ -1,0 +1,181 @@
+[
+ {
+  "type": "started",
+  "id": 1,
+  "direction": "en_to_ko",
+  "capture": {
+   "text": "Thank you",
+   "source": "typed",
+   "rect": null,
+   "words": [],
+   "cursor": null,
+   "app": null,
+   "confidence": null
+  },
+  "cached": false
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "first_token",
+  "ms": 1
+ },
+ {
+  "type": "translation",
+  "id": 1,
+  "variant": "polite",
+  "delta": "감사"
+ },
+ {
+  "type": "translation",
+  "id": 1,
+  "variant": "polite",
+  "delta": "합니다"
+ },
+ {
+  "type": "translation_done",
+  "id": 1,
+  "variant": "polite",
+  "text": "감사합니다"
+ },
+ {
+  "type": "translation",
+  "id": 1,
+  "variant": "formal",
+  "delta": "감사드립니다"
+ },
+ {
+  "type": "translation_done",
+  "id": 1,
+  "variant": "formal",
+  "text": "감사드립니다"
+ },
+ {
+  "type": "translation",
+  "id": 1,
+  "variant": "casual",
+  "delta": "고마워"
+ },
+ {
+  "type": "translation_done",
+  "id": 1,
+  "variant": "casual",
+  "text": "고마워"
+ },
+ {
+  "type": "note",
+  "id": 1,
+  "text": "Use casual only with friends."
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "morphology",
+  "ms": 0
+ },
+ {
+  "type": "breakdown",
+  "id": 1,
+  "side": "target",
+  "eojeols": [
+   {
+    "index": 0,
+    "surface": "감사합니다",
+    "char_start": 0,
+    "char_end": 5,
+    "morphs": [
+     {
+      "form": "감사",
+      "tag": "NNG",
+      "role": "stem",
+      "label": "noun",
+      "start": 0,
+      "end": 2
+     },
+     {
+      "form": "하",
+      "tag": "XSV",
+      "role": "affix",
+      "label": "'do' (turns a noun into a verb)",
+      "start": 2,
+      "end": 4
+     },
+     {
+      "form": "ㅂ니다",
+      "tag": "EF",
+      "role": "ending",
+      "label": "formal ending (합쇼체)",
+      "start": 4,
+      "end": 5
+     }
+    ],
+    "lemma": "감사하다",
+    "pos": "verb",
+    "content": true,
+    "formula": "감사 + 하다 ('do' (turns a noun into a verb)) + ㅂ니다 (formal ending (합쇼체))",
+    "romanization": "gamsahamnida",
+    "pronunciation": "감사함니다",
+    "dict_glosses": [
+     "thank you"
+    ],
+    "level": "TOPIK 1",
+    "state": "new",
+    "lookups": 0,
+    "rect": null
+   }
+  ],
+  "romanization": "gamsahamnida",
+  "pronunciation": "감사함니다"
+ },
+ {
+  "type": "gloss",
+  "id": 1,
+  "side": "target",
+  "gloss": {
+   "index": 0,
+   "meaning": "I",
+   "note": null
+  }
+ },
+ {
+  "type": "gloss",
+  "id": 1,
+  "side": "target",
+  "gloss": {
+   "index": 1,
+   "meaning": "school",
+   "note": null
+  }
+ },
+ {
+  "type": "gloss",
+  "id": 1,
+  "side": "target",
+  "gloss": {
+   "index": 2,
+   "meaning": "to study",
+   "note": "past tense"
+  }
+ },
+ {
+  "type": "note",
+  "id": 1,
+  "text": "는 marks the topic."
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "llm",
+  "ms": 4
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "total",
+  "ms": 4
+ },
+ {
+  "type": "done",
+  "id": 1
+ }
+]

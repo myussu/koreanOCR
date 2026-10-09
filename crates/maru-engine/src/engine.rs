@@ -300,6 +300,11 @@ impl Engine {
         Ok(ReviewResult { status: status_of(&rec), interval_days: outcome.interval_days, due: outcome.due })
     }
 
+    /// Sentences a word was met in (newest first), for the review card.
+    pub fn word_contexts(&self, key: &str, limit: u32) -> Result<Vec<maru_srs::Context>> {
+        Ok(self.inner.vocab.contexts(key, limit)?)
+    }
+
     /// Most recently looked-up words first.
     pub fn recent_words(&self, limit: u32) -> Result<Vec<WordStatus>> {
         Ok(self.inner.vocab.recent(limit)?.iter().map(status_of).collect())

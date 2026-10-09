@@ -72,7 +72,7 @@ impl Default for Hotkeys {
             hover: "Ctrl+Alt+H".into(),
             continuous: "Ctrl+Alt+C".into(),
             history: "Ctrl+Alt+L".into(),
-            dismiss: "Escape".into(),
+            dismiss: "Ctrl+Alt+Escape".into(),
         }
     }
 }

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Maru — pick a region</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: rgba(0, 0, 0, 0.28); cursor: crosshair; overflow: hidden; user-select: none; font-family: system-ui, sans-serif; }
+    #hint { position: fixed; top: 14px; left: 50%; transform: translateX(-50%); background: rgba(20, 22, 28, 0.88); color: #fff; padding: 7px 14px; border-radius: 9px; font-size: 13px; pointer-events: none; }
+    #box { position: fixed; border: 2px solid #7aa7ff; background: rgba(122, 167, 255, 0.14); display: none; pointer-events: none; }
+    #size { position: fixed; background: #7aa7ff; color: #0b1020; font-size: 11px; padding: 1px 6px; border-radius: 4px; display: none; pointer-events: none; }
+  </style>
+</head>
+<body>
+  <div id="hint">Drag around the text to translate · Esc to cancel</div>
+  <div id="box"></div><div id="size"></div>
+  <script type="module" src="picker.js"></script>
+</body>
+</html>

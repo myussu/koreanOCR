@@ -15,3 +15,5 @@ __pycache__/
 *.db
 *.sqlite
 .env
+app/src-tauri/target/
+app/src-tauri/gen/

@@ -29,6 +29,12 @@ pub struct ContinuousHandle {
 }
 
 impl ContinuousHandle {
+    /// Take the receiving end (leaving a closed one behind) so another task can own it
+    /// while this handle keeps the stop switch.
+    pub fn take_receiver(&mut self) -> mpsc::Receiver<Capture> {
+        std::mem::replace(&mut self.rx, mpsc::channel(1).1)
+    }
+
     pub fn stop(&self) {
         self.stop.cancel();
     }
@@ -179,6 +185,16 @@ mod tests {
         let mut h = spawn(Arc::new(FakeScreen::new(frames)), ocr.clone(), cfg(), Rect::new(0.0, 0.0, 400.0, 80.0));
         assert!(next(&mut h, 350).await.is_none());
         assert_eq!(*ocr.calls.lock().unwrap(), 0, "OCR must wait for the frame to settle");
+    }
+
+    #[tokio::test]
+    async fn the_receiver_can_be_moved_out_while_the_handle_keeps_control() {
+        let ocr = Arc::new(FakeOcr::new(pages()));
+        let mut h = spawn(Arc::new(FakeScreen::new(vec![frame(10, 100)])), ocr, cfg(), Rect::new(0.0, 0.0, 400.0, 80.0));
+        let mut rx = h.take_receiver();
+        assert!(tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.unwrap().is_some());
+        h.stop();
+        assert!(tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.expect("closes after stop").is_none());
     }
 
     #[tokio::test]
