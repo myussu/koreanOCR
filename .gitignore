@@ -1,6 +1,17 @@
+/target
+**/target/
 venv/
 __pycache__/
 *.pyc
 .idea/
 .pytest_cache/
 *.png
+!docs/**/*.png
+!app/ui/**/*.png
+/models/
+/data/
+*.gguf
+*.onnx
+*.db
+*.sqlite
+.env

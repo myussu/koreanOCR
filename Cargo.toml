@@ -1,0 +1,60 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/maru-core",
+    "crates/maru-lang",
+    "crates/maru-dict",
+    "crates/maru-srs",
+    "crates/maru-llm",
+    "crates/maru-ocr",
+    "crates/maru-platform",
+    "crates/maru-engine",
+    "crates/maru-cli",
+]
+# The Tauri shell lives in app/src-tauri with its own lockfile: it needs
+# platform webview libraries that the headless crates must not require.
+exclude = ["app/src-tauri", "old"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.90"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+maru-core = { path = "crates/maru-core" }
+maru-lang = { path = "crates/maru-lang" }
+maru-dict = { path = "crates/maru-dict" }
+maru-srs = { path = "crates/maru-srs" }
+maru-llm = { path = "crates/maru-llm" }
+maru-ocr = { path = "crates/maru-ocr" }
+maru-platform = { path = "crates/maru-platform" }
+maru-engine = { path = "crates/maru-engine" }
+
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time", "process", "io-util", "net", "fs"] }
+tokio-util = "0.7"
+futures-util = "0.3"
+reqwest = { version = "0.13", default-features = false, features = ["json", "stream", "rustls"] }
+rusqlite = { version = "0.40", features = ["bundled"] }
+lru = "0.18"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+directories = "6"
+clap = { version = "4", features = ["derive"] }
+image = { version = "0.25", default-features = false, features = ["png", "bmp"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
+
+# Keep dev builds of the hot paths reasonably fast for the OCR/ONNX code.
+[profile.dev.package."*"]
+opt-level = 2
