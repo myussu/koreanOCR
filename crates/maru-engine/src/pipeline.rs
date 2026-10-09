@@ -12,7 +12,7 @@ use maru_core::config::GlossMode;
 use maru_core::event::{DeepSection, Side, Stage, Variant};
 use maru_core::{Capture, CaptureSource, Direction, Eojeol, Event, Gloss, WordBox, WordState};
 use maru_lang::hangul::detect_direction;
-use maru_llm::{DeepRequest, EnKoRequest, GlossRequest, GlossWord, KoEnRequest, LlmChunk, LlmClient, PromptContext};
+use maru_llm::{DeepRequest, EnKoRequest, GlossRequest, GlossWord, KoEnRequest, LlmChunk, LlmClient, LlmStatus, PromptContext};
 use maru_srs::{Context, LookupInfo, now_secs};
 use tokio::sync::oneshot;
 
@@ -23,6 +23,8 @@ use crate::memory::HistoryItem;
 
 /// Cap on words sent for glossing: keeps the answer fast for very long selections.
 const MAX_GLOSS_WORDS: usize = 40;
+/// Longest a request waits for a model that is still loading.
+const LLM_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
 const NO_LLM: &str = "No language model is running, so only the offline breakdown is shown. Start one with `maru setup llm`.";
 
 #[derive(Clone)]
@@ -175,6 +177,36 @@ async fn run_glosses(
     }
 }
 
+/// The model client once it is usable, waiting (politely, with a note) while it loads.
+async fn await_llm(inner: &Inner, em: &Emitter) -> Option<LlmClient> {
+    let Some(client) = inner.llm.clone() else {
+        em.error(Stage::Llm, NO_LLM);
+        return None;
+    };
+    let Some(mut status) = inner.llm_status.clone() else { return Some(client) };
+    if matches!(*status.borrow(), LlmStatus::Starting) {
+        em.send(Event::Note { id: em.id, text: "The language model is still loading; the translation will appear as soon as it is ready.".into() });
+        let waited = tokio::time::timeout(LLM_WAIT, status.wait_for(|s| !matches!(s, LlmStatus::Starting))).await;
+        if waited.is_err() {
+            em.error(Stage::Llm, "The language model is taking too long to load.");
+            return None;
+        }
+    }
+    let current = status.borrow().clone();
+    match current {
+        LlmStatus::Ready => Some(client),
+        LlmStatus::Disabled => {
+            em.error(Stage::Llm, NO_LLM);
+            None
+        }
+        LlmStatus::Failed(why) => {
+            em.error(Stage::Llm, format!("The language model could not start: {why}"));
+            None
+        }
+        LlmStatus::Starting => None,
+    }
+}
+
 fn effective_gloss_mode(inner: &Inner, profile: Option<&maru_core::config::AppProfile>) -> GlossMode {
     profile.and_then(|p| p.gloss_mode).unwrap_or(inner.cfg.learning.gloss_mode)
 }
@@ -220,8 +252,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
     match direction {
         Direction::KoToEn => {
             let eojeols = analyze_and_emit(&inner, &em, Side::Source, &text, words).await;
-            let Some(llm) = inner.llm.clone() else {
-                em.error(Stage::Llm, NO_LLM);
+            let Some(llm) = await_llm(&inner, &em).await else {
                 em.timing(Stage::Total, started);
                 em.done();
                 return;
@@ -244,8 +275,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
             em.timing(Stage::Llm, llm_started);
         }
         Direction::EnToKo => {
-            let Some(llm) = inner.llm.clone() else {
-                em.error(Stage::Llm, NO_LLM);
+            let Some(llm) = await_llm(&inner, &em).await else {
                 em.timing(Stage::Total, started);
                 em.done();
                 return;
@@ -405,8 +435,7 @@ pub(crate) async fn deep_dive(inner: Arc<Inner>, id: u64, req: DeepDiveRequest, 
     em.timing(Stage::Dictionary, started);
 
     // 3. Streaming tutor explanation.
-    let Some(llm) = inner.llm.clone() else {
-        em.error(Stage::Llm, NO_LLM);
+    let Some(llm) = await_llm(&inner, &em).await else {
         em.done();
         return;
     };

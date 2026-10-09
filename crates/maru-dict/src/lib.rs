@@ -17,7 +17,7 @@ use rusqlite::Connection;
 use thiserror::Error;
 
 pub use import::{ImportStats, normalize_level};
-pub use lookup::lookup_keys;
+pub use lookup::{lookup_keys, short_gloss};
 
 #[derive(Debug, Error)]
 pub enum DictError {

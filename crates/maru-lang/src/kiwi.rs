@@ -32,6 +32,11 @@ impl KiwiAnalyzer {
         Self::spawn_with(|| Kiwi::init().map_err(|e| e.to_string()))
     }
 
+    /// Load Kiwi from `KIWI_LIBRARY_PATH` / its default install locations, never downloading.
+    pub fn spawn_discovered() -> Result<Self, MorphError> {
+        Self::spawn_with(|| Kiwi::new().map_err(|e| e.to_string()))
+    }
+
     /// Load Kiwi from explicit paths (no network).
     pub fn spawn_from_paths(library: std::path::PathBuf, model: std::path::PathBuf) -> Result<Self, MorphError> {
         Self::spawn_with(move || {

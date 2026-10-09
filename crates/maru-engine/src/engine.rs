@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use maru_core::{AppInfo, Capture, Config, Eojeol, Event, Point, Rect, WordState, WordStatus};
 use maru_dict::Dictionary;
-use maru_llm::LlmClient;
+use maru_llm::{LlmClient, LlmStatus};
 use maru_ocr::OcrEngine;
 use maru_platform::Platform;
 use maru_srs::{AnkiClient, Rating, Vocab, WordRecord, now_secs};
@@ -55,6 +55,8 @@ pub struct EngineParts {
     pub dict: Option<Arc<Dictionary>>,
     pub vocab: Arc<Vocab>,
     pub llm: Option<LlmClient>,
+    /// Lets requests wait for a model that is still loading. `None` = assume ready.
+    pub llm_status: Option<tokio::sync::watch::Receiver<LlmStatus>>,
     pub platform: Platform,
     pub ocr: Option<Arc<dyn OcrEngine>>,
 }
@@ -83,6 +85,7 @@ pub(crate) struct Inner {
     pub dict: Option<Arc<Dictionary>>,
     pub vocab: Arc<Vocab>,
     pub llm: Option<LlmClient>,
+    pub llm_status: Option<tokio::sync::watch::Receiver<LlmStatus>>,
     pub capturer: Capturer,
     pub platform: Platform,
     pub ocr: Option<Arc<dyn OcrEngine>>,
@@ -128,6 +131,7 @@ impl Engine {
             dict: parts.dict,
             vocab: parts.vocab,
             llm: parts.llm,
+            llm_status: parts.llm_status,
             capturer,
             platform: parts.platform,
             ocr: parts.ocr,
@@ -152,6 +156,21 @@ impl Engine {
     }
     pub fn has_llm(&self) -> bool {
         self.inner.llm.is_some()
+    }
+    /// Current model status (for the UI's status line).
+    pub fn llm_status(&self) -> LlmStatus {
+        match (&self.inner.llm, &self.inner.llm_status) {
+            (None, _) => LlmStatus::Disabled,
+            (Some(_), Some(rx)) => rx.borrow().clone(),
+            (Some(_), None) => LlmStatus::Ready,
+        }
+    }
+    /// The OCR engine in use (for evaluation tools).
+    pub fn ocr_engine(&self) -> Option<Arc<dyn OcrEngine>> {
+        self.inner.ocr.clone()
+    }
+    pub fn platform(&self) -> &Platform {
+        &self.inner.platform
     }
     pub fn has_ocr(&self) -> bool {
         self.inner.ocr.is_some()
@@ -225,6 +244,18 @@ impl Engine {
         (id, rx)
     }
 
+    /// Analyse Korean text exactly as the overlay would (used by `maru explain`).
+    pub fn analyze(&self, text: &str) -> Vec<Eojeol> {
+        let mut e = self.inner.analyzer.analyze(text).eojeols;
+        crate::annotate::annotate(&mut e, self.inner.dict.as_deref(), Some(&self.inner.vocab), 3);
+        e
+    }
+
+    /// Forget cached translations (benchmarks and "retranslate" use this).
+    pub fn clear_cache(&self) {
+        *lock(&self.inner.cache) = Cache::new(256);
+    }
+
     /// Recent lines, oldest first.
     pub fn history(&self) -> Vec<HistoryItem> {
         lock(&self.inner.history).items()
@@ -233,7 +264,16 @@ impl Engine {
     // ───────────── vocabulary ─────────────
 
     pub fn save_word(&self, key: &str) -> Result<WordStatus> {
-        let rec = self.inner.vocab.save(key, now_secs())?;
+        self.inner.vocab.save(key, now_secs())?;
+        // A card with an empty answer is useless: borrow the dictionary's meaning and level.
+        if let Some(dict) = &self.inner.dict
+            && let Ok(entries) = dict.lookup(key)
+            && let Some(entry) = entries.first()
+        {
+            let meaning = entry.senses.first().map(|s| maru_dict::short_gloss(&s.gloss));
+            let _ = self.inner.vocab.enrich(key, meaning.as_deref(), entry.level.as_deref());
+        }
+        let rec = self.inner.vocab.get(key)?.ok_or_else(|| EngineError::Vocab(format!("unknown word: {key}")))?;
         self.push_to_anki(rec.clone());
         Ok(status_of(&rec))
     }
@@ -258,6 +298,11 @@ impl Engine {
         let outcome = self.inner.vocab.review(key, rating, now_secs())?;
         let rec = self.inner.vocab.get(key)?.ok_or_else(|| EngineError::Vocab(format!("unknown word: {key}")))?;
         Ok(ReviewResult { status: status_of(&rec), interval_days: outcome.interval_days, due: outcome.due })
+    }
+
+    /// Most recently looked-up words first.
+    pub fn recent_words(&self, limit: u32) -> Result<Vec<WordStatus>> {
+        Ok(self.inner.vocab.recent(limit)?.iter().map(status_of).collect())
     }
 
     pub fn due_words(&self, limit: u32) -> Result<Vec<WordStatus>> {

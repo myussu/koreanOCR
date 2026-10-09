@@ -88,6 +88,11 @@ pub struct LlmConfig {
     /// Path to `llama-server(.exe)`; defaults to `<bin_dir>/llama-server`.
     pub server_path: Option<PathBuf>,
     pub model_path: Option<PathBuf>,
+    /// Let llama-server download (and cache) a model from Hugging Face instead:
+    /// `unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL`. Ignored if `model_path` is set.
+    pub hf_repo: Option<String>,
+    /// How long to wait for the model to finish loading (first run may also download it).
+    pub ready_timeout_secs: u64,
     /// Small draft model for speculative decoding (same vocabulary as the main one).
     pub draft_model_path: Option<PathBuf>,
     pub port: u16,
@@ -116,6 +121,8 @@ impl Default for LlmConfig {
             autostart: true,
             server_path: None,
             model_path: None,
+            hf_repo: None,
+            ready_timeout_secs: 180,
             draft_model_path: None,
             // llama-server's own default port changed between releases, so we
             // always pass one explicitly.

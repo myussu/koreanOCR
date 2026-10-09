@@ -9,7 +9,10 @@ description = "Orchestration: capture → analyse → translate → learn, strea
 
 [features]
 default = ["paddle"]
-paddle = ["maru-ocr/paddle"]
+# Build the PP-OCR engine into the bootstrap (ONNX Runtime comes from the platform dependency below).
+paddle = []
+directml = ["maru-ocr/directml"]
+cuda = ["maru-ocr/cuda"]
 
 [dependencies]
 maru-core.workspace = true
@@ -29,3 +32,10 @@ image.workspace = true
 
 [dev-dependencies]
 maru-llm = { workspace = true, features = ["testing"] }
+
+# ONNX Runtime: bundled on Windows (the supported platform), located at run time elsewhere.
+[target.'cfg(windows)'.dependencies]
+maru-ocr = { workspace = true, features = ["ort-download"] }
+
+[target.'cfg(not(windows))'.dependencies]
+maru-ocr = { workspace = true, features = ["ort-dynamic"] }

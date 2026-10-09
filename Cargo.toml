@@ -52,7 +52,6 @@ image = { version = "0.25", default-features = false, features = ["png", "bmp"] 
 [profile.release]
 lto = "thin"
 codegen-units = 1
-panic = "abort"
 strip = "symbols"
 
 # Keep dev builds of the hot paths reasonably fast for the OCR/ONNX code.

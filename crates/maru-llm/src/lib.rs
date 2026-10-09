@@ -34,9 +34,20 @@ pub enum LlmError {
 
 pub type Result<T, E = LlmError> = std::result::Result<T, E>;
 
+/// Lifecycle of the language model, shared with the UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LlmStatus {
+    /// No model configured.
+    Disabled,
+    /// llama-server is starting / loading (or downloading) the model.
+    Starting,
+    Ready,
+    Failed(String),
+}
+
 pub use client::{ChatOpts, LlmClient, Message};
 #[cfg(any(test, feature = "testing"))]
 pub use client::testing;
 pub use prompts::PromptContext;
-pub use server::{LlamaServer, build_args};
+pub use server::{LlamaServer, ModelSource, build_args, resolve_binary};
 pub use tasks::{DeepRequest, EnKoRequest, GlossLine, GlossRequest, GlossWord, KoEnRequest, LlmChunk, parse_gloss_line};

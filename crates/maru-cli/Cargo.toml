@@ -5,3 +5,27 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "Command-line front end: translate, doctor, install models, evaluate OCR, benchmark latency"
+
+[[bin]]
+name = "maru"
+path = "src/main.rs"
+
+[dependencies]
+maru-core.workspace = true
+maru-lang.workspace = true
+maru-dict.workspace = true
+maru-srs.workspace = true
+maru-llm.workspace = true
+maru-ocr.workspace = true
+maru-engine.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+tokio.workspace = true
+reqwest.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+image.workspace = true
+zip = { version = "9", default-features = false, features = ["deflate"] }

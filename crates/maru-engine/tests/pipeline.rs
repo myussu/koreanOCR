@@ -73,6 +73,7 @@ fn build(cfg: Config, llm: Option<LlmClient>, server: Option<MockServer>) -> Har
         dict: Some(Arc::new(dict)),
         vocab: vocab.clone(),
         llm,
+        llm_status: None,
         platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
         ocr: None,
     });
@@ -380,11 +381,69 @@ async fn reviews_and_bulk_known_levels_flow_back_into_word_states() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn saved_words_export_as_an_anki_import_file() {
     let h = harness().await;
-    h.engine.save_word("학교").unwrap();
+    let saved = h.engine.save_word("학교").unwrap();
+    assert_eq!((saved.meaning.as_deref(), saved.level.as_deref()), (Some("school"), Some("TOPIK 1")), "meaning comes from the dictionary");
     let path = std::env::temp_dir().join(format!("maru-export-{}.tsv", std::process::id()));
     assert_eq!(h.engine.export_tsv(&path).unwrap(), 1);
     let text = std::fs::read_to_string(&path).unwrap();
     assert!(text.starts_with("학교\t") && text.trim_end().ends_with("\tmaru"), "{text}");
+    assert!(text.contains("school"), "the card's answer must not be empty: {text}");
     std::fs::remove_file(path).ok();
     assert!(h.engine.export_anki("학교").await.is_err(), "disabled by default with an actionable message");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn requests_wait_for_a_model_that_is_still_loading() {
+    use maru_llm::LlmStatus;
+    let server = spawn_mock(model).await;
+    let cfg = Config::default();
+    let (status_tx, status_rx) = tokio::sync::watch::channel(LlmStatus::Starting);
+    let engine = Engine::new(EngineParts {
+        config: cfg.clone(),
+        analyzer: Analyzer::heuristic(),
+        dict: None,
+        vocab: Arc::new(Vocab::open_in_memory(SrsConfig::default()).unwrap()),
+        llm: Some(LlmClient::new(&server.url, &cfg.llm)),
+        llm_status: Some(status_rx),
+        platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
+        ocr: None,
+    });
+    assert_eq!(engine.llm_status(), LlmStatus::Starting);
+
+    let (_, mut rx) = engine.translate(Capture::typed(SENTENCE));
+    // the offline breakdown must appear while the model is still loading
+    let mut early = Vec::new();
+    while let Some(e) = rx.recv().await {
+        let note = matches!(&e, Event::Note { text, .. } if text.contains("still loading"));
+        early.push(e);
+        if note {
+            break;
+        }
+    }
+    assert!(early.iter().any(|e| matches!(e, Event::Breakdown { .. })));
+    assert!(server.requests.lock().unwrap().is_empty(), "no model call before it is ready");
+
+    status_tx.send(LlmStatus::Ready).unwrap();
+    let rest = collect(rx).await;
+    assert_eq!(text_of(&rest, Variant::Primary), "I studied at school.");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_model_that_failed_to_start_explains_why() {
+    use maru_llm::LlmStatus;
+    let cfg = Config::default();
+    let (_tx, status_rx) = tokio::sync::watch::channel(LlmStatus::Failed("out of VRAM".into()));
+    let engine = Engine::new(EngineParts {
+        config: cfg.clone(),
+        analyzer: Analyzer::heuristic(),
+        dict: None,
+        vocab: Arc::new(Vocab::open_in_memory(SrsConfig::default()).unwrap()),
+        llm: Some(LlmClient::new("http://127.0.0.1:1", &cfg.llm)),
+        llm_status: Some(status_rx),
+        platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
+        ocr: None,
+    });
+    let events = collect(engine.translate(Capture::typed(SENTENCE)).1).await;
+    assert!(events.iter().any(|e| matches!(e, Event::Error { message, .. } if message.contains("out of VRAM"))));
+    assert!(events.iter().any(|e| matches!(e, Event::Breakdown { .. })));
 }

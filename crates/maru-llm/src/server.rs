@@ -6,7 +6,7 @@
 //! passed explicitly because llama-server's default has changed between releases.
 
 use std::collections::VecDeque;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -19,11 +19,32 @@ use tokio::process::{Child, Command};
 use crate::client::LlmClient;
 use crate::{LlmError, Result};
 
+/// Where the weights come from.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelSource {
+    File(PathBuf),
+    /// `user/model[:quant]`, downloaded by llama-server itself.
+    HuggingFace(String),
+}
+
+impl ModelSource {
+    pub fn from_config(cfg: &LlmConfig) -> Option<Self> {
+        match (&cfg.model_path, &cfg.hf_repo) {
+            (Some(p), _) => Some(Self::File(p.clone())),
+            (None, Some(repo)) if !repo.trim().is_empty() => Some(Self::HuggingFace(repo.trim().to_string())),
+            _ => None,
+        }
+    }
+}
+
 /// The command line for `llama-server` (without the executable).
-pub fn build_args(cfg: &LlmConfig, model: &Path) -> Vec<String> {
-    let mut a: Vec<String> = vec![
-        "-m".into(),
-        model.display().to_string(),
+pub fn build_args(cfg: &LlmConfig, model: &ModelSource) -> Vec<String> {
+    let mut a: Vec<String> = match model {
+        ModelSource::File(p) => vec!["-m".into(), p.display().to_string()],
+        // The vision projector some repos ship is useless for translation and costs VRAM.
+        ModelSource::HuggingFace(repo) => vec!["-hf".into(), repo.clone(), "--no-mmproj".into()],
+    };
+    a.extend([
         "--host".into(),
         "127.0.0.1".into(),
         "--port".into(),
@@ -43,7 +64,7 @@ pub fn build_args(cfg: &LlmConfig, model: &Path) -> Vec<String> {
         // Translation must not "think" out loud: it is pure latency.
         "--reasoning".into(),
         "off".into(),
-    ];
+    ]);
     if let Some(draft) = &cfg.draft_model_path {
         a.extend([
             "-md".into(),
@@ -78,12 +99,12 @@ pub struct LlamaServer {
 impl LlamaServer {
     /// Start the server and return once it answers `/health` (model loaded).
     pub async fn start(cfg: &LlmConfig, paths: &Paths, ready_timeout: Duration) -> Result<Self> {
-        let model = cfg
-            .model_path
-            .clone()
-            .ok_or_else(|| LlmError::Spawn("no model configured: set [llm] model_path in config.toml".into()))?;
-        if !model.exists() {
-            return Err(LlmError::Spawn(format!("model file not found: {}", model.display())));
+        let model = ModelSource::from_config(cfg)
+            .ok_or_else(|| LlmError::Spawn("no model configured: set [llm] model_path or hf_repo in config.toml".into()))?;
+        if let ModelSource::File(p) = &model
+            && !p.exists()
+        {
+            return Err(LlmError::Spawn(format!("model file not found: {}", p.display())));
         }
         let binary = resolve_binary(cfg, paths);
         let args = build_args(cfg, &model);
@@ -161,6 +182,7 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
     use super::*;
 
     fn cfg() -> LlmConfig {
@@ -173,7 +195,7 @@ mod tests {
 
     #[test]
     fn args_cover_gpu_cache_and_slots() {
-        let a = build_args(&cfg(), Path::new("/m/model.gguf"));
+        let a = build_args(&cfg(), &ModelSource::File("/m/model.gguf".into()));
         assert_eq!(pair(&a, "-m"), Some("/m/model.gguf"));
         assert_eq!(pair(&a, "--port"), Some("19001"));
         assert_eq!(pair(&a, "--host"), Some("127.0.0.1"));
@@ -187,11 +209,25 @@ mod tests {
     }
 
     #[test]
+    fn hugging_face_models_use_the_builtin_downloader_without_the_vision_projector() {
+        let a = build_args(&cfg(), &ModelSource::HuggingFace("unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL".into()));
+        assert_eq!(pair(&a, "-hf"), Some("unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"));
+        assert!(a.contains(&"--no-mmproj".to_string()) && !a.contains(&"-m".to_string()));
+
+        let mut c = cfg();
+        assert_eq!(ModelSource::from_config(&c), None);
+        c.hf_repo = Some(" a/b:Q4_K_M ".into());
+        assert_eq!(ModelSource::from_config(&c), Some(ModelSource::HuggingFace("a/b:Q4_K_M".into())));
+        c.model_path = Some("/x.gguf".into());
+        assert_eq!(ModelSource::from_config(&c), Some(ModelSource::File("/x.gguf".into())), "an explicit file wins");
+    }
+
+    #[test]
     fn draft_model_enables_speculative_decoding() {
         let mut c = cfg();
         c.draft_model_path = Some("/m/draft.gguf".into());
         c.extra_args = vec!["--no-warmup".into()];
-        let a = build_args(&c, Path::new("m.gguf"));
+        let a = build_args(&c, &ModelSource::File("m.gguf".into()));
         assert_eq!(pair(&a, "-md"), Some("/m/draft.gguf"));
         assert_eq!(pair(&a, "--spec-draft-n-max"), Some("4"));
         assert_eq!(a.last().map(String::as_str), Some("--no-warmup"), "extra args come last so they can override");
@@ -210,7 +246,7 @@ mod tests {
     async fn missing_model_is_a_clear_error() {
         let paths = Paths::under(Path::new("/nonexistent-maru"));
         let Err(e) = LlamaServer::start(&cfg(), &paths, Duration::from_secs(1)).await else { panic!("expected an error") };
-        assert!(e.to_string().contains("model_path"), "{e}");
+        assert!(e.to_string().contains("model_path or hf_repo"), "{e}");
         let mut c = cfg();
         c.model_path = Some("/nope.gguf".into());
         let Err(e) = LlamaServer::start(&c, &paths, Duration::from_secs(1)).await else { panic!("expected an error") };

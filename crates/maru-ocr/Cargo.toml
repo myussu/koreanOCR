@@ -8,11 +8,17 @@ publish.workspace = true
 description = "Screen-text recognition: PP-OCR via ONNX Runtime with word-level boxes"
 
 [features]
-default = ["paddle"]
-# PP-OCRv5 Korean through ONNX Runtime (oar-ocr). ONNX Runtime itself is either
-# bundled by `ort-download` (release builds) or located at run time via ORT_DYLIB_PATH.
-paddle = ["dep:oar-ocr", "dep:ort"]
-ort-download = ["oar-ocr?/download-binaries"]
+# No default: pick exactly one way of getting ONNX Runtime (see below). Depending crates do this
+# per platform, so `maru-ocr` itself stays buildable without any native dependency.
+default = []
+# PP-OCR through ONNX Runtime (oar-ocr). Needs one of the two features below to link.
+paddle = ["dep:oar-ocr"]
+# Find ONNX Runtime at run time via ORT_DYLIB_PATH / the library search path.
+# Used on dev machines and CI. (`ort` ships no DLL in this mode.)
+ort-dynamic = ["paddle", "dep:ort"]
+# Download, link and copy ONNX Runtime next to the executable at build time (Windows releases).
+ort-download = ["paddle", "oar-ocr?/download-binaries"]
+# Optional GPU execution providers (need the matching runtime installed).
 directml = ["oar-ocr?/directml"]
 cuda = ["oar-ocr?/cuda"]
 

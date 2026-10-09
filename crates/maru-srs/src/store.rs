@@ -287,6 +287,15 @@ impl Vocab {
         Ok(self.get(key)?.expect("row exists"))
     }
 
+    /// Fill in a meaning/level for a word that has none yet (never overwrites what you chose).
+    pub fn enrich(&self, key: &str, meaning: Option<&str>, level: Option<&str>) -> Result<()> {
+        self.conn().execute(
+            "UPDATE words SET meaning = COALESCE(meaning, ?2), level = COALESCE(level, ?3) WHERE key = ?1",
+            params![key, meaning, level],
+        )?;
+        Ok(())
+    }
+
     pub fn unsave(&self, key: &str) -> Result<()> {
         self.conn().execute("UPDATE words SET saved = 0 WHERE key = ?1", params![key])?;
         Ok(())
@@ -456,6 +465,16 @@ mod tests {
         assert_eq!(v.mark_known("학교", true, 1).unwrap().state, WordState::Known);
         assert_eq!(v.get("학교").unwrap().unwrap().state, WordState::Known);
         assert_eq!(v.mark_known("학교", false, 2).unwrap().state, WordState::New);
+    }
+
+    #[test]
+    fn enrich_fills_gaps_but_never_overwrites() {
+        let v = vocab();
+        v.save("물", 0).unwrap();
+        v.enrich("물", Some("water"), Some("TOPIK 1")).unwrap();
+        v.enrich("물", Some("liquid"), Some("TOPIK 2")).unwrap();
+        let w = v.get("물").unwrap().unwrap();
+        assert_eq!((w.meaning.as_deref(), w.level.as_deref()), (Some("water"), Some("TOPIK 1")));
     }
 
     #[test]

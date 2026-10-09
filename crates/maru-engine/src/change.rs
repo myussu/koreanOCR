@@ -50,12 +50,9 @@ pub fn normalize(s: &str) -> String {
     s.chars().filter(|c| c.is_alphanumeric()).flat_map(char::to_lowercase).collect()
 }
 
-/// 1.0 = identical, 0.0 = nothing in common (Levenshtein over normalised text).
-pub fn similarity(a: &str, b: &str) -> f32 {
-    let (a, b): (Vec<char>, Vec<char>) = (normalize(a).chars().collect(), normalize(b).chars().collect());
-    if a.is_empty() && b.is_empty() {
-        return 1.0;
-    }
+/// Levenshtein distance between two strings, in characters.
+pub fn edit_distance(a: &str, b: &str) -> usize {
+    let (a, b): (Vec<char>, Vec<char>) = (a.chars().collect(), b.chars().collect());
     let mut prev: Vec<usize> = (0..=b.len()).collect();
     for (i, ca) in a.iter().enumerate() {
         let mut cur = vec![i + 1];
@@ -64,7 +61,17 @@ pub fn similarity(a: &str, b: &str) -> f32 {
         }
         prev = cur;
     }
-    1.0 - prev[b.len()] as f32 / a.len().max(b.len()) as f32
+    prev[b.len()]
+}
+
+/// 1.0 = identical, 0.0 = nothing in common (Levenshtein over normalised text).
+pub fn similarity(a: &str, b: &str) -> f32 {
+    let (a, b) = (normalize(a), normalize(b));
+    let longest = a.chars().count().max(b.chars().count());
+    if longest == 0 {
+        return 1.0;
+    }
+    1.0 - edit_distance(&a, &b) as f32 / longest as f32
 }
 
 #[cfg(test)]
@@ -102,6 +109,14 @@ mod tests {
     fn works_on_tiny_and_empty_images() {
         let _ = signature(&RgbImage::from_pixel(3, 2, Rgb([1, 2, 3])));
         let _ = signature(&RgbImage::new(0, 0));
+    }
+
+    #[test]
+    fn edit_distance_basics() {
+        assert_eq!(edit_distance("", ""), 0);
+        assert_eq!(edit_distance("kitten", "sitting"), 3);
+        assert_eq!(edit_distance("안녕하세요", "안녕하세오"), 1);
+        assert_eq!(edit_distance("abc", ""), 3);
     }
 
     #[test]

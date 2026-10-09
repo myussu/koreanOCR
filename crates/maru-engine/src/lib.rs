@@ -7,6 +7,7 @@
 //! * [`annotate`], [`cache`], [`memory`], [`change`] — the supporting pieces
 
 pub mod annotate;
+pub mod bootstrap;
 pub mod cache;
 pub mod capture;
 pub mod change;
@@ -15,6 +16,7 @@ pub mod engine;
 pub mod memory;
 mod pipeline;
 
+pub use bootstrap::{BootOptions, Services, boot, load_config};
 pub use capture::{CaptureError, Capturer};
 pub use continuous::ContinuousHandle;
 pub use engine::{DeepDiveRequest, Engine, EngineError, EngineParts, EventRx, ReviewResult};
