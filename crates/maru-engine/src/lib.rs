@@ -1,1 +1,21 @@
+//! Orchestration: capture → analyse → translate → learn, streamed as events.
+//!
+//! * [`engine`] — the public object and its operations
+//! * [`pipeline`] — the request pipelines (translation, hover lookup, deep dive)
+//! * [`capture`] — selection / region / hover capture with fallbacks
+//! * [`continuous`] — watch a region and report when its text changes
+//! * [`annotate`], [`cache`], [`memory`], [`change`] — the supporting pieces
 
+pub mod annotate;
+pub mod cache;
+pub mod capture;
+pub mod change;
+pub mod continuous;
+pub mod engine;
+pub mod memory;
+mod pipeline;
+
+pub use capture::{CaptureError, Capturer};
+pub use continuous::ContinuousHandle;
+pub use engine::{DeepDiveRequest, Engine, EngineError, EngineParts, EventRx, ReviewResult};
+pub use memory::HistoryItem;

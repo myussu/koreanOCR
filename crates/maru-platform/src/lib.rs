@@ -38,9 +38,9 @@ pub struct Selection {
 /// Ways of reading text without looking at pixels.
 pub trait SelectionSource: Send + Sync {
     /// Selection exposed through the accessibility API (exact characters + position).
-    fn from_accessibility(&self) -> Result<Option<Selection>>;
+    fn read_accessibility(&self) -> Result<Option<Selection>>;
     /// Selection obtained by copying it (the clipboard is restored afterwards).
-    fn from_clipboard(&self, timeout: Duration) -> Result<Option<Selection>>;
+    fn read_clipboard(&self, timeout: Duration) -> Result<Option<Selection>>;
     /// The word under `point`, via accessibility.
     fn word_at(&self, point: Point) -> Result<Option<Selection>>;
 }

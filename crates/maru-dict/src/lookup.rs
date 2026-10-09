@@ -139,6 +139,52 @@ impl Dictionary {
         Ok(out)
     }
 
+    /// Short meanings and course level in a single pass (what the overlay shows under a word).
+    pub fn gloss_and_level(&self, e: &Eojeol, max: usize) -> Result<(Vec<String>, Option<String>)> {
+        let entries = self.lookup_word(e)?;
+        let mut glosses: Vec<String> = Vec::new();
+        'outer: for entry in &entries {
+            for sense in entry.senses.iter().take(2) {
+                let g = short_gloss(&sense.gloss);
+                if !g.is_empty() && !glosses.contains(&g) {
+                    glosses.push(g);
+                }
+                if glosses.len() >= max {
+                    break 'outer;
+                }
+            }
+        }
+        let mut level = entries.iter().find_map(|en| en.level.clone());
+        if level.is_none() {
+            level = self.level_of(e.vocab_key())?;
+        }
+        Ok((glosses, level))
+    }
+
+    /// Every lemma whose course level is TOPIK `n` or easier (for "I know everything up to level N").
+    pub fn lemmas_up_to_topik(&self, n: u8) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached("SELECT lemma, level FROM levels")?;
+        let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (lemma, level) = row?;
+            let rank = match level.strip_prefix("TOPIK ").and_then(|d| d.parse::<u8>().ok()) {
+                Some(n) => n,
+                None => match level.as_str() {
+                    "Beginner" => 2,
+                    "Intermediate" => 4,
+                    "Advanced" => 6,
+                    _ => continue,
+                },
+            };
+            if rank <= n {
+                out.push(lemma);
+            }
+        }
+        Ok(out)
+    }
+
     pub fn level_of(&self, lemma: &str) -> Result<Option<String>> {
         let conn = self.conn();
         Ok(conn.query_row("SELECT level FROM levels WHERE lemma = ?1", params![lemma], |r| r.get(0)).optional()?)
@@ -236,6 +282,25 @@ not json at all
         let d = dict();
         let e = word("했어요", "했어요", Pos::Verb, &[]);
         assert_eq!(d.lookup_word(&e).unwrap()[0].lemma, "하다");
+    }
+
+    #[test]
+    fn gloss_and_level_in_one_call() {
+        let d = dict();
+        let e = word("학교", "학교에서", Pos::Noun, &["학교"]);
+        assert_eq!(d.gloss_and_level(&e, 3).unwrap(), (vec!["school".to_string()], Some("TOPIK 1".to_string())));
+        let unknown = word("모름", "모름", Pos::Noun, &["모름"]);
+        assert_eq!(d.gloss_and_level(&unknown, 3).unwrap(), (vec![], None));
+    }
+
+    #[test]
+    fn lemmas_up_to_a_level() {
+        let d = dict();
+        d.import_levels(Cursor::new("가\t3\n나\t초급\n다\t5\n")).unwrap();
+        let mut up_to_3 = d.lemmas_up_to_topik(3).unwrap();
+        up_to_3.sort();
+        assert_eq!(up_to_3, ["가", "공부", "나", "학교"]); // 공부 = Beginner (2), 학교 = TOPIK 1
+        assert_eq!(d.lemmas_up_to_topik(1).unwrap(), ["학교"]);
     }
 
     #[test]

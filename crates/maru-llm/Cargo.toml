@@ -7,6 +7,9 @@ license.workspace = true
 publish.workspace = true
 description = "Local LLM client (llama.cpp server): streaming, prompts and process supervision"
 
+[features]
+testing = []
+
 [dependencies]
 maru-core.workspace = true
 tokio.workspace = true

@@ -201,7 +201,7 @@ mod tests {
     fn binary_resolution_prefers_explicit_then_local_then_path() {
         let paths = Paths::under(Path::new("/nonexistent-maru"));
         let mut c = cfg();
-        assert_eq!(resolve_binary(&c, &paths).file_name().unwrap().to_string_lossy().starts_with("llama-server"), true);
+        assert!(resolve_binary(&c, &paths).file_name().unwrap().to_string_lossy().starts_with("llama-server"));
         c.server_path = Some("/opt/llama/llama-server".into());
         assert_eq!(resolve_binary(&c, &paths), PathBuf::from("/opt/llama/llama-server"));
     }

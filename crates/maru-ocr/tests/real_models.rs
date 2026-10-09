@@ -29,6 +29,7 @@ fn font_bytes() -> Option<Vec<u8>> {
         .find_map(|p| std::fs::read(p).ok())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn render(text: &str, w: u32, h: u32, x: i32, y: i32, size: f32, fg: [u8; 3], bg: [u8; 3]) -> RgbImage {
     let bytes = font_bytes().expect("a system font");
     let font = FontRef::try_from_slice(&bytes).unwrap();

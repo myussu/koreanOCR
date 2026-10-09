@@ -270,6 +270,22 @@ impl Eojeol {
     }
 }
 
+/// What the vocabulary tracker knows about a word (sent to the UI after every change).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WordStatus {
+    pub key: String,
+    pub state: WordState,
+    pub lookups: u32,
+    pub saved: bool,
+    #[serde(default)]
+    pub meaning: Option<String>,
+    #[serde(default)]
+    pub level: Option<String>,
+    /// Unix seconds when the next review is due.
+    #[serde(default)]
+    pub due: Option<i64>,
+}
+
 /// A meaning chosen *in context* (by the LLM, or the dictionary as fallback).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Gloss {

@@ -116,11 +116,7 @@ pub enum Event {
 
     // ── vocabulary ──
     /// A word's learning state changed (saved, reviewed, marked known).
-    WordState {
-        id: u64,
-        key: String,
-        state: crate::types::WordState,
-    },
+    WordState { id: u64, status: crate::types::WordStatus },
 
     Timing { id: u64, stage: Stage, ms: u32 },
     Error { id: u64, stage: Stage, message: String },

@@ -1497,6 +1497,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru"
+version = "0.18.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ef9ac18847474e638e3702b76c65d4eb93428471a74778ef0f1be711717f89b5"
+dependencies = [
+ "hashbrown 0.17.1",
+]
+
+[[package]]
 name = "lru-slab"
 version = "0.1.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1554,6 +1563,22 @@ dependencies = [
 [[package]]
 name = "maru-engine"
 version = "0.1.0"
+dependencies = [
+ "image",
+ "lru",
+ "maru-core",
+ "maru-dict",
+ "maru-lang",
+ "maru-llm",
+ "maru-ocr",
+ "maru-platform",
+ "maru-srs",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
 
 [[package]]
 name = "maru-lang"

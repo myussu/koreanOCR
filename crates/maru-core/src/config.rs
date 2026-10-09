@@ -313,6 +313,8 @@ pub struct CaptureConfig {
     pub use_ocr_fallback: bool,
     pub ocr_radius_px: u32,
     pub clipboard_timeout_ms: u64,
+    /// Longest selection we process; longer text is cut at a sentence boundary.
+    pub max_chars: usize,
 }
 
 impl Default for CaptureConfig {
@@ -323,6 +325,7 @@ impl Default for CaptureConfig {
             use_ocr_fallback: true,
             ocr_radius_px: 320,
             clipboard_timeout_ms: 250,
+            max_chars: 500,
         }
     }
 }

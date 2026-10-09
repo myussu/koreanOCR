@@ -35,6 +35,8 @@ pub enum LlmError {
 pub type Result<T, E = LlmError> = std::result::Result<T, E>;
 
 pub use client::{ChatOpts, LlmClient, Message};
+#[cfg(any(test, feature = "testing"))]
+pub use client::testing;
 pub use prompts::PromptContext;
 pub use server::{LlamaServer, build_args};
 pub use tasks::{DeepRequest, EnKoRequest, GlossLine, GlossRequest, GlossWord, KoEnRequest, LlmChunk, parse_gloss_line};

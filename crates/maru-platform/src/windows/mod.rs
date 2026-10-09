@@ -50,11 +50,11 @@ impl WinSelection {
 }
 
 impl SelectionSource for WinSelection {
-    fn from_accessibility(&self) -> Result<Option<Selection>> {
+    fn read_accessibility(&self) -> Result<Option<Selection>> {
         self.uia.selection()
     }
 
-    fn from_clipboard(&self, timeout: Duration) -> Result<Option<Selection>> {
+    fn read_clipboard(&self, timeout: Duration) -> Result<Option<Selection>> {
         if let Some(app) = process::foreground_app()
             && self.clipboard_blocklist.iter().any(|b| b.eq_ignore_ascii_case(&app.exe))
         {

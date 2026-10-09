@@ -127,7 +127,7 @@ impl EnKoStream {
         }
     }
 
-    fn route(&mut self, parts: Vec<(EnKoSection, String)>, sink: &mut dyn FnMut(LlmChunk)) {
+    fn route(&mut self, parts: Vec<(EnKoSection, String)>, sink: &mut (dyn FnMut(LlmChunk) + Send)) {
         for (section, text) in parts {
             if self.last != Some(section) {
                 if let Some(prev) = self.last {
@@ -149,13 +149,13 @@ impl EnKoStream {
         }
     }
 
-    fn feed(&mut self, delta: &str, sink: &mut dyn FnMut(LlmChunk)) {
+    fn feed(&mut self, delta: &str, sink: &mut (dyn FnMut(LlmChunk) + Send)) {
         let mut parts = Vec::new();
         self.demux.push(delta, &mut parts);
         self.route(parts, sink);
     }
 
-    fn finish(&mut self, sink: &mut dyn FnMut(LlmChunk)) {
+    fn finish(&mut self, sink: &mut (dyn FnMut(LlmChunk) + Send)) {
         let mut parts = Vec::new();
         self.demux.finish(&mut parts);
         self.route(parts, sink);
@@ -165,7 +165,7 @@ impl EnKoStream {
     }
 }
 
-fn finish_section(section: EnKoSection, texts: &[(EnKoSection, String)], sink: &mut dyn FnMut(LlmChunk)) {
+fn finish_section(section: EnKoSection, texts: &[(EnKoSection, String)], sink: &mut (dyn FnMut(LlmChunk) + Send)) {
     let Some((_, text)) = texts.iter().find(|(s, _)| *s == section) else { return };
     let text = clean_text(text);
     match section {
@@ -178,7 +178,7 @@ fn finish_section(section: EnKoSection, texts: &[(EnKoSection, String)], sink: &
     }
 }
 
-fn emit_gloss_line(line: &str, sink: &mut dyn FnMut(LlmChunk)) {
+fn emit_gloss_line(line: &str, sink: &mut (dyn FnMut(LlmChunk) + Send)) {
     match parse_gloss_line(line) {
         Some(GlossLine::Gloss(g)) => sink(LlmChunk::Gloss(g)),
         Some(GlossLine::Note(n)) => sink(LlmChunk::Note(n)),
@@ -188,7 +188,7 @@ fn emit_gloss_line(line: &str, sink: &mut dyn FnMut(LlmChunk)) {
 
 impl LlmClient {
     /// Korean → English. Streams `Text` deltas, then one `TextDone`. Returns the cleaned translation.
-    pub async fn translate_ko_en(&self, req: &KoEnRequest<'_>, sink: &mut dyn FnMut(LlmChunk)) -> Result<String> {
+    pub async fn translate_ko_en(&self, req: &KoEnRequest<'_>, sink: &mut (dyn FnMut(LlmChunk) + Send)) -> Result<String> {
         let messages = prompts::ko_en(req.text, req.ctx);
         let mut started = false;
         let full = self
@@ -208,7 +208,7 @@ impl LlmClient {
     }
 
     /// Contextual word meanings, emitted one by one as soon as each line completes.
-    pub async fn glosses(&self, req: &GlossRequest<'_>, sink: &mut dyn FnMut(LlmChunk)) -> Result<()> {
+    pub async fn glosses(&self, req: &GlossRequest<'_>, sink: &mut (dyn FnMut(LlmChunk) + Send)) -> Result<()> {
         let words: Vec<GlossWordPrompt<'_>> = req
             .words
             .iter()
@@ -223,7 +223,7 @@ impl LlmClient {
     }
 
     /// English → Korean in three registers plus a nuance note.
-    pub async fn translate_en_ko(&self, req: &EnKoRequest<'_>, sink: &mut dyn FnMut(LlmChunk)) -> Result<()> {
+    pub async fn translate_en_ko(&self, req: &EnKoRequest<'_>, sink: &mut (dyn FnMut(LlmChunk) + Send)) -> Result<()> {
         let messages = prompts::en_ko(req.text, req.register, req.ctx);
         let mut stream = EnKoStream::new();
         self.stream_chat(&messages, &ChatOpts::default(), &mut |d| stream.feed(d, sink)).await?;
@@ -232,7 +232,7 @@ impl LlmClient {
     }
 
     /// Streaming explanation for the click-a-word panel.
-    pub async fn deep_dive(&self, req: &DeepRequest<'_>, sink: &mut dyn FnMut(LlmChunk)) -> Result<()> {
+    pub async fn deep_dive(&self, req: &DeepRequest<'_>, sink: &mut (dyn FnMut(LlmChunk) + Send)) -> Result<()> {
         let messages = prompts::deep(req.key, req.surface, req.sentence, req.dictionary, req.ctx);
         let opts = ChatOpts { max_tokens: Some(450), temperature: Some(0.4), ..Default::default() };
         let mut demux = LabelDemux::new(&[

@@ -12,10 +12,10 @@ use crate::{PlatformError, Result, ScreenGrabber, Selection, SelectionSource};
 pub struct Unsupported;
 
 impl SelectionSource for Unsupported {
-    fn from_accessibility(&self) -> Result<Option<Selection>> {
+    fn read_accessibility(&self) -> Result<Option<Selection>> {
         Err(PlatformError::Unsupported("selection reading"))
     }
-    fn from_clipboard(&self, _: Duration) -> Result<Option<Selection>> {
+    fn read_clipboard(&self, _: Duration) -> Result<Option<Selection>> {
         Err(PlatformError::Unsupported("clipboard capture"))
     }
     fn word_at(&self, _: Point) -> Result<Option<Selection>> {
@@ -49,11 +49,11 @@ pub struct FakeSelection {
 }
 
 impl SelectionSource for FakeSelection {
-    fn from_accessibility(&self) -> Result<Option<Selection>> {
+    fn read_accessibility(&self) -> Result<Option<Selection>> {
         self.calls.lock().unwrap().push("accessibility");
         Ok(self.accessibility.lock().unwrap().clone())
     }
-    fn from_clipboard(&self, _: Duration) -> Result<Option<Selection>> {
+    fn read_clipboard(&self, _: Duration) -> Result<Option<Selection>> {
         self.calls.lock().unwrap().push("clipboard");
         Ok(self.clipboard.lock().unwrap().clone())
     }

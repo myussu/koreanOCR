@@ -123,7 +123,7 @@ impl LlmClient {
     /// Stream a chat completion. `on_delta` receives text as it is generated;
     /// the full text is returned at the end. Dropping the future cancels the
     /// request (the server stops generating when the connection closes).
-    pub async fn stream_chat(&self, messages: &[Message], opts: &ChatOpts, on_delta: &mut dyn FnMut(&str)) -> Result<String> {
+    pub async fn stream_chat(&self, messages: &[Message], opts: &ChatOpts, on_delta: &mut (dyn FnMut(&str) + Send)) -> Result<String> {
         let url = format!("{}/v1/chat/completions", self.root);
         let resp = self
             .http
@@ -217,9 +217,9 @@ fn parse_line(line: &[u8]) -> Option<SseEvent> {
     (!text.is_empty()).then(|| SseEvent::Delta(text.to_string()))
 }
 
-#[cfg(test)]
-pub(crate) mod testing {
-    //! A tiny in-process stand-in for llama-server.
+#[cfg(any(test, feature = "testing"))]
+pub mod testing {
+    //! A tiny in-process stand-in for llama-server, used by this crate's tests and the engine's.
     use std::sync::{Arc, Mutex};
 
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
