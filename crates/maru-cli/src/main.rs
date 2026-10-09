@@ -89,7 +89,7 @@ enum Command {
 enum SetupCommand {
     /// Korean morphological analyser (accurate grammar breakdown).
     Kiwi {
-        /// A specific Kiwi release, e.g. v0.22.2 (default: newest that works).
+        /// A specific Kiwi release, e.g. v0.22.2 (default: the newest with files for this platform).
         #[arg(long)]
         release: Option<String>,
     },
@@ -229,12 +229,6 @@ fn main() -> Result<()> {
         .with_writer(std::io::stderr)
         .init();
     let paths = paths_for(&cli);
-
-    // Kiwi's downloader reads this once; set it before any other thread exists.
-    if matches!(cli.command, Command::Setup(SetupCommand::Kiwi { .. })) {
-        // SAFETY: single-threaded here — the async runtime has not been created yet.
-        unsafe { std::env::set_var("KIWI_RS_CACHE_DIR", maru_engine::bootstrap::kiwi_cache_dir(&paths)) };
-    }
 
     let runtime = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     let code = runtime.block_on(run(cli, paths))?;

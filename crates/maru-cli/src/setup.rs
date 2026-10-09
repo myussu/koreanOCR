@@ -85,44 +85,167 @@ async fn first_reachable(base: &str, candidates: &[&str]) -> Option<String> {
 
 // ───────────────────────────── Kiwi ─────────────────────────────
 
-/// Kiwi releases to try, newest first. The newest one sometimes has no Windows build yet.
-const KIWI_FALLBACK_RELEASES: &[&str] = &["latest", "v0.22.2", "v0.22.1", "v0.21.0", "v0.20.0"];
+const KIWI_RELEASES_API: &str = "https://api.github.com/repos/bab2min/Kiwi/releases?per_page=20";
 
-/// Download Kiwi (library + model) into Maru's own folder and prove it loads.
-/// `KIWI_RS_CACHE_DIR` must already point at that folder (set in `main` before threads start).
-pub async fn kiwi(paths: &Paths, release: Option<String>) -> Result<()> {
-    let dir = maru_engine::bootstrap::kiwi_cache_dir(paths);
-    std::fs::create_dir_all(&dir)?;
-    let candidates: Vec<String> = match release {
-        Some(r) => vec![r],
-        None => KIWI_FALLBACK_RELEASES.iter().map(|s| s.to_string()).collect(),
+/// Name of Kiwi's native-library archive for this platform and release (e.g. `0.22.2`).
+fn kiwi_library_asset(version: &str) -> Result<String> {
+    let name = if cfg!(target_os = "windows") {
+        if cfg!(target_arch = "x86") { format!("kiwi_win_Win32_v{version}.zip") } else { format!("kiwi_win_x64_v{version}.zip") }
+    } else if cfg!(target_os = "macos") {
+        if cfg!(target_arch = "aarch64") { format!("kiwi_mac_arm64_v{version}.tgz") } else { format!("kiwi_mac_x86_64_v{version}.tgz") }
+    } else if cfg!(target_arch = "aarch64") {
+        format!("kiwi_lnx_aarch64_v{version}.tgz")
+    } else {
+        format!("kiwi_lnx_x86_64_v{version}.tgz")
     };
-    let mut last_error = String::new();
-    for rel in candidates {
-        eprintln!("Downloading Kiwi ({rel}) into {} …", dir.display());
-        let attempt = {
-            let rel = rel.clone();
-            tokio::task::spawn_blocking(move || maru_lang::kiwi::KiwiAnalyzer::spawn_with_release(&rel)).await?
+    Ok(name)
+}
+
+/// A Kiwi release that has everything we need: `(version, library url, model url)`.
+pub type KiwiRelease = (String, String, String);
+
+/// Newest release (in the order given) that carries both the library and the model for this platform.
+/// `wanted` pins one tag (`v0.22.2` or `0.22.2`).
+pub fn pick_kiwi_release(releases: &serde_json::Value, wanted: Option<&str>, library_asset: &dyn Fn(&str) -> Result<String>) -> Result<KiwiRelease> {
+    let wanted = wanted.map(|w| w.trim_start_matches('v'));
+    let mut seen = Vec::new();
+    for r in releases.as_array().into_iter().flatten() {
+        let tag = r["tag_name"].as_str().unwrap_or_default();
+        let version = tag.trim_start_matches('v');
+        if version.is_empty() || wanted.is_some_and(|w| w != version) {
+            continue;
+        }
+        let url_of = |name: &str| -> Option<String> {
+            r["assets"].as_array()?.iter().find(|a| a["name"].as_str() == Some(name))?["browser_download_url"].as_str().map(str::to_string)
         };
-        match attempt {
-            Ok(analyzer) => {
-                use maru_lang::Morphology;
-                let tokens = analyzer.tokenize("안녕하세요, 한국어를 공부해요.").map_err(|e| anyhow::anyhow!("{e}"))?;
-                let shown = tokens.iter().map(|t| format!("{}/{}", t.form, t.tag)).collect::<Vec<_>>().join(" ");
-                println!("Kiwi {rel} works: {shown}");
-                match maru_engine::bootstrap::find_kiwi(paths) {
-                    Some((lib, _)) => println!("Installed at {}", lib.display()),
-                    None => println!("Note: Kiwi loaded, but not from {} (found elsewhere on this machine); that is fine.", dir.display()),
-                }
-                return Ok(());
+        let (lib_name, model_name) = (library_asset(version)?, format!("kiwi_model_v{version}_base.tgz"));
+        match (url_of(&lib_name), url_of(&model_name)) {
+            (Some(lib), Some(model)) => return Ok((version.to_string(), lib, model)),
+            _ => seen.push(tag.to_string()),
+        }
+    }
+    bail!(
+        "no Kiwi release has both the library and the model for this platform{} (looked at: {}). \
+         See https://github.com/bab2min/Kiwi/releases and install it by hand, then set KIWI_LIBRARY_PATH and KIWI_MODEL_PATH.",
+        wanted.map(|w| format!(" (wanted {w})")).unwrap_or_default(),
+        if seen.is_empty() { "nothing".to_string() } else { seen.join(", ") }
+    )
+}
+
+fn kiwi_library_filename() -> &'static str {
+    if cfg!(windows) {
+        "kiwi.dll"
+    } else if cfg!(target_os = "macos") {
+        "libkiwi.dylib"
+    } else {
+        "libkiwi.so"
+    }
+}
+
+fn find_file(dir: &Path, name: &str) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(found) = find_file(&path, name) {
+                return Some(found);
             }
-            Err(e) => {
-                eprintln!("  {rel} did not work: {e}");
-                last_error = e.to_string();
+        } else if path.file_name().and_then(|n| n.to_str()) == Some(name) {
+            return Some(path);
+        }
+    }
+    None
+}
+
+fn find_dir(dir: &Path, parent: &str, name: &str) -> Option<PathBuf> {
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if path.file_name().and_then(|n| n.to_str()) == Some(name) && dir.file_name().and_then(|n| n.to_str()) == Some(parent) {
+                return Some(path);
+            }
+            if let Some(found) = find_dir(&path, parent, name) {
+                return Some(found);
             }
         }
     }
-    bail!("none of the Kiwi releases could be installed. Last error: {last_error}\nYou can try a specific one with `maru setup kiwi --release vX.Y.Z` (see https://github.com/bab2min/Kiwi/releases).")
+    None
+}
+
+fn copy_dir(from: &Path, to: &Path) -> Result<()> {
+    std::fs::create_dir_all(to)?;
+    for entry in std::fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.path().is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            std::fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
+}
+
+/// Extract Kiwi's two archives into `cache_dir` and make sure the layout is
+/// `lib/<library>` and `models/cong/base`, whatever folder nesting the archives used.
+pub fn install_kiwi_archives(cache_dir: &Path, lib_archive: &Path, model_archive: &Path) -> Result<(PathBuf, PathBuf)> {
+    let staging = cache_dir.join("extracted");
+    let _ = std::fs::remove_dir_all(&staging);
+    std::fs::create_dir_all(&staging)?;
+
+    let lib_name = lib_archive.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if lib_name.ends_with(".zip") {
+        zip::ZipArchive::new(std::fs::File::open(lib_archive)?)?.extract(&staging).context("extracting the Kiwi library")?;
+    } else {
+        tar::Archive::new(flate2::read::GzDecoder::new(std::fs::File::open(lib_archive)?)).unpack(&staging).context("extracting the Kiwi library")?;
+    }
+    tar::Archive::new(flate2::read::GzDecoder::new(std::fs::File::open(model_archive)?)).unpack(&staging).context("extracting the Kiwi model")?;
+
+    let library = find_file(&staging, kiwi_library_filename()).with_context(|| format!("{} is not inside the Kiwi library archive", kiwi_library_filename()))?;
+    let model = find_dir(&staging, "cong", "base").context("models/cong/base is not inside the Kiwi model archive")?;
+
+    let (lib_dest, model_dest) = (cache_dir.join("lib"), cache_dir.join("models").join("cong").join("base"));
+    std::fs::create_dir_all(&lib_dest)?;
+    // The library may need its sibling DLLs, so copy the whole folder it came from.
+    copy_dir(library.parent().unwrap_or(&staging), &lib_dest)?;
+    copy_dir(&model, &model_dest)?;
+    let _ = std::fs::remove_dir_all(&staging);
+    Ok((lib_dest.join(kiwi_library_filename()), model_dest))
+}
+
+/// Download Kiwi (library + model) into Maru's own folder and prove it loads.
+///
+/// This replaces the downloader inside the `kiwi-rs` crate, which cannot read GitHub's real
+/// release JSON (it looks for the download link before the asset's `uploader` block ends).
+pub async fn kiwi(paths: &Paths, release: Option<String>) -> Result<()> {
+    let root = maru_engine::bootstrap::kiwi_cache_dir(paths).join("kiwi-rs");
+    eprintln!("Looking up Kiwi releases …");
+    let releases: serde_json::Value = client()?
+        .get(KIWI_RELEASES_API)
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .context("asking GitHub for Kiwi releases")?
+        .error_for_status()?
+        .json()
+        .await?;
+    let (version, lib_url, model_url) = pick_kiwi_release(&releases, release.as_deref(), &kiwi_library_asset)?;
+    eprintln!("Using Kiwi v{version}");
+
+    let cache_dir = root.join(&version);
+    let downloads = cache_dir.join("downloads");
+    std::fs::create_dir_all(&downloads)?;
+    let lib_archive = downloads.join(lib_url.rsplit('/').next().unwrap_or("kiwi-lib"));
+    let model_archive = downloads.join(model_url.rsplit('/').next().unwrap_or("kiwi-model.tgz"));
+    download(&lib_url, &lib_archive, "Kiwi library").await?;
+    download(&model_url, &model_archive, "Kiwi model").await?;
+    let (library, model) = install_kiwi_archives(&cache_dir, &lib_archive, &model_archive)?;
+    println!("Installed Kiwi v{version}: {}", library.display());
+
+    let analyzer = tokio::task::spawn_blocking(move || maru_lang::kiwi::KiwiAnalyzer::spawn_from_paths(library, model)).await?.map_err(|e| anyhow::anyhow!("Kiwi was installed but would not load: {e}"))?;
+    use maru_lang::Morphology;
+    let tokens = analyzer.tokenize("안녕하세요, 한국어를 공부해요.").map_err(|e| anyhow::anyhow!("{e}"))?;
+    println!("It works: {}", tokens.iter().map(|t| format!("{}/{}", t.form, t.tag)).collect::<Vec<_>>().join(" "));
+    Ok(())
 }
 
 // ───────────────────────────── OCR models ─────────────────────────────
@@ -429,6 +552,99 @@ mod tests {
         let only_junk = vec![("v0.6.0".to_string(), assets(&["nightly-tag.txt"]))];
         let err = pick_release(&only_junk, LlamaBackend::Cuda, None).unwrap_err().to_string();
         assert!(err.contains("v0.6.0") && err.contains("server_path"), "{err}");
+    }
+
+    /// GitHub's real asset objects: the name comes *before* a nested `uploader` object,
+    /// and `browser_download_url` after it. (This broke the kiwi-rs downloader.)
+    fn github_release(tag: &str, names: &[&str]) -> serde_json::Value {
+        let assets: Vec<_> = names
+            .iter()
+            .map(|n| {
+                serde_json::json!({
+                    "url": format!("https://api.github.com/assets/{n}"), "id": 1, "name": n, "label": null,
+                    "uploader": { "login": "bot", "id": 2, "type": "Bot" },
+                    "content_type": "application/zip", "size": 10,
+                    "browser_download_url": format!("https://github.com/bab2min/Kiwi/releases/download/{tag}/{n}")
+                })
+            })
+            .collect();
+        serde_json::json!({ "tag_name": tag, "assets": assets })
+    }
+
+    #[test]
+    fn kiwi_release_is_found_in_realistic_github_json() {
+        let lib = |v: &str| Ok(format!("kiwi_win_x64_v{v}.zip"));
+        let releases = serde_json::json!([
+            github_release("v0.24.0", &["readme.txt"]),
+            github_release("v0.22.2", &["kiwi_win_x64_v0.22.2.zip", "kiwi_model_v0.22.2_base.tgz", "kiwi_lnx_x86_64_v0.22.2.tgz"]),
+            github_release("v0.21.0", &["kiwi_win_x64_v0.21.0.zip", "kiwi_model_v0.21.0_base.tgz"]),
+        ]);
+        let (v, lib_url, model_url) = pick_kiwi_release(&releases, None, &lib).unwrap();
+        assert_eq!(v, "0.22.2", "the newest release is skipped because it has no files for this platform");
+        assert!(lib_url.ends_with("/v0.22.2/kiwi_win_x64_v0.22.2.zip") && model_url.ends_with("kiwi_model_v0.22.2_base.tgz"));
+
+        // pinning a version
+        assert_eq!(pick_kiwi_release(&releases, Some("v0.21.0"), &lib).unwrap().0, "0.21.0");
+        assert_eq!(pick_kiwi_release(&releases, Some("0.21.0"), &lib).unwrap().0, "0.21.0");
+        let err = pick_kiwi_release(&releases, Some("v9.9.9"), &lib).unwrap_err().to_string();
+        assert!(err.contains("9.9.9"), "{err}");
+    }
+
+    #[test]
+    fn a_release_missing_the_model_is_not_good_enough() {
+        let lib = |v: &str| Ok(format!("kiwi_win_x64_v{v}.zip"));
+        let releases = serde_json::json!([github_release("v0.30.0", &["kiwi_win_x64_v0.30.0.zip"])]);
+        let err = pick_kiwi_release(&releases, None, &lib).unwrap_err().to_string();
+        assert!(err.contains("v0.30.0") && err.contains("KIWI_LIBRARY_PATH"), "{err}");
+    }
+
+    fn write_tgz(path: &Path, files: &[(&str, &[u8])]) {
+        let gz = flate2::write::GzEncoder::new(std::fs::File::create(path).unwrap(), flate2::Compression::fast());
+        let mut tar = tar::Builder::new(gz);
+        for (name, data) in files {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, name, *data).unwrap();
+        }
+        tar.into_inner().unwrap().finish().unwrap();
+    }
+
+    #[test]
+    fn archives_are_laid_out_as_lib_and_models_cong_base_even_when_nested() {
+        let dir = std::env::temp_dir().join(format!("maru-kiwi-install-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let lib = kiwi_library_filename();
+
+        // library archive with an extra top-level folder, as some releases are packaged
+        let lib_archive = dir.join(if cfg!(windows) { "lib.zip" } else { "lib.tgz" });
+        if cfg!(windows) {
+            let mut z = zip::ZipWriter::new(std::fs::File::create(&lib_archive).unwrap());
+            z.start_file(format!("kiwi_pkg/lib/{lib}"), zip::write::SimpleFileOptions::default()).unwrap();
+            std::io::Write::write_all(&mut z, b"binary").unwrap();
+            z.finish().unwrap();
+        } else {
+            write_tgz(&lib_archive, &[(&format!("kiwi_pkg/lib/{lib}"), b"binary")]);
+        }
+        let model_archive = dir.join("model.tgz");
+        write_tgz(&model_archive, &[("models/cong/base/sj.knlm", b"m1"), ("models/cong/base/default.dict", b"m2")]);
+
+        let cache = dir.join("kiwi-rs").join("0.22.2");
+        std::fs::create_dir_all(&cache).unwrap();
+        let (library, model) = install_kiwi_archives(&cache, &lib_archive, &model_archive).unwrap();
+        assert_eq!(library, cache.join("lib").join(lib));
+        assert_eq!(std::fs::read(&library).unwrap(), b"binary");
+        assert!(model.ends_with("models/cong/base") && model.join("sj.knlm").exists() && model.join("default.dict").exists());
+        assert!(!cache.join("extracted").exists(), "staging is cleaned up");
+
+        // and the app's own lookup finds that layout
+        let paths = maru_core::Paths::under(&dir.join("home"));
+        let target = maru_engine::bootstrap::kiwi_cache_dir(&paths).join("kiwi-rs").join("0.22.2");
+        copy_dir(&cache, &target).unwrap();
+        assert!(maru_engine::bootstrap::find_kiwi(&paths).is_some());
+        std::fs::remove_dir_all(dir).ok();
     }
 
     #[test]
