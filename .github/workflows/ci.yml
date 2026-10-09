@@ -1,0 +1,33 @@
+name: ci
+on: [push, pull_request]
+
+jobs:
+  windows:
+    # The platform the app is built for: this job is the real check of the Windows-only code
+    # and of the bundled ONNX Runtime (ort publishes MSVC binaries only).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target\napp/src-tauri -> target"
+      - run: cargo build --workspace
+      - run: cargo test --workspace
+      - run: cargo build --manifest-path app/src-tauri/Cargo.toml
+      - run: cargo test --manifest-path app/src-tauri/Cargo.toml
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - run: node --test app/ui/test/core.test.mjs
+
+  linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+      - run: sudo apt-get update && sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev
+      - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo test --workspace
+      - run: cargo check --manifest-path app/src-tauri/Cargo.toml

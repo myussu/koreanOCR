@@ -1,0 +1,58 @@
+# Maru configuration. Every setting is optional; delete what you do not need.
+# Location: %APPDATA%\maru\Maru\config\config.toml  (run `maru config path` to see yours)
+
+[hotkeys]
+translate  = "Ctrl+Alt+T"       # translate the selection (or the text under the cursor)
+region     = "Ctrl+Alt+R"       # drag a rectangle anywhere and translate what is inside
+hover      = "Ctrl+Alt+H"       # toggle hover mode: rest the pointer on a word
+continuous = "Ctrl+Alt+C"       # toggle live mode for subtitles / dialogue boxes
+history    = "Ctrl+Alt+L"
+dismiss    = "Ctrl+Alt+Escape"  # (a bare Escape would be hijacked in every other app)
+
+[llm]
+# Let llama-server download and cache the model on first run (`maru setup llm` does it up front).
+hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
+# ...or use a file you already have:
+# model_path = "D:/models/gemma-4-12b-it-qat-UD-Q4_K_XL.gguf"
+# ...or an already-running OpenAI-compatible server (LM Studio, a LAN box):
+# endpoint = "http://127.0.0.1:1234/v1"
+# Speculative decoding with a small draft model of the same family (faster, same quality):
+# draft_model_path = "D:/models/gemma-4-1b-it-Q8_0.gguf"
+parallel = 2          # translation and word meanings are generated at the same time
+gpu_layers = "all"
+context_lines = 4     # how many previous lines the model sees for continuity
+
+[ocr]
+backend = "auto"      # auto | paddle | windows
+device  = "cpu"       # cpu | cuda:0 | directml:0  (GPU needs a build with that feature)
+
+[learning]
+gloss_mode = "fade_known"    # all | fade_known | hide_known
+register = "polite"          # default politeness for English -> Korean
+known_stability_days = 21    # a word counts as known once you can hold it this long
+auto_save_after_lookups = 2  # queue a word for review on the 2nd lookup
+
+[learning.anki]
+enabled = false
+deck = "Maru"
+
+[ui]
+placement = "auto"    # auto | below | above
+font_size_px = 18
+show_romanization = true
+show_pronunciation = true
+
+[continuous]
+interval_ms = 250
+stable_ms = 350       # text must hold still this long before it is read
+# region = { x = 480.0, y = 900.0, w = 960.0, h = 120.0 }   # saved automatically if you set it from the tray
+
+# Per-application behaviour. `exe` is the program's file name.
+[[profile]]
+name = "RPG"
+exe = ["MyGame.exe"]
+register = "casual"
+hint = "dialogue from a fantasy role-playing game"
+gloss_mode = "all"
+[profile.glossary]
+"이도현" = "Lee Do-hyun"

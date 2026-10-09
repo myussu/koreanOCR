@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use maru_core::{Capture, Event, Point, Rect};
+use maru_core::{Capture, Config, Event, Point, Rect};
 use maru_engine::EventRx;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -143,12 +143,25 @@ pub fn toggle_continuous(app: &AppHandle, state: &Arc<AppState>) {
     }
 }
 
+/// Keep the chosen live-mode area for next time (applies from the next launch).
+fn remember_region(state: &AppState, rect: Rect) {
+    let paths = &state.services.paths;
+    let saved = Config::load(&paths.config_file).and_then(|mut cfg| {
+        cfg.continuous.region = Some(rect);
+        cfg.save(&paths.config_file)
+    });
+    if let Err(e) = saved {
+        tracing::warn!("could not save the live-mode region: {e}");
+    }
+}
+
 /// The picker reported a rectangle (or was cancelled).
 pub fn picked(app: AppHandle, state: Arc<AppState>, rect: Option<Rect>) {
     windows::close_picker(&app);
     let awaiting = std::mem::take(&mut state.panel().awaiting_continuous_region);
     let Some(rect) = rect else { return };
     if awaiting {
+        remember_region(&state, rect);
         start_continuous(app, state, rect);
     } else {
         translate_region(app, state, rect);

@@ -395,6 +395,16 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
+    /// The documented example must stay valid, and say what the docs claim.
+    #[test]
+    fn the_example_config_in_the_docs_parses() {
+        let c: Config = toml::from_str(include_str!("../../../docs/config.example.toml")).unwrap();
+        assert_eq!(c.hotkeys.dismiss, "Ctrl+Alt+Escape");
+        assert_eq!(c.llm.hf_repo.as_deref(), Some("unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"));
+        assert_eq!(c.profile_for("mygame.exe").unwrap().glossary["이도현"], "Lee Do-hyun");
+        assert_eq!(c.profiles[0].gloss_mode, Some(GlossMode::All));
+    }
+
     #[test]
     fn missing_file_gives_defaults() {
         let c = Config::load(Path::new("/definitely/not/here/config.toml")).unwrap();
