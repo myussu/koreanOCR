@@ -5,3 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "Korean language analysis: Hangul, pronunciation, romanization, morphology, 어절 grouping"
+
+[features]
+default = ["kiwi"]
+# Kiwi morphological analyser through its C API (library is loaded at runtime).
+kiwi = ["dep:kiwi-rs"]
+
+[dependencies]
+maru-core.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+kiwi-rs = { version = "2026.8.26", optional = true }
