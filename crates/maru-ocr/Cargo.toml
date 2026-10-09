@@ -5,3 +5,26 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+description = "Screen-text recognition: PP-OCR via ONNX Runtime with word-level boxes"
+
+[features]
+default = ["paddle"]
+# PP-OCRv5 Korean through ONNX Runtime (oar-ocr). ONNX Runtime itself is either
+# bundled by `ort-download` (release builds) or located at run time via ORT_DYLIB_PATH.
+paddle = ["dep:oar-ocr", "dep:ort"]
+ort-download = ["oar-ocr?/download-binaries"]
+directml = ["oar-ocr?/directml"]
+cuda = ["oar-ocr?/cuda"]
+
+[dependencies]
+maru-core.workspace = true
+image.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+oar-ocr = { version = "0.10", default-features = false, features = ["simd"], optional = true }
+# Only used to select dynamic loading when `ort-download` is off.
+ort = { version = "=2.0.0-rc.13", default-features = false, features = ["load-dynamic"], optional = true }
+
+[dev-dependencies]
+imageproc = { version = "0.27", default-features = false }
+ab_glyph = "0.2"
