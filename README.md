@@ -23,10 +23,9 @@ second lookup, can be sent to **Anki**, and words you know **fade** from the pan
 
 ```powershell
 cargo install --path crates/maru-cli       # builds it and puts `maru.exe` in %USERPROFILE%\.cargo\bin (already on your PATH)
-maru config init      # writes the config file; `maru config path` shows where it is
-# now add the [llm] model below to that file, then:
+maru config init      # writes the config file (with the model below); `maru config path` shows where it is
 maru setup llm        # installs llama-server and downloads the model
-maru setup kiwi       # accurate Korean grammar analysis
+maru setup kiwi       # accurate Korean grammar analysis (tries older Kiwi releases if the newest has no Windows build)
 maru setup ocr        # OCR models for images/video/games
 maru dict download    # offline dictionary (Wiktionary)
 maru doctor --deep    # checks everything, runs a real translation

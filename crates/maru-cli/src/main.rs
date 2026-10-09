@@ -88,7 +88,11 @@ enum Command {
 #[derive(Subcommand)]
 enum SetupCommand {
     /// Korean morphological analyser (accurate grammar breakdown).
-    Kiwi,
+    Kiwi {
+        /// A specific Kiwi release, e.g. v0.22.2 (default: newest that works).
+        #[arg(long)]
+        release: Option<String>,
+    },
     /// PP-OCR Korean models for reading text from pixels.
     Ocr {
         #[arg(long, value_name = "DIR")]
@@ -227,7 +231,7 @@ fn main() -> Result<()> {
     let paths = paths_for(&cli);
 
     // Kiwi's downloader reads this once; set it before any other thread exists.
-    if matches!(cli.command, Command::Setup(SetupCommand::Kiwi)) {
+    if matches!(cli.command, Command::Setup(SetupCommand::Kiwi { .. })) {
         // SAFETY: single-threaded here — the async runtime has not been created yet.
         unsafe { std::env::set_var("KIWI_RS_CACHE_DIR", maru_engine::bootstrap::kiwi_cache_dir(&paths)) };
     }
@@ -312,7 +316,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
         }
         Command::Setup(cmd) => {
             match cmd {
-                SetupCommand::Kiwi => setup::kiwi(&paths).await?,
+                SetupCommand::Kiwi { release } => setup::kiwi(&paths, release).await?,
                 SetupCommand::Ocr { from_dir, base_url, det_url, rec_url, dict_url } => {
                     setup::ocr(&paths, &cfg, setup::OcrSources { from_dir, base_url, det_url, rec_url, dict_url }).await?
                 }
@@ -377,8 +381,10 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     if paths.config_file.exists() && !force {
                         bail!("{} already exists (use --force to overwrite)", paths.config_file.display());
                     }
-                    Config::default().save(&paths.config_file)?;
-                    println!("Wrote {}", paths.config_file.display());
+                    let mut cfg = Config::default();
+                    cfg.llm.hf_repo = Some(setup::RECOMMENDED_MODEL.to_string());
+                    cfg.save(&paths.config_file)?;
+                    println!("Wrote {}\nLanguage model set to {} (edit [llm] to change it).", paths.config_file.display(), setup::RECOMMENDED_MODEL);
                 }
             }
             Ok(0)

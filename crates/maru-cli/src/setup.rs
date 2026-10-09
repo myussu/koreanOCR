@@ -12,7 +12,9 @@ use anyhow::{Context, Result, bail};
 use futures_util::StreamExt;
 use maru_core::{Config, Paths};
 
-pub const LLAMA_RELEASES_API: &str = "https://api.github.com/repos/ggml-org/llama.cpp/releases/latest";
+/// Model written by `maru config init`. Change it in config.toml; any GGUF repo on Hugging Face works.
+pub const RECOMMENDED_MODEL: &str = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL";
+pub const LLAMA_RELEASES_API: &str = "https://api.github.com/repos/ggml-org/llama.cpp/releases?per_page=30";
 /// Wiktionary extract of Korean entries (JSON lines). Override with `--url` if kaikki.org moved it.
 pub const KAIKKI_KOREAN_URL: &str = "https://kaikki.org/dictionary/Korean/kaikki.org-dictionary-Korean.jsonl";
 /// Hugging Face repository with PP-OCR models converted to ONNX.
@@ -83,24 +85,44 @@ async fn first_reachable(base: &str, candidates: &[&str]) -> Option<String> {
 
 // ───────────────────────────── Kiwi ─────────────────────────────
 
+/// Kiwi releases to try, newest first. The newest one sometimes has no Windows build yet.
+const KIWI_FALLBACK_RELEASES: &[&str] = &["latest", "v0.22.2", "v0.22.1", "v0.21.0", "v0.20.0"];
+
 /// Download Kiwi (library + model) into Maru's own folder and prove it loads.
 /// `KIWI_RS_CACHE_DIR` must already point at that folder (set in `main` before threads start).
-pub async fn kiwi(paths: &Paths) -> Result<()> {
+pub async fn kiwi(paths: &Paths, release: Option<String>) -> Result<()> {
     let dir = maru_engine::bootstrap::kiwi_cache_dir(paths);
     std::fs::create_dir_all(&dir)?;
-    eprintln!("Downloading Kiwi (Korean morphological analyser) into {} …", dir.display());
-    let analyzer = tokio::task::spawn_blocking(maru_lang::kiwi::KiwiAnalyzer::spawn)
-        .await?
-        .map_err(|e| anyhow::anyhow!("{e}"))?;
-    use maru_lang::Morphology;
-    let tokens = analyzer.tokenize("안녕하세요, 한국어를 공부해요.").map_err(|e| anyhow::anyhow!("{e}"))?;
-    let shown = tokens.iter().map(|t| format!("{}/{}", t.form, t.tag)).collect::<Vec<_>>().join(" ");
-    println!("Kiwi works: {shown}");
-    match maru_engine::bootstrap::find_kiwi(paths) {
-        Some((lib, _)) => println!("Installed at {}", lib.display()),
-        None => println!("Note: Kiwi loaded, but not from {} (it was found elsewhere on this machine); that is fine.", dir.display()),
+    let candidates: Vec<String> = match release {
+        Some(r) => vec![r],
+        None => KIWI_FALLBACK_RELEASES.iter().map(|s| s.to_string()).collect(),
+    };
+    let mut last_error = String::new();
+    for rel in candidates {
+        eprintln!("Downloading Kiwi ({rel}) into {} …", dir.display());
+        let attempt = {
+            let rel = rel.clone();
+            tokio::task::spawn_blocking(move || maru_lang::kiwi::KiwiAnalyzer::spawn_with_release(&rel)).await?
+        };
+        match attempt {
+            Ok(analyzer) => {
+                use maru_lang::Morphology;
+                let tokens = analyzer.tokenize("안녕하세요, 한국어를 공부해요.").map_err(|e| anyhow::anyhow!("{e}"))?;
+                let shown = tokens.iter().map(|t| format!("{}/{}", t.form, t.tag)).collect::<Vec<_>>().join(" ");
+                println!("Kiwi {rel} works: {shown}");
+                match maru_engine::bootstrap::find_kiwi(paths) {
+                    Some((lib, _)) => println!("Installed at {}", lib.display()),
+                    None => println!("Note: Kiwi loaded, but not from {} (found elsewhere on this machine); that is fine.", dir.display()),
+                }
+                return Ok(());
+            }
+            Err(e) => {
+                eprintln!("  {rel} did not work: {e}");
+                last_error = e.to_string();
+            }
+        }
     }
-    Ok(())
+    bail!("none of the Kiwi releases could be installed. Last error: {last_error}\nYou can try a specific one with `maru setup kiwi --release vX.Y.Z` (see https://github.com/bab2min/Kiwi/releases).")
 }
 
 // ───────────────────────────── OCR models ─────────────────────────────
@@ -232,22 +254,44 @@ pub fn pick_llama_assets(assets: &[Asset], backend: LlamaBackend, cuda: Option<&
     }
 }
 
-async fn latest_llama_assets() -> Result<Vec<Asset>> {
+/// Recent releases, newest first, as `(tag, assets)`.
+async fn recent_llama_releases() -> Result<Vec<(String, Vec<Asset>)>> {
     let v: serde_json::Value = client()?
         .get(LLAMA_RELEASES_API)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await
-        .context("asking GitHub for the latest llama.cpp release")?
+        .context("asking GitHub for llama.cpp releases")?
         .error_for_status()?
         .json()
         .await?;
-    let tag = v["tag_name"].as_str().unwrap_or("?");
-    eprintln!("Latest llama.cpp release: {tag}");
-    Ok(v["assets"]
-        .as_array()
-        .map(|a| a.iter().filter_map(|x| Some((x["name"].as_str()?.to_string(), x["browser_download_url"].as_str()?.to_string()))).collect())
+    Ok(v.as_array()
+        .map(|releases| {
+            releases
+                .iter()
+                .map(|r| {
+                    let tag = r["tag_name"].as_str().unwrap_or("?").to_string();
+                    let assets = r["assets"]
+                        .as_array()
+                        .map(|a| a.iter().filter_map(|x| Some((x["name"].as_str()?.to_string(), x["browser_download_url"].as_str()?.to_string()))).collect())
+                        .unwrap_or_default();
+                    (tag, assets)
+                })
+                .collect()
+        })
         .unwrap_or_default())
+}
+
+/// The newest release that actually has a matching Windows build (some "releases" only carry
+/// metadata files), with the zips to download.
+pub fn pick_release(releases: &[(String, Vec<Asset>)], backend: LlamaBackend, cuda: Option<&str>) -> Result<(String, Vec<Asset>)> {
+    for (tag, assets) in releases {
+        if let Ok(picks) = pick_llama_assets(assets, backend, cuda) {
+            return Ok((tag.clone(), picks));
+        }
+    }
+    let seen = releases.iter().map(|(t, a)| format!("{t} ({} files)", a.len())).collect::<Vec<_>>().join(", ");
+    bail!("none of the {} most recent llama.cpp releases has a matching Windows build [{seen}]. Download one yourself from https://github.com/ggml-org/llama.cpp/releases and set [llm] server_path.", releases.len())
 }
 
 fn binary_works(bin: &Path) -> bool {
@@ -260,8 +304,9 @@ pub async fn llm(paths: &Paths, cfg: &Config, backend: LlamaBackend, cuda: Optio
         println!("llama-server found: {}", binary.display());
     } else if cfg!(windows) {
         std::fs::create_dir_all(&paths.bin_dir)?;
-        let assets = latest_llama_assets().await?;
-        let picks = pick_llama_assets(&assets, backend, cuda.as_deref())?;
+        let releases = recent_llama_releases().await?;
+        let (tag, picks) = pick_release(&releases, backend, cuda.as_deref())?;
+        eprintln!("Using llama.cpp release {tag}");
         for (name, url) in picks {
             let zip_path = paths.bin_dir.join(&name);
             download(&url, &zip_path, &name).await?;
@@ -368,6 +413,22 @@ mod tests {
     fn only_cuda_newer_than_the_default_cap_falls_back_to_the_newest_available() {
         let only_new = assets(&["llama-b1-bin-win-cuda-13.2-x64.zip"]);
         assert_eq!(names(&pick_llama_assets(&only_new, LlamaBackend::Cuda, None).unwrap()), ["llama-b1-bin-win-cuda-13.2-x64.zip"]);
+    }
+
+    #[test]
+    fn releases_without_windows_builds_are_skipped() {
+        // What a real user hit: the newest "release" only carried a metadata file.
+        let releases = vec![
+            ("v0.6.0".to_string(), assets(&["nightly-tag.txt"])),
+            ("b6000".to_string(), release()),
+        ];
+        let (tag, picks) = pick_release(&releases, LlamaBackend::Cuda, None).unwrap();
+        assert_eq!(tag, "b6000");
+        assert_eq!(names(&picks)[0], "llama-b6000-bin-win-cuda-13.1-x64.zip");
+
+        let only_junk = vec![("v0.6.0".to_string(), assets(&["nightly-tag.txt"]))];
+        let err = pick_release(&only_junk, LlamaBackend::Cuda, None).unwrap_err().to_string();
+        assert!(err.contains("v0.6.0") && err.contains("server_path"), "{err}");
     }
 
     #[test]

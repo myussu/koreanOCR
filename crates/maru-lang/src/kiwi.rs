@@ -32,6 +32,12 @@ impl KiwiAnalyzer {
         Self::spawn_with(|| Kiwi::init().map_err(|e| e.to_string()))
     }
 
+    /// Download (if needed) and load a specific release, e.g. `v0.22.2`, or `latest`.
+    pub fn spawn_with_release(version: &str) -> Result<Self, MorphError> {
+        let version = version.to_string();
+        Self::spawn_with(move || Kiwi::init_with_version(&version).map_err(|e| e.to_string()))
+    }
+
     /// Load Kiwi from `KIWI_LIBRARY_PATH` / its default install locations, never downloading.
     pub fn spawn_discovered() -> Result<Self, MorphError> {
         Self::spawn_with(|| Kiwi::new().map_err(|e| e.to_string()))
