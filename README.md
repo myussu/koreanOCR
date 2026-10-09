@@ -22,17 +22,22 @@ second lookup, can be sent to **Anki**, and words you know **fade** from the pan
 ## Quick start (Windows)
 
 ```powershell
-cargo build --release -p maru-cli          # the `maru` command
-maru setup llm        # installs llama-server and downloads the model set in [llm] (needs a config, see below)
+cargo install --path crates/maru-cli       # builds it and puts `maru.exe` in %USERPROFILE%\.cargo\bin (already on your PATH)
+maru config init      # writes the config file; `maru config path` shows where it is
+# now add the [llm] model below to that file, then:
+maru setup llm        # installs llama-server and downloads the model
 maru setup kiwi       # accurate Korean grammar analysis
 maru setup ocr        # OCR models for images/video/games
 maru dict download    # offline dictionary (Wiktionary)
 maru doctor --deep    # checks everything, runs a real translation
 
-cd app/src-tauri && cargo run --release    # the overlay (lives in the system tray)
+cd app/src-tauri; cargo run --release      # the overlay (lives in the system tray)
 ```
 
-Put the model in your config first (`maru config init` writes it; [docs/config.example.toml](docs/config.example.toml)
+(`cargo build --release -p maru-cli` also works, but it only creates `target\release\maru.exe`; run it as
+`.\target\release\maru.exe setup llm` or add that folder to your PATH.)
+
+Config file (`maru config init` writes it; [docs/config.example.toml](docs/config.example.toml)
 shows every option):
 
 ```toml
