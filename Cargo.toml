@@ -28,7 +28,7 @@ maru-lang = { path = "crates/maru-lang" }
 maru-dict = { path = "crates/maru-dict" }
 maru-srs = { path = "crates/maru-srs" }
 maru-llm = { path = "crates/maru-llm" }
-maru-ocr = { path = "crates/maru-ocr" }
+maru-ocr = { path = "crates/maru-ocr", default-features = false }
 maru-platform = { path = "crates/maru-platform" }
 maru-engine = { path = "crates/maru-engine" }
 
