@@ -57,7 +57,8 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 ## How it stays fast
 
 1. The offline breakdown (analysis, pronunciation, dictionary, your vocabulary state) is shown **before** any model
-   call; in tests it costs about 1 ms.
+   call. With the built-in rule-based analyser the whole offline step measures about 1 ms; Kiwi's own cost
+   is not measured here (run `maru bench` to see the "breakdown" row on your machine).
 2. Translation and per-word meanings are requested **at the same time** on separate model slots and stream
    token by token.
 3. The model server is started in the background at launch, kept warm, and its prompt prefix is cached

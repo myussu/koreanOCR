@@ -17,7 +17,7 @@ flowchart LR
         CACHE["Cache · context memory · history"]
         CONT["Continuous watcher<br/>change detect → OCR"]
     end
-    subgraph Offline["Instant, offline (≈1 ms)"]
+    subgraph Offline["Instant, offline"]
         LANG["maru-lang<br/>Kiwi · pronunciation · romanization"]
         DICT["maru-dict<br/>SQLite dictionary + levels"]
         VOC["maru-srs<br/>vocabulary · FSRS-6"]
