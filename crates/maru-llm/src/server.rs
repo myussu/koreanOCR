@@ -63,6 +63,14 @@ mod job {
         .as_ref()
     }
 
+    /// Is `child` in our job (and so ended when we end)?
+    #[cfg(test)]
+    pub fn contains(child: &Child) -> bool {
+        let (Some(job), Some(process)) = (job(), child.raw_handle()) else { return false };
+        let mut inside = windows::core::BOOL::default();
+        unsafe { windows::Win32::System::JobObjects::IsProcessInJob(HANDLE(process), Some(job.0), &mut inside).is_ok() && inside.as_bool() }
+    }
+
     /// Tie `child`'s life to ours. False if the OS refused (it then still dies with `kill_on_drop`).
     pub fn adopt(child: &Child) -> bool {
         let (Some(job), Some(process)) = (job(), child.raw_handle()) else { return false };
@@ -271,6 +279,18 @@ mod tests {
         assert!(err.contains(&port.to_string()) && err.contains("already") && err.contains("taskkill"), "{err}");
     }
 
+    /// The kill-on-close job is what ends llama-server when Maru crashes or is quit from the tray;
+    /// check on real Windows that a child really ends up inside it.
+    #[cfg(windows)]
+    #[tokio::test]
+    async fn a_spawned_child_joins_the_kill_on_close_job() {
+        let mut child = Command::new("cmd").args(["/C", "ping -n 30 127.0.0.1 >NUL"]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).kill_on_drop(true).spawn().expect("cmd.exe starts");
+        assert!(!job::contains(&child), "not in the job until adopted");
+        assert!(job::adopt(&child), "the OS accepted the child");
+        assert!(job::contains(&child), "and it is now in the job");
+        child.kill().await.ok();
+    }
+
     #[test]
     fn args_cover_gpu_cache_and_slots() {
         let a = build_args(&cfg(), &ModelSource::File("/m/model.gguf".into()));
@@ -337,6 +357,8 @@ mod tests {
 
     /// Supervise a stand-in "llama-server" (a Python script that records its argv and
     /// serves /health after a short delay) to prove spawn → ready → kill works.
+    // The stand-in server is a `#!` script, which Windows cannot launch; Linux CI covers this path.
+    #[cfg(unix)]
     #[tokio::test]
     async fn supervises_a_child_process() {
         if std::process::Command::new("python3").arg("--version").output().is_err() {
@@ -387,6 +409,8 @@ http.server.HTTPServer(("127.0.0.1", port), H).serve_forever()
         std::fs::remove_dir_all(dir).ok();
     }
 
+    // The stand-in server is a `#!` script, which Windows cannot launch; Linux CI covers this path.
+    #[cfg(unix)]
     #[tokio::test]
     async fn a_server_that_dies_on_start_reports_its_output() {
         if std::process::Command::new("python3").arg("--version").output().is_err() {
