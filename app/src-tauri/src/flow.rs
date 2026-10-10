@@ -105,6 +105,27 @@ pub fn hover_at(app: AppHandle, state: Arc<AppState>, at: Point) {
     });
 }
 
+/// What is switched on right now, e.g. `["hover mode", "live subtitles"]`.
+pub fn active_features(state: &AppState) -> Vec<&'static str> {
+    let mut on = Vec::new();
+    if state.panel().hover_mode {
+        on.push("hover mode");
+    }
+    if state.continuous.lock().map(|c| c.is_some()).unwrap_or(false) {
+        on.push("live subtitles");
+    }
+    on
+}
+
+/// The tray icon's tooltip says what is on, so a forgotten toggle is visible at a glance.
+pub fn refresh_tray(app: &AppHandle, state: &AppState) {
+    let on = active_features(state);
+    let tip = if on.is_empty() { "Maru".to_string() } else { format!("Maru — on: {}", on.join(", ")) };
+    if let Some(tray) = app.tray_by_id("maru") {
+        let _ = tray.set_tooltip(Some(tip));
+    }
+}
+
 pub fn toggle_hover(app: &AppHandle, state: &Arc<AppState>) {
     let on = {
         let mut p = state.panel();
@@ -112,6 +133,7 @@ pub fn toggle_hover(app: &AppHandle, state: &Arc<AppState>) {
         p.hover_mode
     };
     let text = if on { "Hover mode on: rest the pointer on a Korean word." } else { "Hover mode off." };
+    refresh_tray(app, state);
     notice(app, state, state.engine().platform().screen.cursor(), "info", text);
     if !on {
         windows::hide_panel(app, state);
@@ -129,6 +151,7 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
         *slot = Some(handle);
     }
     state.panel().pinned = true;
+    refresh_tray(&app, &state);
     let keys = state.engine().config().hotkeys.clone();
     let text = format!(
         "Continuous mode on: new lines in the {}×{} area at ({}, {}) are translated automatically. {} turns it off; {} chooses a different area.",
@@ -157,6 +180,7 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
 pub fn toggle_continuous(app: &AppHandle, state: &Arc<AppState>) {
     if state.stop_continuous() {
         state.panel().pinned = false;
+        refresh_tray(app, state);
         notice(app, state, None, "info", "Continuous mode off.");
         return;
     }
@@ -170,6 +194,7 @@ pub fn toggle_continuous(app: &AppHandle, state: &Arc<AppState>) {
 pub fn choose_continuous_area(app: &AppHandle, state: &Arc<AppState>) {
     if state.stop_continuous() {
         state.panel().pinned = false;
+        refresh_tray(app, state);
     }
     state.panel().awaiting_continuous_region = true;
     if windows::open_picker(app).is_err() {

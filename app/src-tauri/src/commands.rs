@@ -105,6 +105,13 @@ pub struct Status {
     pub dictionary: bool,
     pub hotkeys: maru_core::config::Hotkeys,
     pub vocab: Option<VocabCounts>,
+    /// Hover mode is on.
+    pub hover_mode: bool,
+    /// Live subtitle mode is running, and on which screen area.
+    pub live_mode: bool,
+    pub live_area: Option<Rect>,
+    /// The OCR reading model: `off`, `loading`, `ready` or `failed: …`.
+    pub ocr_reader: String,
 }
 
 #[derive(Serialize)]
@@ -118,6 +125,7 @@ pub struct VocabCounts {
 #[tauri::command]
 pub fn status(state: S) -> Status {
     let e = state.engine();
+    let live_mode = state.continuous.lock().map(|c| c.is_some()).unwrap_or(false);
     let llm = match e.llm_status() {
         LlmStatus::Ready => "ready".to_string(),
         LlmStatus::Starting => "loading".to_string(),
@@ -132,6 +140,15 @@ pub fn status(state: S) -> Status {
         dictionary: e.has_dictionary(),
         hotkeys: e.config().hotkeys.clone(),
         vocab: e.vocab_stats().ok().map(|s| VocabCounts { total: s.total, saved: s.saved, known: s.known, due_now: s.due_now }),
+        hover_mode: state.panel().hover_mode,
+        live_mode,
+        live_area: if live_mode { state.live_region() } else { None },
+        ocr_reader: match state.services.vision_status() {
+            LlmStatus::Disabled => "off".into(),
+            LlmStatus::Starting => "loading".into(),
+            LlmStatus::Ready => "ready".into(),
+            LlmStatus::Failed(why) => format!("failed: {why}"),
+        },
     }
 }
 

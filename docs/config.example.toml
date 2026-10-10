@@ -2,6 +2,11 @@
 # Location: %APPDATA%\maru\Maru\config\config.toml  (run `maru config path` to see yours)
 
 [hotkeys]
+# Every action takes several keys, separated by "|". Games often use Ctrl, Shift and Alt, so add a
+# plain key as an alternative, e.g. translate = "Ctrl+Alt+T | F6". Caution: a key registered here
+# is taken away from EVERY program while Maru runs (F6 focuses the address bar in browsers, F5/F9
+# are quick save/load in many games). Pause, ScrollLock, Insert and the numpad (Numpad5, ...) are
+# rarely used; F6/F7/F8 are a reasonable choice if your games do not use them.
 translate  = "Ctrl+Alt+T"       # translate the selection (or the text under the cursor)
 region     = "Ctrl+Alt+R"       # drag a rectangle anywhere and translate what is inside
 hover      = "Ctrl+Alt+H"       # toggle hover mode: rest the pointer on a word

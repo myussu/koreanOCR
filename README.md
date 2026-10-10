@@ -52,6 +52,8 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 | `Ctrl+Alt+H` | hover mode: rest the pointer on a Korean word for its meaning |
 | `Ctrl+Alt+C` | live mode for subtitles and dialogue boxes (translates when the text changes), on the last chosen area |
 | `Ctrl+Alt+Shift+C` | choose a different live-mode area (and start it there) |
+
+Each action accepts several keys separated by `|` in `config.toml` (e.g. `translate = "Ctrl+Alt+T | F6"`), which helps in games that use Ctrl/Shift/Alt. A registered key is taken from every program while Maru runs, so pick ones you don't use (see `docs/config.example.toml`). `Status` shows which toggles are on, and the tray icon's tooltip lists them too.
 | `Ctrl+Alt+L` | history, review and status |
 
 ## The command line

@@ -79,16 +79,30 @@ async function status() {
   const s = await invoke('status');
   const k = s.hotkeys;
   const row = (a, b) => h('tr', {}, h('td', { text: a }), h('td', {}, b));
+  const on = (yes, detail) => h('span', { class: yes ? 'flag on' : 'flag off' }, yes ? `ON${detail ? ` · ${detail}` : ''}` : 'off');
+  const area = s.live_area && `${Math.round(s.live_area.w)}×${Math.round(s.live_area.h)} at (${Math.round(s.live_area.x)}, ${Math.round(s.live_area.y)})`;
   return [
+    h('h4', { text: 'Right now' }),
+    h('table', {}, row('Hover mode', [on(s.hover_mode), ' ', h('kbd', { text: k.hover })]), row('Live subtitles', [on(s.live_mode, area), ' ', h('kbd', { text: k.continuous })]), row('OCR reading model', s.ocr_reader === 'ready' ? on(true, 'PP-OCR + PaddleOCR-VL') : s.ocr_reader === 'off' ? 'not in use (PP-OCR only)' : s.ocr_reader)),
     s.vocab && h('p', {}, [['words', s.vocab.total], ['saved', s.vocab.saved], ['known', s.vocab.known], ['due', s.vocab.due_now]].map(([l, v]) => h('span', { class: 'stat' }, h('b', { text: v }), l))),
     h('h4', { text: 'Components' }),
     h('table', {}, row('Language model', s.llm), row('Korean analyser', s.analyser), row('Dictionary', s.dictionary ? 'installed' : 'not installed (maru dict download)'), row('OCR', s.ocr ? 'ready' : 'not available (maru setup ocr)')),
     h('h4', { text: 'Shortcuts' }),
-    h('table', {}, row('Translate selection', h('kbd', { text: k.translate })), row('Pick a region', h('kbd', { text: k.region })), row('Hover mode', h('kbd', { text: k.hover })), row('Continuous mode', h('kbd', { text: k.continuous })), row('History', h('kbd', { text: k.history })), row('Dismiss panel', h('kbd', { text: k.dismiss }))),
+    h('table', {}, row('Translate selection', h('kbd', { text: k.translate })), row('Pick a region', h('kbd', { text: k.region })), row('Hover mode', h('kbd', { text: k.hover })), row('Continuous mode', h('kbd', { text: k.continuous })), row('Continuous: choose area', h('kbd', { text: k.continuous_area })), row('History', h('kbd', { text: k.history })), row('Dismiss panel', h('kbd', { text: k.dismiss }))),
     h('h4', { text: 'Notes' }),
     s.notes.map((n) => h('p', { class: 'status', text: n })),
   ];
 }
+
+// Toggles can change from a hotkey while this window is open: keep the status tab current.
+setInterval(async () => {
+  if (tab !== 'status' || document.hidden) return;
+  try {
+    view.replaceChildren(...(await status()));
+  } catch {
+    /* keep what is showing */
+  }
+}, 1500);
 
 for (const b of tabs) b.addEventListener('click', () => show(b.dataset.tab));
 listen('maru-tab', (name) => show(name));
@@ -99,7 +113,7 @@ if (!inTauri) {
     word_contexts: () => [{ sentence: '저는 학교에서 공부했어요', translation: 'I studied at school.' }],
     review_word: () => ({}),
     history: () => [{ id: 1, at: 1760000000, source: '저는 학교에서 공부했어요', translation: 'I studied at school.', direction: 'ko_to_en', app: 'chrome.exe' }],
-    status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'ready', analyser: 'kiwi', ocr: true, dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H', continuous: 'Ctrl+Alt+C', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 } }),
+    status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'ready', analyser: 'kiwi', ocr: true, dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, hover_mode: true, live_mode: true, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'ready' }),
   });
 }
 show(tab);
