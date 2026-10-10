@@ -23,6 +23,7 @@ pub struct Config {
     pub ui: UiConfig,
     pub continuous: ContinuousConfig,
     pub capture: CaptureConfig,
+    pub tts: TtsConfig,
     #[serde(rename = "profile")]
     pub profiles: Vec<AppProfile>,
 }
@@ -392,6 +393,77 @@ impl Default for CaptureConfig {
             ocr_radius_px: 320,
             clipboard_timeout_ms: 250,
             max_chars: 500,
+        }
+    }
+}
+
+/// Where the speech comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum TtsProvider {
+    /// A `tts-server` (qwentts.cpp) that Maru starts and stops on this PC (`maru setup tts`).
+    #[default]
+    Local,
+    /// Any server that speaks the OpenAI speech API (`POST /v1/audio/speech`): a PC on your network
+    /// running the same `tts-server`, or a paid service. Uses no GPU here.
+    Endpoint,
+}
+
+/// Text to speech.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct TtsConfig {
+    pub enabled: bool,
+    pub provider: TtsProvider,
+    /// `Endpoint`: where the server is, e.g. `http://192.168.1.20:8080` or `https://api.openai.com/v1`.
+    pub endpoint: Option<String>,
+    /// `Endpoint`: sent as `Authorization: Bearer …` when set (paid services need it).
+    pub api_key: Option<String>,
+    /// Model name sent with each request (`tts-1` for OpenAI; the local server ignores it).
+    pub model: String,
+    /// Speaker: `sohee` is the Korean preset of the local Qwen3-TTS model; services have their own names.
+    pub voice: String,
+    /// Language label sent with each request. Empty leaves it to the server.
+    pub language: String,
+    /// Style instructions ("speak slowly and clearly"), for servers and models that support them.
+    pub instructions: Option<String>,
+    /// Speed, 1.0 = normal. Servers that cannot change it ignore it (the local one does).
+    pub speed: f32,
+    pub timeout_secs: u64,
+    /// Keep every sentence's audio so hearing it again costs nothing; the oldest go past this size.
+    pub cache_mb: u32,
+    /// `Local`: the server executable. Defaults to `<bin>/tts-server`.
+    pub server_path: Option<PathBuf>,
+    /// `Local`: the talker model. Defaults to the one `maru setup tts` downloads.
+    pub model_path: Option<PathBuf>,
+    /// `Local`: the audio codec model that goes with it.
+    pub codec_path: Option<PathBuf>,
+    pub port: u16,
+    /// `Local`: `auto`, or `CUDA0`, `Vulkan0`, `CPU` to force one.
+    pub device: String,
+    pub ready_timeout_secs: u64,
+}
+
+impl Default for TtsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            provider: TtsProvider::Local,
+            endpoint: None,
+            api_key: None,
+            model: "qwen3-tts".into(),
+            voice: "sohee".into(),
+            language: String::new(),
+            instructions: None,
+            speed: 1.0,
+            timeout_secs: 60,
+            cache_mb: 300,
+            server_path: None,
+            model_path: None,
+            codec_path: None,
+            port: 18095,
+            device: "auto".into(),
+            ready_timeout_secs: 120,
         }
     }
 }

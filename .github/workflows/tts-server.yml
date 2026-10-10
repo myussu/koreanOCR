@@ -1,0 +1,95 @@
+# Builds qwentts.cpp's `tts-server` (the local text-to-speech server) for Windows and publishes it as a
+# release of this repository, because the project ships no binaries of its own. `maru setup tts`
+# downloads the newest one. Run it by hand from the Actions tab; it is not part of the normal CI.
+#
+# Vulkan runs on NVIDIA, AMD and Intel GPUs with nothing extra installed. A CUDA build would be a bit
+# faster on NVIDIA cards but needs the CUDA runtime shipped alongside it.
+name: tts-server
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "qwentts.cpp branch, tag or commit to build"
+        default: "master"
+
+permissions:
+  contents: write
+
+env:
+  # Same SDK version llama.cpp's own Windows Vulkan release build uses.
+  VULKAN_VERSION: 1.4.357.0
+
+jobs:
+  windows-vulkan:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: ServeurpersoCom/qwentts.cpp
+          ref: ${{ inputs.ref }}
+          submodules: recursive
+          path: qwentts
+
+      - name: Describe what is being built
+        id: src
+        shell: bash
+        run: |
+          cd qwentts
+          echo "sha=$(git rev-parse --short=10 HEAD)" >> "$GITHUB_OUTPUT"
+          echo "date=$(git log -1 --format=%cs)" >> "$GITHUB_OUTPUT"
+
+      - name: Install the Vulkan SDK
+        shell: pwsh
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build
+        shell: pwsh
+        working-directory: qwentts
+        run: |
+          cmake -S . -B build -G "Ninja Multi-Config" -DGGML_VULKAN=ON
+          cmake --build build --config Release --target tts-server --parallel
+
+      - name: The server starts (it prints its usage and exits)
+        shell: pwsh
+        working-directory: qwentts/build/Release
+        run: |
+          Get-ChildItem
+          $out = & .\tts-server.exe 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch "Usage") { throw "tts-server did not print its usage; it may be missing a DLL" }
+
+      - name: Pack
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force pack | Out-Null
+          Copy-Item qwentts/build/Release/tts-server.exe pack/
+          Get-ChildItem qwentts/build/Release -Filter *.dll | Copy-Item -Destination pack/
+          Copy-Item qwentts/LICENSE pack/LICENSE-qwentts.cpp.txt
+          "qwentts.cpp ${{ steps.src.outputs.sha }} (${{ steps.src.outputs.date }}), MIT licence. Built by this repository's tts-server workflow." | Set-Content pack/BUILD.txt
+          Compress-Archive -Path pack/* -DestinationPath tts-server-windows-vulkan-x64.zip -Force
+
+      - name: Publish a release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="tts-server-${{ steps.src.outputs.sha }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" tts-server-windows-vulkan-x64.zip --clobber
+          else
+            gh release create "$tag" tts-server-windows-vulkan-x64.zip \
+              --title "tts-server (qwentts.cpp ${{ steps.src.outputs.sha }}, ${{ steps.src.outputs.date }})" \
+              --notes "Windows build of qwentts.cpp's tts-server with Vulkan, for \`maru setup tts\`. MIT licence (see the zip)."
+          fi

@@ -146,6 +146,14 @@ pub fn validate(cfg: &Config) -> Result<()> {
     check(cfg.learning.known_stability_days >= 1.0, "a known word needs at least 1 day of stability");
     check(cfg.continuous.interval_ms >= 50, "live mode must look at least every 50 ms");
     check((0.0..=1.0).contains(&cfg.continuous.diff_threshold), "change threshold must be between 0 and 1");
+    check((1024..=65535).contains(&cfg.tts.port), "speech server port must be between 1024 and 65535");
+    check(cfg.tts.speed >= 0.25 && cfg.tts.speed <= 4.0, "speech speed must be between 0.25 and 4");
+    check(cfg.tts.timeout_secs >= 5, "speech timeout must be at least 5 seconds");
+    check(cfg.tts.cache_mb <= 20_000, "speech cache is limited to 20 GB");
+    check(
+        cfg.tts.provider != crate::config::TtsProvider::Endpoint || !cfg.tts.enabled || cfg.tts.endpoint.as_deref().is_some_and(|e| e.trim().starts_with("http")),
+        "speech from a server needs its address (starting with http:// or https://)",
+    );
     check(cfg.capture.max_chars >= 20, "the longest selection must allow at least 20 characters");
     if problems.is_empty() { Ok(()) } else { Err(Error::Config(problems.join("; "))) }
 }

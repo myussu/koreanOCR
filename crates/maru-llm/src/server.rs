@@ -149,15 +149,95 @@ pub fn resolve_binary(cfg: &LlmConfig, paths: &Paths) -> PathBuf {
     if local.exists() { local } else { PathBuf::from(name) }
 }
 
+/// A supervised child process that serves HTTP (`llama-server`, `tts-server`).
+///
+/// It is tied to this process by the job object, killed when dropped, and its last output lines
+/// are kept for error messages. The caller decides what "ready" means (see [`ChildServer::wait_ready`]).
+pub struct ChildServer {
+    child: Child,
+    log: Arc<Mutex<VecDeque<String>>>,
+    name: String,
+}
+
+impl ChildServer {
+    /// Start `binary` with `args` (and `env`), without waiting for it to be ready.
+    pub fn spawn(name: &str, binary: &std::path::Path, args: &[String], env: &[(String, String)]) -> Result<Self> {
+        let mut cmd = Command::new(binary);
+        cmd.args(args).envs(env.iter().map(|(k, v)| (k, v))).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
+        #[cfg(windows)]
+        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        let mut child = cmd.spawn().map_err(|e| LlmError::Spawn(format!("{}: {e}", binary.display())))?;
+
+        #[cfg(windows)]
+        if !job::adopt(&child) {
+            tracing::warn!("could not tie {name} to this process; it may outlive a crash");
+        }
+
+        let log = Arc::new(Mutex::new(VecDeque::with_capacity(64)));
+        if let Some(out) = child.stdout.take() {
+            spawn_log_reader(out, log.clone());
+        }
+        if let Some(err) = child.stderr.take() {
+            spawn_log_reader(err, log.clone());
+        }
+        Ok(Self { child, log, name: name.to_string() })
+    }
+
+    /// Wait until `healthy` says yes. Fails early if the process exits, and after `timeout`.
+    pub async fn wait_ready<F, Fut>(&mut self, timeout: Duration, healthy: F) -> Result<()>
+    where
+        F: Fn() -> Fut,
+        Fut: std::future::Future<Output = bool>,
+    {
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            if let Some(status) = self.child.try_wait().map_err(|e| LlmError::NotReady(e.to_string()))? {
+                return Err(LlmError::NotReady(format!("{} exited ({status}). Last output:\n{}", self.name, self.log_tail())));
+            }
+            if healthy().await {
+                return Ok(());
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(LlmError::NotReady(format!("still loading after {timeout:?}. Last output:\n{}", self.log_tail())));
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+    }
+
+    /// The last lines the process printed, for error messages.
+    pub fn log_tail(&self) -> String {
+        self.log.lock().unwrap_or_else(|p| p.into_inner()).iter().rev().take(12).rev().cloned().collect::<Vec<_>>().join("\n")
+    }
+
+    pub fn is_running(&mut self) -> bool {
+        matches!(self.child.try_wait(), Ok(None))
+    }
+}
+
+/// Wait up to `grace` for something already answering on our port to go away; `true` if it did.
+///
+/// The previous run may still be shutting down (the app restarts itself after a settings change),
+/// so give it a moment before calling it an orphan.
+pub async fn port_frees_up<F, Fut>(grace: Duration, answering: F) -> bool
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
+    let deadline = tokio::time::Instant::now() + grace;
+    while answering().await && tokio::time::Instant::now() < deadline {
+        tokio::time::sleep(Duration::from_millis(300)).await;
+    }
+    !answering().await
+}
+
 /// A running `llama-server`. Killed when dropped.
 pub struct LlamaServer {
-    child: Child,
+    process: ChildServer,
     client: LlmClient,
-    log: Arc<Mutex<VecDeque<String>>>,
 }
 
 /// How long a server already on our port is given to disappear before it is reported as left over.
-const PORT_GRACE: Duration = Duration::from_secs(6);
+pub const PORT_GRACE: Duration = Duration::from_secs(6);
 
 impl LlamaServer {
     /// Start the server and return once it answers `/health` (model loaded).
@@ -181,14 +261,8 @@ impl LlamaServer {
         // Something already answering on our private port is almost always a server left behind by
         // an earlier run. Starting another would fail to bind and exit, which looks like a
         // mysterious "llama-server exited": say what is actually wrong.
-        // The previous run may still be shutting down (the app restarts itself after a settings
-        // change), so give it a moment before calling it an orphan.
         let client = LlmClient::from_config(cfg);
-        let deadline = tokio::time::Instant::now() + grace;
-        while client.health().await && tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(Duration::from_millis(300)).await;
-        }
-        if client.health().await {
+        if !port_frees_up(grace, || client.health()).await {
             return Err(LlmError::Spawn(format!(
                 "port {} is already answered by another server (most likely a llama-server left over from an earlier run). \
                  End it in Task Manager, or run `taskkill /F /IM llama-server.exe`, then start Maru again.",
@@ -196,47 +270,12 @@ impl LlamaServer {
             )));
         }
 
-        let mut cmd = Command::new(&binary);
-        cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
-        #[cfg(windows)]
-        cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let mut child = cmd
-            .spawn()
-            .map_err(|e| LlmError::Spawn(format!("{}: {e} (set [llm] server_path or put llama-server on PATH)", binary.display())))?;
-
-        #[cfg(windows)]
-        if !job::adopt(&child) {
-            tracing::warn!("could not tie llama-server to this process; it may outlive a crash");
-        }
-
-        let log = Arc::new(Mutex::new(VecDeque::with_capacity(64)));
-        if let Some(out) = child.stdout.take() {
-            spawn_log_reader(out, log.clone());
-        }
-        if let Some(err) = child.stderr.take() {
-            spawn_log_reader(err, log.clone());
-        }
-
-        let client = LlmClient::from_config(cfg);
-        let mut server = Self { child, client, log };
-        server.wait_until_ready(ready_timeout).await?;
+        let process = ChildServer::spawn("llama-server", &binary, &args, &[])
+            .map_err(|e| LlmError::Spawn(format!("{e} (set [llm] server_path or put llama-server on PATH)")))?;
+        let mut server = Self { process, client };
+        let client = server.client.clone();
+        server.process.wait_ready(ready_timeout, || client.health()).await?;
         Ok(server)
-    }
-
-    async fn wait_until_ready(&mut self, timeout: Duration) -> Result<()> {
-        let deadline = tokio::time::Instant::now() + timeout;
-        loop {
-            if let Some(status) = self.child.try_wait().map_err(|e| LlmError::NotReady(e.to_string()))? {
-                return Err(LlmError::NotReady(format!("llama-server exited ({status}). Last output:\n{}", self.log_tail())));
-            }
-            if self.client.health().await {
-                return Ok(());
-            }
-            if tokio::time::Instant::now() >= deadline {
-                return Err(LlmError::NotReady(format!("still loading after {timeout:?}. Last output:\n{}", self.log_tail())));
-            }
-            tokio::time::sleep(Duration::from_millis(200)).await;
-        }
     }
 
     pub fn client(&self) -> LlmClient {
@@ -245,11 +284,11 @@ impl LlamaServer {
 
     /// The last lines the server printed, for error messages.
     pub fn log_tail(&self) -> String {
-        self.log.lock().unwrap_or_else(|p| p.into_inner()).iter().rev().take(12).rev().cloned().collect::<Vec<_>>().join("\n")
+        self.process.log_tail()
     }
 
     pub fn is_running(&mut self) -> bool {
-        matches!(self.child.try_wait(), Ok(None))
+        self.process.is_running()
     }
 }
 

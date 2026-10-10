@@ -8,6 +8,7 @@ members = [
     "crates/maru-llm",
     "crates/maru-ocr",
     "crates/maru-platform",
+    "crates/maru-tts",
     "crates/maru-engine",
     "crates/maru-cli",
 ]
@@ -30,6 +31,7 @@ maru-srs = { path = "crates/maru-srs" }
 maru-llm = { path = "crates/maru-llm" }
 maru-ocr = { path = "crates/maru-ocr", default-features = false }
 maru-platform = { path = "crates/maru-platform" }
+maru-tts = { path = "crates/maru-tts" }
 maru-engine = { path = "crates/maru-engine" }
 
 anyhow = "1"

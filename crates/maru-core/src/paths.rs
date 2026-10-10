@@ -52,6 +52,14 @@ impl Paths {
     pub fn labels_db(&self) -> PathBuf {
         self.data_dir.join("labels.db")
     }
+    /// The text-to-speech models (`maru setup tts`).
+    pub fn tts_models_dir(&self) -> PathBuf {
+        self.models_dir.join("tts")
+    }
+    /// Spoken sentences, kept so hearing one again is free.
+    pub fn tts_cache_dir(&self) -> PathBuf {
+        self.data_dir.join("tts-cache")
+    }
     pub fn screenshots_dir(&self) -> PathBuf {
         self.data_dir.join("screenshots")
     }

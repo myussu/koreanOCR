@@ -1794,6 +1794,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "maru-tts"
+version = "0.1.0"
+dependencies = [
+ "maru-core",
+ "maru-llm",
+ "reqwest",
+ "serde_json",
+ "tempfile",
+ "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "matchers"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
