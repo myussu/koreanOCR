@@ -19,8 +19,15 @@ pub const REPO: &str = "Serveurperso/Qwen3-TTS-GGUF";
 pub const TALKER_FILE: &str = "qwen-talker-1.7b-customvoice-Q8_0.gguf";
 pub const CODEC_FILE: &str = "qwen-tokenizer-12hz-Q8_0.gguf";
 
+/// Where the speech server lives: a folder of its own. It ships its own copy of the ggml libraries,
+/// which are not the ones llama.cpp ships; in one folder the two would overwrite each other's DLLs and
+/// neither program would start.
+pub fn server_dir(paths: &Paths) -> PathBuf {
+    paths.bin_dir.join("tts")
+}
+
 pub fn server_binary(cfg: &TtsConfig, paths: &Paths) -> PathBuf {
-    cfg.server_path.clone().unwrap_or_else(|| paths.bin_dir.join(if cfg!(windows) { "tts-server.exe" } else { "tts-server" }))
+    cfg.server_path.clone().unwrap_or_else(|| server_dir(paths).join(if cfg!(windows) { "tts-server.exe" } else { "tts-server" }))
 }
 
 pub fn talker_path(cfg: &TtsConfig, paths: &Paths) -> PathBuf {
@@ -125,6 +132,14 @@ mod tests {
     }
 
     #[test]
+    fn the_speech_server_never_shares_a_folder_with_llama_server() {
+        let paths = Paths::under(std::path::Path::new("/m"));
+        let tts = server_binary(&TtsConfig::default(), &paths);
+        assert_ne!(tts.parent(), Some(paths.bin_dir.as_path()), "its ggml DLLs would replace llama.cpp's");
+        assert_eq!(tts.parent(), Some(server_dir(&paths).as_path()));
+    }
+
+    #[test]
     fn the_device_is_only_forced_when_asked() {
         assert!(environment(&TtsConfig::default()).is_empty());
         let cfg = TtsConfig { device: "Vulkan0".into(), ..Default::default() };
@@ -148,7 +163,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let paths = Paths::under(dir.path());
         std::fs::create_dir_all(paths.tts_models_dir()).unwrap();
-        std::fs::create_dir_all(&paths.bin_dir).unwrap();
+        std::fs::create_dir_all(server_dir(&paths)).unwrap();
         std::fs::write(talker_path(&TtsConfig::default(), &paths), b"x").unwrap();
         std::fs::write(codec_path(&TtsConfig::default(), &paths), b"x").unwrap();
         // a stand-in server: answers /health on the configured port with python's http.server

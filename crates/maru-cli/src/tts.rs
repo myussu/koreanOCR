@@ -41,6 +41,16 @@ pub async fn setup(paths: &Paths, cfg: &Config, opts: SetupOptions) -> Result<()
 
     // 1. the server
     let binary = local::server_binary(tts, paths);
+    // An earlier version unpacked the server next to llama-server and replaced its DLLs.
+    let mixed = paths.bin_dir.join(if cfg!(windows) { "tts-server.exe" } else { "tts-server" });
+    if mixed.is_file() && tts.server_path.is_none() {
+        eprintln!(
+            "\nNote: {} sits beside llama-server, and its libraries replaced llama.cpp's. If llama-server now fails to start \
+             (\"procedure entry point … could not be located\"), delete the folder {} and run `maru setup llm` again.\n",
+            mixed.display(),
+            paths.bin_dir.display()
+        );
+    }
     if binary.is_file() {
         println!("tts-server found: {}", binary.display());
     } else if cfg!(windows) {
@@ -65,14 +75,17 @@ pub async fn setup(paths: &Paths, cfg: &Config, opts: SetupOptions) -> Result<()
                 url
             }
         };
-        let zip_path = paths.bin_dir.join(SERVER_ASSET);
+        let zip_path = paths.data_dir.join(SERVER_ASSET);
         setup::download(&url, &zip_path, SERVER_ASSET).await?;
-        zip::ZipArchive::new(std::fs::File::open(&zip_path)?)?.extract(&paths.bin_dir).context("extracting the server")?;
+        // Its own folder: the zip carries ggml DLLs that must not replace llama.cpp's.
+        let dir = local::server_dir(paths);
+        std::fs::create_dir_all(&dir)?;
+        zip::ZipArchive::new(std::fs::File::open(&zip_path)?)?.extract(&dir).context("extracting the server")?;
         std::fs::remove_file(&zip_path).ok();
         if !binary.is_file() {
             bail!("the archive did not contain {}", binary.display());
         }
-        println!("tts-server installed in {}", paths.bin_dir.display());
+        println!("tts-server installed in {}", dir.display());
     } else {
         bail!("tts-server was not found. Build https://github.com/ServeurpersoCom/qwentts.cpp (buildvulkan.sh / buildcuda.sh), then set [tts] server_path in {}", paths.config_file.display());
     }
