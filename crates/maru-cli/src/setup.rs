@@ -468,15 +468,33 @@ fn binary_works(bin: &Path) -> bool {
     std::process::Command::new(bin).arg("--version").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null()).status().is_ok()
 }
 
-pub async fn llm(paths: &Paths, cfg: &Config, backend: LlamaBackend, cuda: Option<String>) -> Result<()> {
+/// Remove the loose files of a previous llama.cpp install (the `.exe` and every `ggml-*`/CUDA `.dll`), so a
+/// build for another backend does not load the old one's libraries. Folders (`kiwi`, `tts`) are left alone.
+fn clear_llama_files(dir: &Path) -> Result<usize> {
+    let mut removed = 0;
+    for entry in std::fs::read_dir(dir)? {
+        let path = entry?.path();
+        if path.is_file() {
+            std::fs::remove_file(&path).with_context(|| format!("removing {} (is llama-server still running? quit Maru first)", path.display()))?;
+            removed += 1;
+        }
+    }
+    Ok(removed)
+}
+
+pub async fn llm(paths: &Paths, cfg: &Config, backend: LlamaBackend, cuda: Option<String>, force: bool) -> Result<()> {
     let mut binary = maru_llm::resolve_binary(&cfg.llm, paths);
-    if binary_works(&binary) {
-        println!("llama-server found: {}", binary.display());
+    if !force && binary_works(&binary) {
+        println!("llama-server found: {} (use --force to download a different build)", binary.display());
     } else if cfg!(windows) {
         std::fs::create_dir_all(&paths.bin_dir)?;
         let releases = recent_llama_releases().await?;
         let (tag, picks) = pick_release(&releases, backend, cuda.as_deref())?;
         eprintln!("Using llama.cpp release {tag}");
+        if force {
+            let n = clear_llama_files(&paths.bin_dir)?;
+            eprintln!("Removed {n} files of the previous llama.cpp install");
+        }
         for (name, url) in picks {
             let zip_path = paths.bin_dir.join(&name);
             download(&url, &zip_path, &name).await?;
@@ -537,6 +555,21 @@ pub async fn llm(paths: &Paths, cfg: &Config, backend: LlamaBackend, cuda: Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn forcing_a_reinstall_removes_the_old_files_but_not_the_other_tools_folders() {
+        let dir = std::env::temp_dir().join(format!("maru-force-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("kiwi")).unwrap();
+        std::fs::create_dir_all(dir.join("tts")).unwrap();
+        for f in ["llama-server.exe", "ggml-cuda.dll", "cudart64_12.dll", "kiwi/libkiwi.dll", "tts/tts-server.exe"] {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+        assert_eq!(clear_llama_files(&dir).unwrap(), 3);
+        assert!(!dir.join("ggml-cuda.dll").exists() && !dir.join("llama-server.exe").exists());
+        assert!(dir.join("kiwi/libkiwi.dll").exists() && dir.join("tts/tts-server.exe").exists());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     fn assets(names: &[&str]) -> Vec<Asset> {
         names.iter().map(|n| (n.to_string(), format!("https://example.invalid/{n}"))).collect()

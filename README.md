@@ -27,21 +27,45 @@ Anki *Sync* triggers it. See `docs/config.example.toml`.
 
 ## Quick start (Windows)
 
+**You need** (once): Windows 10/11 (64-bit), [Rust](https://rustup.rs) with the *Visual Studio Build Tools* ("Desktop development with C++") it asks for, Git, and the WebView2 runtime (already part of Windows 11; the app installs it on Windows 10). About 12 GB of disk for the models. Anki is optional.
+
 ```powershell
+git clone https://github.com/myussu/koreanOCR.git
+cd koreanOCR
 cargo install --path crates/maru-cli       # builds it and puts `maru.exe` in %USERPROFILE%\.cargo\bin (already on your PATH)
 maru config init      # writes the config file (with the model below); `maru config path` shows where it is
-maru setup llm        # installs llama-server and downloads the model
+maru setup llm        # installs llama-server and downloads the model. NVIDIA card? this is right. Anything else: see "Without an NVIDIA GPU" below
 maru setup kiwi       # accurate Korean grammar analysis; each candidate (Kiwi >= 0.23) is self-tested in a child process before it is trusted
 maru setup ocr        # OCR models for images/video/games
-maru setup ocr-vl     # optional, ~1.8 GB: a reading model that fixes most of PP-OCR's misread letters
+maru setup ocr-vl     # optional, ~1.8 GB: a reading model that fixes most of PP-OCR's misread letters (wants ~2 GB of VRAM)
 maru dict download    # offline dictionary (Wiktionary)
 maru doctor --deep    # checks everything, runs a real translation
 
-cd app/src-tauri; cargo run --release      # the overlay (lives in the system tray)
+cd app\src-tauri; cargo run --release      # the overlay (lives in the system tray)
 ```
 
 (`cargo build --release -p maru-cli` also works, but it only creates `target\release\maru.exe`; run it as
-`.\target\release\maru.exe setup llm` or add that folder to your PATH.)
+`.\target\release\maru.exe setup llm` or add that folder to your PATH.) The first `cargo` build takes several minutes. To update later: `git pull`, run the `cargo install` line again, and `cargo run --release` in `app\src-tauri`.
+
+Optional: `maru setup tts` (a local Korean voice, see **Speech** below) and the AnkiConnect add-on if you use Anki.
+
+### Without an NVIDIA GPU (or on a second PC)
+
+Only one thing is tied to NVIDIA: `maru setup llm` downloads llama.cpp's **CUDA** build by default. Tell it what the machine has:
+
+| This PC has | Run | What to expect |
+|---|---|---|
+| NVIDIA GPU | `maru setup llm` (CUDA; `--cuda 12.4` pins a build; RTX 50-series needs CUDA 12.8+) | the fast path |
+| AMD or Intel GPU, or an NVIDIA one without the CUDA driver | `maru setup llm --backend vulkan --force` | works with nothing extra installed; usually a bit slower than CUDA |
+| No usable GPU | `maru setup llm --backend cpu --force` | works, but the 12B model is slow: expect several seconds per line, too slow for live subtitles |
+
+`--force` matters when something is already installed: without it `maru setup llm` keeps any `llama-server` that starts, and with it the old llama.cpp files are removed first so a Vulkan or CPU build never loads the CUDA libraries left beside it (quit Maru first). `maru setup llm` ends by starting the real server once and loading the model, so a build that cannot use this PC's hardware fails there, not later.
+
+Everything else already works without CUDA: OCR runs on the CPU by default (`[ocr] device = "cpu"`, or `directml:0` on any DirectX 12 GPU in a build with the `directml` feature), the dictionary, Kiwi and the learning features are CPU-only, and `backend = "auto"` can use the Windows OCR that ships with Windows. On a weaker PC:
+
+* set `lite = true` (a 4B model, no OCR reading model, about 2.5 GB less memory), and skip `maru setup ocr-vl`;
+* or keep the model on the strong PC: start `llama-server` there (or LM Studio, with the server reachable on your network) and set `[llm] endpoint = "http://<that-pc>:8080/v1"` on this one. Maru then uses it instead of starting its own, so on this PC skip `maru setup llm` and only the OCR and the overlay run locally;
+* point `[tts]` at that PC too (`provider = "endpoint"`), as in **Speech** below, or leave speech off.
 
 Config file (`maru config init` writes it; [docs/config.example.toml](docs/config.example.toml)
 shows every option):

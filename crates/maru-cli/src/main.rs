@@ -181,6 +181,9 @@ enum SetupCommand {
         /// Pin a CUDA build, e.g. 12.4 or 13.1.
         #[arg(long)]
         cuda: Option<String>,
+        /// Download llama-server again even if one already works (to switch from CUDA to Vulkan or CPU).
+        #[arg(long)]
+        force: bool,
     },
 }
 
@@ -576,7 +579,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     println!("Compare it on your own screenshots: maru eval-ocr <folder> --engine paddle hybrid");
                 }
                 SetupCommand::Tts { small, server_url, no_test } => tts::setup(&paths, &cfg, tts::SetupOptions { small, server_url, no_test }).await?,
-                SetupCommand::Llm { backend, cuda } => setup::llm(&paths, &cfg, backend, cuda).await?,
+                SetupCommand::Llm { backend, cuda, force } => setup::llm(&paths, &cfg, backend, cuda, force).await?,
             }
             Ok(0)
         }
