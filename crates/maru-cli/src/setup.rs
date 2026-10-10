@@ -469,7 +469,7 @@ fn binary_works(bin: &Path) -> bool {
 }
 
 pub async fn llm(paths: &Paths, cfg: &Config, backend: LlamaBackend, cuda: Option<String>) -> Result<()> {
-    let binary = maru_llm::resolve_binary(&cfg.llm, paths);
+    let mut binary = maru_llm::resolve_binary(&cfg.llm, paths);
     if binary_works(&binary) {
         println!("llama-server found: {}", binary.display());
     } else if cfg!(windows) {
@@ -485,6 +485,8 @@ pub async fn llm(paths: &Paths, cfg: &Config, backend: LlamaBackend, cuda: Optio
             std::fs::remove_file(&zip_path).ok();
         }
         println!("llama-server installed in {}", paths.bin_dir.display());
+        // Looked up again: before the download it was only a name to find on PATH, which is what failed after it.
+        binary = maru_llm::resolve_binary(&cfg.llm, paths);
         if backend == LlamaBackend::Cuda {
             println!("Note: RTX 50-series (Blackwell) GPUs need a build made with CUDA 12.8 or newer; if loading fails, try `--backend vulkan`.");
         }
