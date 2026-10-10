@@ -19,7 +19,9 @@ mod pipeline;
 mod scan;
 pub mod respace;
 pub mod vision;
+pub mod hardware;
 pub mod hybrid_ocr;
+pub mod plan;
 pub mod labels;
 pub mod vlm_ocr;
 

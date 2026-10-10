@@ -389,7 +389,9 @@ fn parse_cuda(name: &str) -> Option<(u32, u32)> {
 const MAX_DEFAULT_CUDA: (u32, u32) = (13, 1);
 
 /// Choose the Windows zips to download from a release's assets.
-pub fn pick_llama_assets(assets: &[Asset], backend: LlamaBackend, cuda: Option<&str>) -> Result<Vec<Asset>> {
+/// `driver` is the newest CUDA the installed NVIDIA driver can run: without an explicit `cuda`, builds
+/// newer than that are not offered (a build the driver cannot run fails at start-up).
+pub fn pick_llama_assets(assets: &[Asset], backend: LlamaBackend, cuda: Option<&str>, driver: Option<(u32, u32)>) -> Result<Vec<Asset>> {
     let find = |pred: &dyn Fn(&str) -> bool| assets.iter().find(|(n, _)| pred(n)).cloned();
     match backend {
         LlamaBackend::Cuda => {
@@ -402,7 +404,12 @@ pub fn pick_llama_assets(assets: &[Asset], backend: LlamaBackend, cuda: Option<&
             builds.sort_by_key(|(v, _)| std::cmp::Reverse(*v));
             let chosen = match &wanted {
                 Some(w) => builds.iter().find(|((a, b), _)| format!("{a}.{b}") == *w),
-                None => builds.iter().find(|(v, _)| *v <= MAX_DEFAULT_CUDA).or(builds.first()),
+                None => {
+                    let cap = driver.map_or(MAX_DEFAULT_CUDA, |d| d.min(MAX_DEFAULT_CUDA));
+                    let fits = builds.iter().find(|(v, _)| *v <= cap);
+                    // Only when the driver is unknown may a build above the default cap be taken, as a last resort.
+                    if driver.is_some() { fits } else { fits.or(builds.first()) }
+                }
             };
             let Some(((major, minor), build)) = chosen else {
                 bail!("no matching CUDA build in this release; available: {}", assets.iter().map(|a| a.0.as_str()).collect::<Vec<_>>().join(", "));
@@ -454,9 +461,9 @@ async fn recent_llama_releases() -> Result<Vec<(String, Vec<Asset>)>> {
 
 /// The newest release that actually has a matching Windows build (some "releases" only carry
 /// metadata files), with the zips to download.
-pub fn pick_release(releases: &[(String, Vec<Asset>)], backend: LlamaBackend, cuda: Option<&str>) -> Result<(String, Vec<Asset>)> {
+pub fn pick_release(releases: &[(String, Vec<Asset>)], backend: LlamaBackend, cuda: Option<&str>, driver: Option<(u32, u32)>) -> Result<(String, Vec<Asset>)> {
     for (tag, assets) in releases {
-        if let Ok(picks) = pick_llama_assets(assets, backend, cuda) {
+        if let Ok(picks) = pick_llama_assets(assets, backend, cuda, driver) {
             return Ok((tag.clone(), picks));
         }
     }
@@ -488,8 +495,22 @@ pub async fn llm(paths: &Paths, cfg: &Config, backend: LlamaBackend, cuda: Optio
         println!("llama-server found: {} (use --force to download a different build)", binary.display());
     } else if cfg!(windows) {
         std::fs::create_dir_all(&paths.bin_dir)?;
+        // The newest CUDA build this NVIDIA driver can run (a pinned `--cuda` wins).
+        let driver = if backend == LlamaBackend::Cuda && cuda.is_none() { maru_engine::hardware::nvidia_driver().and_then(|d| d.cuda) } else { None };
+        if let Some(d) = driver
+            && d < maru_engine::plan::OLDEST_CUDA_BUILD
+        {
+            bail!(
+                "the installed NVIDIA driver supports CUDA {}.{} only, older than the oldest llama.cpp CUDA build ({}.{}). \
+                 Update the NVIDIA driver, or use `maru setup llm --backend vulkan --force`.",
+                d.0,
+                d.1,
+                maru_engine::plan::OLDEST_CUDA_BUILD.0,
+                maru_engine::plan::OLDEST_CUDA_BUILD.1
+            );
+        }
         let releases = recent_llama_releases().await?;
-        let (tag, picks) = pick_release(&releases, backend, cuda.as_deref())?;
+        let (tag, picks) = pick_release(&releases, backend, cuda.as_deref(), driver)?;
         eprintln!("Using llama.cpp release {tag}");
         if force {
             let n = clear_llama_files(&paths.bin_dir)?;
@@ -594,30 +615,42 @@ mod tests {
 
     #[test]
     fn default_cuda_pick_is_the_newest_trusted_build_with_its_runtime() {
-        let picks = pick_llama_assets(&release(), LlamaBackend::Cuda, None).unwrap();
+        let picks = pick_llama_assets(&release(), LlamaBackend::Cuda, None, None).unwrap();
         assert_eq!(names(&picks), ["llama-b6000-bin-win-cuda-13.1-x64.zip", "cudart-llama-bin-win-cuda-13.1-x64.zip"]);
     }
 
     #[test]
     fn explicit_cuda_version_is_honoured_even_if_newer() {
-        let picks = pick_llama_assets(&release(), LlamaBackend::Cuda, Some("12.4")).unwrap();
+        let picks = pick_llama_assets(&release(), LlamaBackend::Cuda, Some("12.4"), None).unwrap();
         assert_eq!(names(&picks), ["llama-b6000-bin-win-cuda-12.4-x64.zip", "cudart-llama-bin-win-cuda-12.4-x64.zip"]);
-        let picks = pick_llama_assets(&release(), LlamaBackend::Cuda, Some("13.2")).unwrap();
+        let picks = pick_llama_assets(&release(), LlamaBackend::Cuda, Some("13.2"), None).unwrap();
         assert_eq!(names(&picks), ["llama-b6000-bin-win-cuda-13.2-x64.zip"], "no matching runtime zip: still usable if CUDA is installed");
-        assert!(pick_llama_assets(&release(), LlamaBackend::Cuda, Some("9.9")).is_err());
+        assert!(pick_llama_assets(&release(), LlamaBackend::Cuda, Some("9.9"), None).is_err());
+    }
+
+    #[test]
+    fn the_drivers_cuda_limits_the_default_build() {
+        // A driver that runs CUDA 12.6 cannot run the 13.1 build, but can run 12.4.
+        let picks = pick_llama_assets(&release(), LlamaBackend::Cuda, None, Some((12, 6))).unwrap();
+        assert_eq!(names(&picks)[0], "llama-b6000-bin-win-cuda-12.4-x64.zip");
+        assert_eq!(names(&pick_llama_assets(&release(), LlamaBackend::Cuda, None, Some((13, 1))).unwrap())[0], "llama-b6000-bin-win-cuda-13.1-x64.zip");
+        assert_eq!(names(&pick_llama_assets(&release(), LlamaBackend::Cuda, None, Some((13, 2))).unwrap())[0], "llama-b6000-bin-win-cuda-13.1-x64.zip", "the default cap still applies");
+        assert!(pick_llama_assets(&release(), LlamaBackend::Cuda, None, Some((11, 8))).is_err(), "nothing the driver can run");
+        // a pinned version ignores the driver
+        assert_eq!(names(&pick_llama_assets(&release(), LlamaBackend::Cuda, Some("13.1"), Some((12, 4))).unwrap())[0], "llama-b6000-bin-win-cuda-13.1-x64.zip");
     }
 
     #[test]
     fn vulkan_and_cpu_builds() {
-        assert_eq!(names(&pick_llama_assets(&release(), LlamaBackend::Vulkan, None).unwrap()), ["llama-b6000-bin-win-vulkan-x64.zip"]);
-        assert_eq!(names(&pick_llama_assets(&release(), LlamaBackend::Cpu, None).unwrap()), ["llama-b6000-bin-win-cpu-x64.zip"]);
-        assert!(pick_llama_assets(&assets(&["llama-b1-bin-ubuntu-x64.zip"]), LlamaBackend::Vulkan, None).is_err());
+        assert_eq!(names(&pick_llama_assets(&release(), LlamaBackend::Vulkan, None, None).unwrap()), ["llama-b6000-bin-win-vulkan-x64.zip"]);
+        assert_eq!(names(&pick_llama_assets(&release(), LlamaBackend::Cpu, None, None).unwrap()), ["llama-b6000-bin-win-cpu-x64.zip"]);
+        assert!(pick_llama_assets(&assets(&["llama-b1-bin-ubuntu-x64.zip"]), LlamaBackend::Vulkan, None, None).is_err());
     }
 
     #[test]
     fn only_cuda_newer_than_the_default_cap_falls_back_to_the_newest_available() {
         let only_new = assets(&["llama-b1-bin-win-cuda-13.2-x64.zip"]);
-        assert_eq!(names(&pick_llama_assets(&only_new, LlamaBackend::Cuda, None).unwrap()), ["llama-b1-bin-win-cuda-13.2-x64.zip"]);
+        assert_eq!(names(&pick_llama_assets(&only_new, LlamaBackend::Cuda, None, None).unwrap()), ["llama-b1-bin-win-cuda-13.2-x64.zip"]);
     }
 
     #[test]
@@ -627,12 +660,12 @@ mod tests {
             ("v0.6.0".to_string(), assets(&["nightly-tag.txt"])),
             ("b6000".to_string(), release()),
         ];
-        let (tag, picks) = pick_release(&releases, LlamaBackend::Cuda, None).unwrap();
+        let (tag, picks) = pick_release(&releases, LlamaBackend::Cuda, None, None).unwrap();
         assert_eq!(tag, "b6000");
         assert_eq!(names(&picks)[0], "llama-b6000-bin-win-cuda-13.1-x64.zip");
 
         let only_junk = vec![("v0.6.0".to_string(), assets(&["nightly-tag.txt"]))];
-        let err = pick_release(&only_junk, LlamaBackend::Cuda, None).unwrap_err().to_string();
+        let err = pick_release(&only_junk, LlamaBackend::Cuda, None, None).unwrap_err().to_string();
         assert!(err.contains("v0.6.0") && err.contains("server_path"), "{err}");
     }
 

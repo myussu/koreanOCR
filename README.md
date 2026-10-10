@@ -33,25 +33,38 @@ Anki *Sync* triggers it. See `docs/config.example.toml`.
 git clone https://github.com/myussu/koreanOCR.git
 cd koreanOCR
 cargo install --path crates/maru-cli       # builds it and puts `maru.exe` in %USERPROFILE%\.cargo\bin (already on your PATH)
-maru config init      # writes the config file (with the model below); `maru config path` shows where it is
-maru setup llm        # installs llama-server and downloads the model. NVIDIA card? this is right. Anything else: see "Without an NVIDIA GPU" below
-maru setup kiwi       # accurate Korean grammar analysis; each candidate (Kiwi >= 0.23) is self-tested in a child process before it is trusted
-maru setup ocr        # OCR models for images/video/games
-maru setup ocr-vl     # optional, ~1.8 GB: a reading model that fixes most of PP-OCR's misread letters (wants ~2 GB of VRAM)
-maru dict download    # offline dictionary (Wiktionary)
-maru doctor --deep    # checks everything, runs a real translation
+maru setup                                 # the setup wizard, see below
+maru doctor --deep                         # (the wizard ends with this) checks everything, runs a real translation
 
 cd app\src-tauri; cargo run --release      # the overlay (lives in the system tray)
 ```
 
 (`cargo build --release -p maru-cli` also works, but it only creates `target\release\maru.exe`; run it as
-`.\target\release\maru.exe setup llm` or add that folder to your PATH.) The first `cargo` build takes several minutes. To update later: `git pull`, run the `cargo install` line again, and `cargo run --release` in `app\src-tauri`.
+`.\target\release\maru.exe setup` or add that folder to your PATH.) The first `cargo` build takes several minutes. To update later: `git pull`, run the `cargo install` line again, and `cargo run --release` in `app\src-tauri`.
+
+### The setup wizard
+
+`maru setup` looks at the PC (graphics card and its driver, memory, free disk), recommends what to install and why, asks the few things only you can answer, and then installs it. It chooses between three ways of running the model, and between the full 12B model and the small one:
+
+| It finds | It recommends |
+|---|---|
+| An NVIDIA card with 10 GB or more | CUDA, the full model, and the OCR reading model |
+| A smaller NVIDIA card | CUDA with the small model (`lite = true`) |
+| An NVIDIA card whose driver is too old for CUDA | Vulkan, and tells you to update the driver |
+| An AMD or Intel graphics card | Vulkan with the small model (Windows does not report their memory; turn `lite` off in Settings if the card has 12 GB or more) |
+| Only integrated graphics, or no card | CPU with the small model; it warns if memory is low |
+
+It asks: whether to use that recommendation (if not, which build and which model), whether to add the OCR reading model (about 1.8 GB, only offered with the full model) and the Korean voice (about 2.5 GB, off unless you say yes), then shows what will be downloaded, how much, and whether the disk has room. Nothing is installed before you confirm, and ending the input (Ctrl+D) cancels. It writes your choices into `config.toml` (an existing file keeps its comments and other settings), installs, and finishes with the full check. A step that fails (usually the network) does not stop the others; run `maru setup` again and it skips what is already installed.
+
+`maru setup wizard --dry-run` shows what it found and what it would do, without changing anything. `--yes` takes every recommendation without asking, `--backend cuda|vulkan|cpu` replaces the recommended llama.cpp build, and `--force` downloads llama.cpp again even if a `llama-server` already works (needed to switch a PC from one build to another; quit Maru first). Each step is also its own command (`maru setup llm`, `kiwi`, `ocr`, `ocr-vl`, `tts`, and `maru dict download`) if you prefer to run them yourself.
+
+The model on another PC is not part of the wizard; set it up afterwards in **Settings → Translation model** (below).
 
 Optional: `maru setup tts` (a local Korean voice, see **Speech** below) and the AnkiConnect add-on if you use Anki.
 
-### Without an NVIDIA GPU (or on a second PC)
+### Choosing the build yourself, and PCs without an NVIDIA GPU
 
-Only one thing is tied to NVIDIA: `maru setup llm` downloads llama.cpp's **CUDA** build by default. Tell it what the machine has:
+The wizard does this for you. By hand: only one thing is tied to NVIDIA, because `maru setup llm` downloads llama.cpp's **CUDA** build by default (the newest one your NVIDIA driver can run). Tell it what the machine has:
 
 | This PC has | Run | What to expect |
 |---|---|---|

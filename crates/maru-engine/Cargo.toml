@@ -27,13 +27,13 @@ tokio.workspace = true
 tokio-util.workspace = true
 lru.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 image.workspace = true
 rusqlite.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
 maru-llm = { workspace = true, features = ["testing"] }
 
 # ONNX Runtime: bundled on Windows (the supported platform), located at run time elsewhere.

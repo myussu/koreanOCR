@@ -4,6 +4,7 @@ mod render;
 mod setup;
 mod tools;
 mod tts;
+mod wizard;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -125,9 +126,11 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         sentences: Option<PathBuf>,
     },
-    /// Install things Maru does not bundle.
-    #[command(subcommand)]
-    Setup(SetupCommand),
+    /// Install what Maru needs: with no subcommand, a wizard that picks it for this PC.
+    Setup {
+        #[command(subcommand)]
+        cmd: Option<SetupCommand>,
+    },
     /// Offline dictionary.
     #[command(subcommand)]
     Dict(DictCommand),
@@ -141,6 +144,8 @@ enum Command {
 
 #[derive(Subcommand)]
 enum SetupCommand {
+    /// Look at this PC, recommend what to install, and install it (this is what plain `maru setup` runs).
+    Wizard(wizard::WizardArgs),
     /// Korean morphological analyser (accurate grammar breakdown).
     Kiwi {
         /// A specific Kiwi release, e.g. v0.22.2 (default: the newest with files for this platform).
@@ -567,8 +572,9 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             tts::eval(&paths, &cfg, tts::EvalOptions { out, voices: voice, endpoint, api_key, model, language, instructions, sentences_file: sentences }).await?;
             Ok(0)
         }
-        Command::Setup(cmd) => {
-            match cmd {
+        Command::Setup { cmd } => {
+            match cmd.unwrap_or(SetupCommand::Wizard(wizard::WizardArgs::default())) {
+                SetupCommand::Wizard(args) => return wizard::run(&paths, args).await,
                 SetupCommand::Kiwi { release } => setup::kiwi(&paths, release).await?,
                 SetupCommand::Ocr { from_dir, base_url, det_url, rec_url, dict_url } => {
                     setup::ocr(&paths, &cfg, setup::OcrSources { from_dir, base_url, det_url, rec_url, dict_url }).await?
@@ -579,7 +585,8 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     println!("Compare it on your own screenshots: maru eval-ocr <folder> --engine paddle hybrid");
                 }
                 SetupCommand::Tts { small, server_url, no_test } => tts::setup(&paths, &cfg, tts::SetupOptions { small, server_url, no_test }).await?,
-                SetupCommand::Llm { backend, cuda, force } => setup::llm(&paths, &cfg, backend, cuda, force).await?,
+                // With `lite` on, the model to fetch is the small one that will actually run.
+                SetupCommand::Llm { backend, cuda, force } => setup::llm(&paths, &cfg.clone().effective().0, backend, cuda, force).await?,
             }
             Ok(0)
         }
@@ -587,14 +594,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             paths.ensure()?;
             let dict = maru_dict::Dictionary::open(&paths.dict_db())?;
             match cmd {
-                DictCommand::Download { url } => {
-                    let url = url.unwrap_or_else(|| setup::KAIKKI_KOREAN_URL.to_string());
-                    let tmp = paths.data_dir.join("kaikki-korean.jsonl");
-                    setup::download(&url, &tmp, "Korean dictionary").await?;
-                    let stats = import_jsonl(&dict, &tmp)?;
-                    std::fs::remove_file(&tmp).ok();
-                    println!("Imported {} entries ({} inflected forms; {} lines skipped).", stats.entries, stats.forms, stats.skipped);
-                }
+                DictCommand::Download { url } => download_dictionary(&paths, &dict, url).await?,
                 DictCommand::Import { kaikki } => {
                     let stats = import_jsonl(&dict, &kaikki)?;
                     println!("Imported {} entries ({} inflected forms; {} lines skipped).", stats.entries, stats.forms, stats.skipped);
@@ -651,11 +651,45 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
     }
 }
 
+/// Fetch the Wiktionary Korean extract and import it.
+async fn download_dictionary(paths: &Paths, dict: &maru_dict::Dictionary, url: Option<String>) -> Result<()> {
+    let url = url.unwrap_or_else(|| setup::KAIKKI_KOREAN_URL.to_string());
+    let tmp = paths.data_dir.join("kaikki-korean.jsonl");
+    setup::download(&url, &tmp, "Korean dictionary").await?;
+    let stats = import_jsonl(dict, &tmp)?;
+    std::fs::remove_file(&tmp).ok();
+    println!("Imported {} entries ({} inflected forms; {} lines skipped).", stats.entries, stats.forms, stats.skipped);
+    Ok(())
+}
+
 fn import_jsonl(dict: &maru_dict::Dictionary, path: &std::path::Path) -> Result<maru_dict::ImportStats> {
     let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
     let total = file.metadata().map(|m| m.len()).unwrap_or(0);
     eprintln!("Importing {} ({:.0} MB) …", path.display(), total as f64 / 1_048_576.0);
     Ok(dict.import_kaikki(std::io::BufReader::new(file), |n| eprint!("\r  {n} entries   "))?)
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use clap::{CommandFactory, Parser};
+
+    use super::*;
+
+    #[test]
+    fn the_command_line_definition_is_valid() {
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn plain_setup_is_the_wizard_and_the_installers_are_still_there() {
+        let wizard = Cli::try_parse_from(["maru", "setup"]).unwrap();
+        assert!(matches!(wizard.command, Command::Setup { cmd: None }));
+        let yes = Cli::try_parse_from(["maru", "setup", "wizard", "--yes", "--backend", "vulkan", "--force"]).unwrap();
+        assert!(matches!(yes.command, Command::Setup { cmd: Some(SetupCommand::Wizard(ref a)) } if a.yes && a.force && a.backend == Some(setup::LlamaBackend::Vulkan)));
+        for args in [["maru", "setup", "llm"].as_slice(), &["maru", "setup", "kiwi"], &["maru", "setup", "ocr"], &["maru", "setup", "ocr-vl"], &["maru", "setup", "tts"]] {
+            assert!(Cli::try_parse_from(args).is_ok(), "{args:?}");
+        }
+    }
 }
 
 #[cfg(test)]
