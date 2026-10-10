@@ -103,6 +103,115 @@ async fn drain(engine: &maru_engine::Engine, capture: Capture) -> Drained {
     out
 }
 
+/// What a scan found, with every label update applied.
+#[derive(Debug, Default)]
+pub struct ScanReport {
+    pub items: Vec<maru_core::ScanItem>,
+    pub errors: Vec<String>,
+    pub timings: Vec<(Stage, u32)>,
+}
+
+/// Read a scan's events to the end and fold the label updates into the items.
+pub async fn collect_scan(mut rx: maru_engine::EventRx) -> ScanReport {
+    let mut report = ScanReport::default();
+    while let Some(e) = rx.recv().await {
+        match e {
+            Event::ScanItems { items, .. } => report.items = items,
+            Event::ScanLabel { item, label, source, .. } => {
+                if let Some(it) = report.items.iter_mut().find(|i| i.item == item) {
+                    it.label = label;
+                    it.source = source;
+                }
+            }
+            Event::Timing { stage, ms, .. } => report.timings.push((stage, ms)),
+            Event::Error { message, .. } => report.errors.push(message),
+            Event::Done { .. } => break,
+            _ => {}
+        }
+    }
+    report
+}
+
+fn source_word(s: maru_core::LabelSource) -> &'static str {
+    use maru_core::LabelSource::*;
+    match s {
+        Pending => "-",
+        Dictionary => "dictionary",
+        Cache => "remembered",
+        Glossary => "glossary",
+        Model => "model",
+    }
+}
+
+/// The scan as a table, one row per piece of text, top to bottom.
+pub fn format_scan(report: &ScanReport) -> String {
+    let mut out = String::new();
+    let clip = |s: &str, n: usize| -> String {
+        let mut t: String = s.chars().take(n).collect();
+        if s.chars().count() > n {
+            t.push('…');
+        }
+        t
+    };
+    out.push_str(&format!("{} Korean text item(s) found\n\n", report.items.len()));
+    if !report.items.is_empty() {
+        out.push_str(&format!("  {:>3}  {:<19} {:<28} {:<26} {}\n", "#", "position", "text", "label", "source"));
+    }
+    for it in &report.items {
+        let pos = format!("{:.0},{:.0} {:.0}×{:.0}", it.rect.x, it.rect.y, it.rect.w, it.rect.h);
+        let known = if it.known { " (known)" } else { "" };
+        out.push_str(&format!("  {:>3}  {:<19} {:<28} {:<26} {}{}\n", it.item, pos, clip(&it.text, 26), clip(&it.label, 24), source_word(it.source), known));
+    }
+    let ms = |stage: Stage| report.timings.iter().find(|(s, _)| *s == stage).map(|(_, ms)| *ms);
+    let mut times = Vec::new();
+    for (name, stage) in [("capture", Stage::Capture), ("OCR", Stage::Ocr), ("first label", Stage::FirstToken), ("total", Stage::Total)] {
+        if let Some(v) = ms(stage) {
+            times.push(format!("{name} {v} ms"));
+        }
+    }
+    if !times.is_empty() {
+        out.push_str(&format!("\n{}\n", times.join(" · ")));
+    }
+    for e in &report.errors {
+        out.push_str(&format!("note: {e}\n"));
+    }
+    out
+}
+
+/// A copy of `image` with each found text outlined: green = labelled by the model (or remembered / glossary),
+/// blue = dictionary meaning only, orange = no label yet.
+pub fn draw_scan(image: &image::RgbImage, items: &[maru_core::ScanItem]) -> image::RgbImage {
+    use maru_core::LabelSource::*;
+    let mut out = image.clone();
+    let (w, h) = (out.width() as i32, out.height() as i32);
+    for it in items {
+        let color = match it.source {
+            Model | Cache | Glossary => image::Rgb([40, 200, 90]),
+            Dictionary => image::Rgb([60, 130, 255]),
+            Pending => image::Rgb([255, 150, 30]),
+        };
+        let (x0, y0) = (it.rect.x.floor() as i32, it.rect.y.floor() as i32);
+        let (x1, y1) = ((it.rect.x + it.rect.w).ceil() as i32, (it.rect.y + it.rect.h).ceil() as i32);
+        for t in 0..2 {
+            for x in x0..=x1 {
+                for y in [y0 + t, y1 - t] {
+                    if (0..w).contains(&x) && (0..h).contains(&y) {
+                        out.put_pixel(x as u32, y as u32, color);
+                    }
+                }
+            }
+            for y in y0..=y1 {
+                for x in [x0 + t, x1 - t] {
+                    if (0..w).contains(&x) && (0..h).contains(&y) {
+                        out.put_pixel(x as u32, y as u32, color);
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
 pub async fn doctor(services: &mut Services, deep: bool) -> Result<()> {
     println!("Maru — environment check\n");
     println!("config:  {}", services.paths.config_file.display());
@@ -286,6 +395,44 @@ mod tests {
         assert!((found - 0.5).abs() < 1e-9 && (extra - 0.5).abs() < 1e-9);
         assert_eq!(overlap("", ""), (1.0, 0.0));
         assert_eq!(overlap("가", ""), (0.0, 0.0));
+    }
+
+    fn scan_item(n: u32, text: &str, label: &str, source: maru_core::LabelSource) -> maru_core::ScanItem {
+        maru_core::ScanItem { item: n, rect: maru_core::Rect::new(10.0 * n as f32, 20.0, 60.0, 18.0), text: text.into(), label: label.into(), source, known: false }
+    }
+
+    #[tokio::test]
+    async fn scan_events_are_folded_into_one_report() {
+        use maru_core::LabelSource::*;
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        for e in [
+            Event::ScanStarted { id: 1, screen: maru_core::Rect::new(0.0, 0.0, 100.0, 100.0) },
+            Event::ScanItems { id: 1, items: vec![scan_item(0, "인벤토리", "", Pending), scan_item(1, "학교", "school", Dictionary)] },
+            Event::ScanLabel { id: 1, item: 0, label: "Inventory".into(), source: Model },
+            Event::Timing { id: 1, stage: Stage::Ocr, ms: 900 },
+            Event::Error { id: 1, stage: Stage::Llm, message: "slow".into() },
+            Event::Done { id: 1 },
+        ] {
+            tx.send(e).unwrap();
+        }
+        let report = collect_scan(rx).await;
+        assert_eq!(report.items[0].label, "Inventory");
+        assert_eq!(report.items[1].source, Dictionary);
+        let text = format_scan(&report);
+        assert!(text.contains("2 Korean text item(s) found") && text.contains("Inventory") && text.contains("OCR 900 ms") && text.contains("note: slow"), "{text}");
+    }
+
+    #[test]
+    fn the_outline_colours_say_where_each_label_came_from() {
+        use maru_core::LabelSource::*;
+        let img = image::RgbImage::from_pixel(200, 60, image::Rgb([0, 0, 0]));
+        let marked = draw_scan(&img, &[scan_item(1, "a", "x", Model), scan_item(5, "b", "y", Dictionary), scan_item(9, "c", "", Pending)]);
+        assert_eq!(marked.get_pixel(10, 20), &image::Rgb([40, 200, 90]));
+        assert_eq!(marked.get_pixel(50, 20), &image::Rgb([60, 130, 255]));
+        assert_eq!(marked.get_pixel(90, 20), &image::Rgb([255, 150, 30]));
+        assert_eq!(marked.get_pixel(40, 40), &image::Rgb([0, 0, 0]), "the inside of a box is left alone");
+        // boxes hanging off the picture are clipped, not a panic
+        let _ = draw_scan(&img, &[maru_core::ScanItem { rect: maru_core::Rect::new(190.0, 50.0, 80.0, 40.0), ..scan_item(0, "z", "", Pending) }]);
     }
 
     #[test]

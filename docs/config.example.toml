@@ -1,6 +1,16 @@
 # Maru configuration. Every setting is optional; delete what you do not need.
 # Location: %APPDATA%\maru\Maru\config\config.toml  (run `maru config path` to see yours)
 
+# Run lighter beside a game (also: set the environment variable MARU_LITE=1 for one run).
+# It turns the OCR reading model off, uses one model slot and a smaller context, and swaps in the
+# smaller translation model below (about 2.5 GB less memory; the first start downloads it).
+lite = false
+
+[lite_profile]
+hf_repo  = "unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL"   # "" keeps your [llm] model
+ctx_size = 3072
+parallel = 1
+
 [hotkeys]
 # Every action takes several keys, separated by "|". Games often use Ctrl, Shift and Alt, so add a
 # plain key as an alternative, e.g. translate = "Ctrl+Alt+T | F6". Caution: a key registered here

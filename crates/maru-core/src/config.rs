@@ -11,6 +11,11 @@ use crate::types::{Rect, Register};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct Config {
+    /// Run lighter beside a game: no OCR reading model, one model slot, a smaller context and,
+    /// by default, a smaller translation model (see `lite_profile`). `MARU_LITE=1` does the same
+    /// for one run without editing this file.
+    pub lite: bool,
+    pub lite_profile: LiteProfile,
     pub hotkeys: Hotkeys,
     pub llm: LlmConfig,
     pub ocr: OcrConfig,
@@ -22,7 +27,51 @@ pub struct Config {
     pub profiles: Vec<AppProfile>,
 }
 
+/// What the lite profile changes. Applied at start-up, never written back to the file.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LiteProfile {
+    /// Translation model to use instead of `[llm]`'s (about 2.5 GB smaller). Empty keeps the main one.
+    /// Ignored if `[llm]` points at a file or an external server.
+    pub hf_repo: Option<String>,
+    /// Context per slot; scan batches and sentences are short.
+    pub ctx_size: u32,
+    /// Model slots (translation and word meanings run one after the other with 1).
+    pub parallel: u32,
+}
+
+impl Default for LiteProfile {
+    fn default() -> Self {
+        Self { hf_repo: Some("unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL".into()), ctx_size: 3072, parallel: 1 }
+    }
+}
+
 impl Config {
+    /// The configuration to run with: this one, lightened if `lite` is set or `MARU_LITE` asks for it.
+    /// The second value says whether the lite profile was applied.
+    pub fn effective(self) -> (Self, bool) {
+        let env = std::env::var("MARU_LITE").ok();
+        self.effective_with(env.as_deref())
+    }
+
+    fn effective_with(mut self, env: Option<&str>) -> (Self, bool) {
+        let asked = matches!(env.map(|v| v.trim().to_ascii_lowercase()).as_deref(), Some("1" | "true" | "yes" | "on"));
+        if !(self.lite || asked) {
+            return (self, false);
+        }
+        let lite = self.lite_profile.clone();
+        self.ocr.vision_reader = false;
+        self.llm.parallel = lite.parallel.max(1);
+        self.llm.ctx_size = lite.ctx_size.max(512);
+        let own_model = self.llm.model_path.is_some() || self.llm.endpoint.is_some();
+        if let Some(repo) = lite.hf_repo.filter(|r| !r.trim().is_empty())
+            && !own_model
+        {
+            self.llm.hf_repo = Some(repo);
+        }
+        (self, true)
+    }
+
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read_to_string(path) {
             Ok(text) => toml::from_str(&text).map_err(|e| Error::Config(format!("{}: {e}", path.display()))),
@@ -413,6 +462,59 @@ mod tests {
         assert_eq!(c.llm.hf_repo.as_deref(), Some("unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"));
         assert_eq!(c.profile_for("mygame.exe").unwrap().glossary["이도현"], "Lee Do-hyun");
         assert_eq!(c.profiles[0].gloss_mode, Some(GlossMode::All));
+        assert!(!c.lite, "the example documents lite mode but leaves it off");
+        assert_eq!(c.lite_profile, LiteProfile::default(), "the documented lite values are the real defaults");
+    }
+
+    #[test]
+    fn lite_mode_lightens_the_run_and_leaves_normal_runs_alone() {
+        let normal = Config::default();
+        let (same, applied) = normal.clone().effective_with(None);
+        assert!(!applied && same == normal);
+        for off in ["0", "false", "", "no"] {
+            assert!(!normal.clone().effective_with(Some(off)).1, "{off:?} is not a yes");
+        }
+
+        let (lite, applied) = normal.clone().effective_with(Some(" TRUE "));
+        assert!(applied);
+        assert!(!lite.ocr.vision_reader, "no OCR reading model (about 2 GB of VRAM)");
+        assert_eq!((lite.llm.parallel, lite.llm.ctx_size), (1, 3072));
+        assert_eq!(lite.llm.hf_repo.as_deref(), Some("unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL"));
+        assert_eq!(lite.hotkeys, normal.hotkeys, "nothing else changes");
+
+        // the file's own setting also turns it on, with no environment variable
+        let (from_file, applied) = Config { lite: true, ..normal }.effective_with(None);
+        assert!(applied && !from_file.ocr.vision_reader);
+    }
+
+    #[test]
+    fn lite_mode_respects_a_model_you_chose_yourself() {
+        let mut pinned = Config { lite: true, ..Default::default() };
+        pinned.llm.model_path = Some("D:/models/mine.gguf".into());
+        let (lite, _) = pinned.clone().effective_with(None);
+        assert_eq!(lite.llm.hf_repo, None, "an explicit model file is never swapped");
+        let mut external = Config { lite: true, ..Default::default() };
+        external.llm.endpoint = Some("http://127.0.0.1:1234".into());
+        assert_eq!(external.effective_with(None).0.llm.hf_repo, None, "nor is an external server");
+
+        let mut keep = Config { lite: true, ..Default::default() };
+        keep.lite_profile.hf_repo = Some("  ".into());
+        keep.llm.hf_repo = Some("a/b:Q4".into());
+        assert_eq!(keep.effective_with(None).0.llm.hf_repo.as_deref(), Some("a/b:Q4"), "an empty lite model keeps the main one");
+    }
+
+    /// `remember_region` and friends rewrite the file; a plain key before the tables must survive that.
+    #[test]
+    fn saving_and_loading_round_trips_including_the_lite_keys() {
+        let path = std::env::temp_dir().join(format!("maru-config-roundtrip-{}.toml", std::process::id()));
+        let mut c = Config { lite: true, ..Default::default() };
+        c.continuous.region = Some(Rect::new(10.0, 20.0, 300.0, 80.0));
+        c.lite_profile.ctx_size = 2048;
+        c.save(&path).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.trim_start().starts_with("lite = true"), "plain keys come before tables:\n{text}");
+        assert_eq!(Config::load(&path).unwrap(), c);
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

@@ -114,6 +114,8 @@ pub struct Status {
     pub ocr_reader: String,
     /// Screen labels (from a scan) are showing.
     pub scan_visible: bool,
+    /// The lite (game) profile is in effect.
+    pub lite: bool,
 }
 
 #[derive(Serialize)]
@@ -143,6 +145,7 @@ pub fn status(state: S) -> Status {
         hotkeys: e.config().hotkeys.clone(),
         vocab: e.vocab_stats().ok().map(|s| VocabCounts { total: s.total, saved: s.saved, known: s.known, due_now: s.due_now }),
         scan_visible: state.scan().visible,
+        lite: state.services.lite,
         hover_mode: state.panel().hover_mode,
         live_mode,
         live_area: if live_mode { state.live_region() } else { None },

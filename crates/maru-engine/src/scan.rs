@@ -119,9 +119,19 @@ fn needs_model(items: &[ScanItem]) -> Vec<(String, String, Vec<u32>)> {
     groups
 }
 
-pub(crate) async fn run(inner: Arc<Inner>, id: u64, screen: Rect, tx: EventTx) {
+/// What a scan reads: the live screen, or a picture of one (screenshots, for `maru scan`).
+pub(crate) enum Source {
+    Screen(Rect),
+    Image(image::RgbImage),
+}
+
+pub(crate) async fn run(inner: Arc<Inner>, id: u64, source: Source, tx: EventTx) {
     let em = Emitter::new(tx, id);
     let started = Instant::now();
+    let screen = match &source {
+        Source::Screen(r) => *r,
+        Source::Image(img) => Rect::new(0.0, 0.0, img.width() as f32, img.height() as f32),
+    };
     em.send(Event::ScanStarted { id, screen });
 
     let Some(ocr) = inner.scan_ocr.clone().or_else(|| inner.ocr.clone()) else {
@@ -134,12 +144,20 @@ pub(crate) async fn run(inner: Arc<Inner>, id: u64, screen: Rect, tx: EventTx) {
     let read = {
         let inner = inner.clone();
         tokio::task::spawn_blocking(move || -> Result<(OcrOutput, std::time::Duration, std::time::Duration), String> {
-            let area = clip(screen, inner.platform.screen.screen_bounds());
-            if area.is_empty() {
-                return Err(format!("the area {screen:?} is outside the screen"));
-            }
             let t = Instant::now();
-            let image = inner.platform.screen.grab(area).map_err(|e| e.to_string())?;
+            let (image, area) = match source {
+                Source::Screen(wanted) => {
+                    let area = clip(wanted, inner.platform.screen.screen_bounds());
+                    if area.is_empty() {
+                        return Err(format!("the area {wanted:?} is outside the screen"));
+                    }
+                    (inner.platform.screen.grab(area).map_err(|e| e.to_string())?, area)
+                }
+                Source::Image(image) => {
+                    let area = Rect::new(0.0, 0.0, image.width() as f32, image.height() as f32);
+                    (image, area)
+                }
+            };
             let grab = t.elapsed();
             let t = Instant::now();
             let out = ocr.recognize(&image).map_err(|e| e.to_string())?;

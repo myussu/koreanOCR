@@ -42,6 +42,8 @@ pub struct Services {
     pub paths: Paths,
     /// Human-readable status lines, one per notable decision or problem.
     pub notes: Vec<String>,
+    /// The lite profile is in effect.
+    pub lite: bool,
     /// Updates as the model loads.
     pub llm_status: watch::Receiver<LlmStatus>,
     /// Updates as the OCR reading model (PaddleOCR-VL) loads; `Disabled` when it is not in use.
@@ -273,6 +275,15 @@ fn choose_ocr(cfg: &Config, paths: &Paths, platform: &Platform, notes: &mut Vec<
 /// Build the engine. Never fails: problems become entries in [`Services::notes`].
 pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
     let mut notes = Vec::new();
+    let (cfg, lite) = cfg.effective();
+    if lite {
+        notes.push(format!(
+            "Lite profile: no OCR reading model, {} model slot(s), context {}{}.",
+            cfg.llm.parallel,
+            cfg.llm.ctx_size,
+            cfg.llm.hf_repo.as_deref().map(|r| format!(", translation model {r}")).unwrap_or_default()
+        ));
+    }
     if let Err(e) = paths.ensure() {
         notes.push(format!("Could not create {}: {e}", paths.data_dir.display()));
     }
@@ -444,7 +455,7 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         });
     }
 
-    Services { engine, paths, notes, llm_status: status_rx, vision_status: vision_rx, server, vision_server }
+    Services { engine, paths, notes, lite, llm_status: status_rx, vision_status: vision_rx, server, vision_server }
 }
 
 /// Convenience: `<MARU_HOME or platform dir>/config.toml` → [`Config`].

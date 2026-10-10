@@ -52,9 +52,22 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 | `Ctrl+Alt+H` | hover mode: rest the pointer on a Korean word for its meaning |
 | `Ctrl+Alt+C` | live mode for subtitles and dialogue boxes (translates when the text changes), on the last chosen area |
 | `Ctrl+Alt+Shift+C` | choose a different live-mode area (and start it there) |
+| `Ctrl+Alt+S` | label every Korean text on the screen (game menus, HUDs); press again to rescan |
+| `Ctrl+Alt+L` | history, review and status |
+| `Ctrl+Alt+Esc` | hide the panel and all screen labels |
 
 Each action accepts several keys separated by `|` in `config.toml` (e.g. `translate = "Ctrl+Alt+T | F6"`), which helps in games that use Ctrl/Shift/Alt. A registered key is taken from every program while Maru runs, so pick ones you don't use (see `docs/config.example.toml`). `Status` shows which toggles are on, and the tray icon's tooltip lists them too.
-| `Ctrl+Alt+L` | history, review and status |
+
+## Game menus: screen labels
+
+Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless-windowed games; an exclusive-fullscreen game cannot be drawn over), finds every piece of Korean text, and puts a short English label beside each.
+
+* **Fast the second time.** The dictionary's meaning appears at once; labels you have seen before come back instantly from a local memory (`labels.db`, kept per game); only genuinely new strings go to the model, in one batched request that streams in line by line. Words you already know are faded (or hidden, per `gloss_mode`).
+* **Dense menus.** Each label tries positions around its text and avoids covering any other text or label; if there is no room it shrinks, and as a last resort becomes a dot that opens when you point at it.
+* **Stays out of the game's way.** The label layer ignores the mouse everywhere except directly over a label. Click a label for its breakdown (a single word opens its deep dive); hover for a small **×** (or right-click) to delete one that is in the way; `Ctrl+Alt+Esc` clears everything.
+* **Fixed translations.** Put game terms in an app profile's `glossary` and they are used verbatim and never sent to the model.
+* **Try it on a screenshot first:** `maru scan menu.png --boxes found.png` lists what is found and labelled, and outlines it, without any overlay.
+* **Lighter beside a game.** `lite = true` in `config.toml` (or `MARU_LITE=1` for one run) turns the OCR reading model off and swaps in a smaller translation model; see `[lite_profile]`.
 
 ## The command line
 

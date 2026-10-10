@@ -245,7 +245,17 @@ impl Engine {
         let id = self.next_id();
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = self.inner.clone();
-        self.spawn_into(&self.inner.scan_task, crate::scan::run(inner, id, screen, tx));
+        self.spawn_into(&self.inner.scan_task, crate::scan::run(inner, id, crate::scan::Source::Screen(screen), tx));
+        (id, rx)
+    }
+
+    /// The same as [`Engine::scan`], on a picture of a screen (a screenshot) instead of the live one.
+    /// Coordinates in the events are the picture's own pixels.
+    pub fn scan_image(&self, image: image::RgbImage) -> (u64, EventRx) {
+        let id = self.next_id();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let inner = self.inner.clone();
+        self.spawn_into(&self.inner.scan_task, crate::scan::run(inner, id, crate::scan::Source::Image(image), tx));
         (id, rx)
     }
 

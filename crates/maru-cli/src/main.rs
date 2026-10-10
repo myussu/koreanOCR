@@ -64,6 +64,16 @@ enum Command {
         #[arg(short = 'n', long, default_value_t = 3)]
         runs: usize,
     },
+    /// Read a screenshot the way the screen scan does: list every Korean text found and how it is labelled.
+    Scan {
+        image: PathBuf,
+        /// Also write a copy of the image with the found text outlined (green = labelled, blue = dictionary only, orange = no label).
+        #[arg(long, value_name = "FILE")]
+        boxes: Option<PathBuf>,
+        /// Do not start the language model: dictionary labels only.
+        #[arg(long)]
+        no_llm: bool,
+    },
     /// Score OCR engines on your own screenshots (name.png + name.txt pairs).
     EvalOcr {
         dir: PathBuf,
@@ -397,6 +407,22 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             let mut s = services(&paths, cfg, true).await;
             tools::bench(&mut s, sentences, runs.max(1)).await?;
             Ok(0)
+        }
+        Command::Scan { image, boxes, no_llm } => {
+            let picture = image::open(&image).with_context(|| format!("opening {}", image.display()))?.to_rgb8();
+            let mut s = services(&paths, cfg, !no_llm).await;
+            if !no_llm && s.engine.has_llm() {
+                eprintln!("Waiting for the language model …");
+                s.wait_for_llm().await;
+            }
+            let report = tools::collect_scan(s.engine.scan_image(picture.clone()).1).await;
+            print!("{}", tools::format_scan(&report));
+            if let Some(path) = boxes {
+                tools::draw_scan(&picture, &report.items).save(&path).with_context(|| format!("writing {}", path.display()))?;
+                println!("\nOutlines written to {}", path.display());
+            }
+            // Nothing read *because* something is wrong is a failure; an honestly empty screen is not.
+            Ok(if report.items.is_empty() && !report.errors.is_empty() { 1 } else { 0 })
         }
         Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt } => {
             use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};

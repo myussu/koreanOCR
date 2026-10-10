@@ -647,6 +647,16 @@ mod scan {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_screenshot_can_be_scanned_exactly_like_the_screen() {
+        let s = setup(vec![line("인벤토리", 100.0, 100.0)], true, |_| {}, None).await;
+        let events = collect(s.engine.scan_image(image::RgbImage::new(800, 600)).1).await;
+        let started = events.iter().find_map(|e| if let Event::ScanStarted { screen, .. } = e { Some(*screen) } else { None }).unwrap();
+        assert_eq!(started, Rect::new(0.0, 0.0, 800.0, 600.0), "a picture is its own coordinate space");
+        assert_eq!(items_of(&events)[0].rect.x, 100.0);
+        assert_eq!(model_labels(&events), vec![(0, "Inventory".to_string())]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn no_ocr_engine_is_reported_not_hidden() {
         let server = spawn_mock(labeller).await;
         let cfg = Config::default();
