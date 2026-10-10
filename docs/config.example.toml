@@ -25,6 +25,7 @@ context_lines = 4     # how many previous lines the model sees for continuity
 [ocr]
 backend = "auto"      # auto | paddle | windows
 device  = "cpu"       # cpu | cuda:0 | directml:0  (GPU needs a build with that feature)
+vision_reader = true  # pair PP-OCR with PaddleOCR-VL when installed (`maru setup ocr-vl`); ~2 GB VRAM
 
 [learning]
 gloss_mode = "fade_known"    # all | fade_known | hide_known

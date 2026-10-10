@@ -118,6 +118,8 @@ enum SetupCommand {
         #[arg(long)]
         dict_url: Option<String>,
     },
+    /// PaddleOCR-VL, the reading model that makes OCR text noticeably more accurate (about 1.8 GB).
+    OcrVl,
     /// llama.cpp server, and the model configured in [llm].
     Llm {
         #[arg(long, value_enum, default_value = "cuda")]
@@ -222,7 +224,14 @@ fn load_pp_ocr(s: &Services, paths: &Paths) -> Option<(String, Arc<dyn maru_ocr:
     }
 }
 
-const PADDLE_VL_REPO: &str = "PaddlePaddle/PaddleOCR-VL-1.5-GGUF";
+/// Download PaddleOCR-VL's files (skipping any already there).
+async fn fetch_paddle_vl(paths: &Paths) -> Result<()> {
+    let dir = maru_engine::vision::model_dir(paths);
+    for file in maru_engine::vision::FILES {
+        fetch_hf(maru_engine::vision::REPO, file, &dir).await.with_context(|| format!("downloading {file}"))?;
+    }
+    Ok(())
+}
 
 /// Download `file` from a Hugging Face repo into `dir` unless it is already there.
 async fn fetch_hf(repo: &str, file: &str, dir: &std::path::Path) -> Result<PathBuf> {
@@ -241,35 +250,13 @@ fn with_args(base: &maru_core::config::LlmConfig, args: &[String], extra: &[Stri
     c
 }
 
-/// How to launch PaddleOCR-VL, most likely to work first.
-///
-/// The repo's files carry no quantisation label, so llama.cpp's `-hf` lookup cannot be trusted
-/// to pick them; the model card itself starts the server with explicit `-m … --mmproj … --temp 0`.
-/// The second plan adds the chat template shipped in the repo (older llama.cpp builds crashed without it).
-async fn paddle_vl_attempts(paths: &Paths, base: &maru_core::config::LlmConfig, extra: &[String]) -> Vec<maru_core::config::LlmConfig> {
-    let dir = paths.models_dir.join("vlm").join("paddleocr-vl-1.5");
-    let files = async {
-        let model = fetch_hf(PADDLE_VL_REPO, "PaddleOCR-VL-1.5.gguf", &dir).await?;
-        let mmproj = fetch_hf(PADDLE_VL_REPO, "PaddleOCR-VL-1.5-mmproj.gguf", &dir).await?;
-        let template = fetch_hf(PADDLE_VL_REPO, "chat_template.jinja", &dir).await?;
-        Ok::<_, anyhow::Error>((model, mmproj, template))
-    };
-    let (model, mmproj, template) = match files.await {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("(could not download PaddleOCR-VL: {e:#})");
-            return Vec::new();
-        }
-    };
-    let mut base = base.clone();
-    base.model_path = Some(model);
-    base.parallel = 1;
-    base.ctx_size = 8192;
-    let common = ["--mmproj".to_string(), mmproj.display().to_string(), "--temp".into(), "0".into()];
-    let mut with_template = with_args(&base, &common, extra);
-    with_template.extra_args.extend(["--jinja".to_string(), "--chat-template-file".into(), template.display().to_string()]);
-    with_template.flash_attn = false;
-    vec![with_args(&base, &common, extra), with_template]
+/// How to launch PaddleOCR-VL (downloading it first if needed): see [`maru_engine::vision`].
+async fn paddle_vl_attempts(paths: &Paths, llm: &maru_core::config::LlmConfig, extra: &[String]) -> Vec<maru_core::config::LlmConfig> {
+    if let Err(e) = fetch_paddle_vl(paths).await {
+        eprintln!("(could not download PaddleOCR-VL: {e:#})");
+        return Vec::new();
+    }
+    maru_engine::vision::launch_plans(paths, llm, extra)
 }
 
 /// How to launch the general vision model (Gemma 4 by default).
@@ -448,7 +435,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     EngineArg::Hybrid => {
                         let Some((_, detector)) = load_pp_ocr(&s, &paths) else { continue };
                         println!("Preparing PaddleOCR-VL-1.5 for the hybrid engine (the first run downloads the model) …");
-                        let attempts = paddle_vl_attempts(&paths, &vlm_cfg, &extra).await;
+                        let attempts = paddle_vl_attempts(&paths, &s.engine.config().llm, &extra).await;
                         match start_vision_server("PaddleOCR-VL-1.5", attempts, &paths, SERVER_READY).await {
                             Some((server, cfg)) => {
                                 let reader: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, PADDLE_VL_PROMPT));
@@ -465,7 +452,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         let label = if e == EngineArg::PaddleVl { "PaddleOCR-VL-1.5" } else { "Gemma 4 (vision)" };
                         println!("Preparing {label} (the first run downloads the model; this can take a while) …");
                         let (attempts, prompt) = match e {
-                            EngineArg::PaddleVl => (paddle_vl_attempts(&paths, &vlm_cfg, &extra).await, PADDLE_VL_PROMPT),
+                            EngineArg::PaddleVl => (paddle_vl_attempts(&paths, &s.engine.config().llm, &extra).await, PADDLE_VL_PROMPT),
                             _ => {
                                 let repo = gemma_repo
                                     .clone()
@@ -515,6 +502,11 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 SetupCommand::Kiwi { release } => setup::kiwi(&paths, release).await?,
                 SetupCommand::Ocr { from_dir, base_url, det_url, rec_url, dict_url } => {
                     setup::ocr(&paths, &cfg, setup::OcrSources { from_dir, base_url, det_url, rec_url, dict_url }).await?
+                }
+                SetupCommand::OcrVl => {
+                    fetch_paddle_vl(&paths).await?;
+                    println!("PaddleOCR-VL is installed. Maru starts it automatically next to the translation model (OCR uses it once it has loaded).");
+                    println!("Compare it on your own screenshots: maru eval-ocr <folder> --engine paddle hybrid");
                 }
                 SetupCommand::Llm { backend, cuda } => setup::llm(&paths, &cfg, backend, cuda).await?,
             }
@@ -615,31 +607,6 @@ mod vision_launch_tests {
 
     fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
         args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
-    }
-
-    #[tokio::test]
-    async fn paddle_vl_starts_like_the_model_card_then_retries_with_the_chat_template() {
-        let paths = scratch("paddle");
-        seeded(
-            &paths.models_dir.join("vlm").join("paddleocr-vl-1.5"),
-            &["PaddleOCR-VL-1.5.gguf", "PaddleOCR-VL-1.5-mmproj.gguf", "chat_template.jinja"],
-        );
-        let base = maru_core::config::LlmConfig { vision: true, ..Default::default() };
-        let plans = paddle_vl_attempts(&paths, &base, &["--no-warmup".to_string()]).await;
-        assert_eq!(plans.len(), 2);
-
-        let first = maru_llm::build_args(&plans[0], &maru_llm::ModelSource::from_config(&plans[0]).unwrap());
-        assert!(flag(&first, "-m").unwrap().ends_with("PaddleOCR-VL-1.5.gguf"), "{first:?}");
-        assert!(flag(&first, "--mmproj").unwrap().ends_with("PaddleOCR-VL-1.5-mmproj.gguf"));
-        assert_eq!(flag(&first, "--temp"), Some("0"));
-        assert_eq!(flag(&first, "-np"), Some("1"));
-        assert!(first.contains(&"--no-warmup".to_string()), "user arguments are kept");
-        assert!(!first.contains(&"--chat-template-file".to_string()));
-
-        let second = maru_llm::build_args(&plans[1], &maru_llm::ModelSource::from_config(&plans[1]).unwrap());
-        assert!(flag(&second, "--chat-template-file").unwrap().ends_with("chat_template.jinja"));
-        assert!(second.contains(&"--jinja".to_string()));
-        assert_eq!(flag(&second, "-fa"), Some("off"), "the fallback also drops flash attention");
     }
 
     #[tokio::test]

@@ -27,6 +27,7 @@ maru config init      # writes the config file (with the model below); `maru con
 maru setup llm        # installs llama-server and downloads the model
 maru setup kiwi       # accurate Korean grammar analysis; each candidate (Kiwi >= 0.23) is self-tested in a child process before it is trusted
 maru setup ocr        # OCR models for images/video/games
+maru setup ocr-vl     # optional, ~1.8 GB: a reading model that fixes most of PP-OCR's misread letters
 maru dict download    # offline dictionary (Wiktionary)
 maru doctor --deep    # checks everything, runs a real translation
 

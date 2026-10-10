@@ -5,6 +5,7 @@
 //! (shown by `maru doctor` and in the overlay's status line); the rest keeps working.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -19,6 +20,9 @@ use maru_srs::{SrsConfig, Vocab};
 use tokio::sync::watch;
 
 use crate::engine::{Engine, EngineParts};
+use crate::hybrid_ocr::HybridOcr;
+use crate::vision;
+use crate::vlm_ocr::{PADDLE_VL_PROMPT, VlmOcr};
 
 #[derive(Debug, Clone, Copy)]
 pub struct BootOptions {
@@ -40,8 +44,12 @@ pub struct Services {
     pub notes: Vec<String>,
     /// Updates as the model loads.
     pub llm_status: watch::Receiver<LlmStatus>,
+    /// Updates as the OCR reading model (PaddleOCR-VL) loads; `Disabled` when it is not in use.
+    pub vision_status: watch::Receiver<LlmStatus>,
     /// Keeps `llama-server` alive; it is killed when `Services` is dropped.
     server: Arc<Mutex<Option<LlamaServer>>>,
+    /// Same, for the OCR reading model.
+    vision_server: Arc<Mutex<Option<LlamaServer>>>,
 }
 
 impl Services {
@@ -51,6 +59,16 @@ impl Services {
     pub async fn wait_for_llm(&mut self) -> LlmStatus {
         let _ = self.llm_status.wait_for(|s| !matches!(s, LlmStatus::Starting)).await;
         self.llm_status()
+    }
+    pub fn vision_status(&self) -> LlmStatus {
+        self.vision_status.borrow().clone()
+    }
+    pub async fn wait_for_vision(&mut self) -> LlmStatus {
+        let _ = self.vision_status.wait_for(|s| !matches!(s, LlmStatus::Starting)).await;
+        self.vision_status()
+    }
+    pub fn vision_server_running(&self) -> bool {
+        self.vision_server.lock().map(|s| s.is_some()).unwrap_or(false)
     }
     pub fn llm_server_running(&self) -> bool {
         self.server.lock().map(|s| s.is_some()).unwrap_or(false)
@@ -311,6 +329,28 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         .map(|o| crate::respace::RespacingOcr::wrap(o, &analyzer))
     };
 
+    // Vision reader: PP-OCR finds the lines, PaddleOCR-VL reads them better. It loads in the
+    // background; until it is ready (or if it never is) the gate makes OCR plain PP-OCR.
+    let (vision_tx, vision_rx) = watch::channel(LlmStatus::Disabled);
+    let vision_server: Arc<Mutex<Option<LlamaServer>>> = Arc::new(Mutex::new(None));
+    let vision_ready = Arc::new(AtomicBool::new(false));
+    let use_vision = opts.start_llm && cfg.ocr.vision_reader && ocr.is_some() && vision::installed(&paths);
+    if cfg.ocr.vision_reader && ocr.is_some() && !vision::installed(&paths) && opts.start_llm {
+        notes.push("OCR: PaddleOCR-VL is not installed; run `maru setup ocr-vl` for noticeably more accurate letters.".into());
+    }
+    let ocr = if use_vision {
+        let _ = vision_tx.send(LlmStatus::Starting);
+        notes.push("OCR: PaddleOCR-VL reader is loading in the background (PP-OCR alone until it is ready)".into());
+        ocr.map(|detector| {
+            let url = format!("http://127.0.0.1:{}", vision::PORT);
+            let reader = Arc::new(VlmOcr::new(&url, &vision::base_config(&cfg.llm), PADDLE_VL_PROMPT));
+            let gated = Arc::new(vision::GatedOcr::new(reader, vision_ready.clone()));
+            Arc::new(HybridOcr::new(detector, gated)) as Arc<dyn OcrEngine>
+        })
+    } else {
+        ocr
+    };
+
     // Language model: external endpoint, or our own supervised llama-server.
     let source = ModelSource::from_config(&cfg.llm);
     let (status_tx, status_rx) = watch::channel(LlmStatus::Disabled);
@@ -362,7 +402,27 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         });
     }
 
-    Services { engine, paths, notes, llm_status: status_rx, server }
+    if use_vision {
+        let (paths, llm, server, ready) = (paths.clone(), cfg.llm.clone(), vision_server.clone(), vision_ready.clone());
+        tokio::spawn(async move {
+            let plans = vision::launch_plans(&paths, &llm, &[]);
+            match vision::start(&paths, plans, |_, _| {}).await {
+                Some((s, _)) => {
+                    if let Ok(mut slot) = server.lock() {
+                        *slot = Some(s);
+                    }
+                    ready.store(true, Ordering::Release);
+                    let _ = vision_tx.send(LlmStatus::Ready);
+                }
+                None => {
+                    tracing::warn!("the OCR reading model did not start; OCR stays PP-OCR only");
+                    let _ = vision_tx.send(LlmStatus::Failed("PaddleOCR-VL did not start (run `maru --verbose doctor` for details)".into()));
+                }
+            }
+        });
+    }
+
+    Services { engine, paths, notes, llm_status: status_rx, vision_status: vision_rx, server, vision_server }
 }
 
 /// Convenience: `<MARU_HOME or platform dir>/config.toml` → [`Config`].

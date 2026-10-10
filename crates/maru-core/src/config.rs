@@ -167,8 +167,9 @@ pub struct OcrConfig {
     pub device: String,
     /// Below this mean confidence the text is flagged as uncertain.
     pub min_confidence: f32,
-    /// Ask a vision-language model to re-read low-confidence captures.
-    pub vlm_rescue: bool,
+    /// Pair PP-OCR with the PaddleOCR-VL reading model when it is installed (`maru setup ocr-vl`):
+    /// better letters, same lines. Costs about 2 GB of VRAM; turn off to save it.
+    pub vision_reader: bool,
 }
 
 impl Default for OcrConfig {
@@ -180,7 +181,7 @@ impl Default for OcrConfig {
             dict_path: None,
             device: "cpu".into(),
             min_confidence: 0.80,
-            vlm_rescue: false,
+            vision_reader: true,
         }
     }
 }

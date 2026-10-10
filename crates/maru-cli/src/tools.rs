@@ -140,6 +140,17 @@ pub async fn doctor(services: &mut Services, deep: bool) -> Result<()> {
     } else {
         println!("  • language model: not configured");
     }
+
+    if services.vision_status() != LlmStatus::Disabled {
+        println!("  • OCR reader (PaddleOCR-VL): waiting for it to load …");
+        match tokio::time::timeout(maru_engine::vision::READY_TIMEOUT, services.wait_for_vision()).await {
+            Ok(LlmStatus::Ready) => println!("  • OCR reader (PaddleOCR-VL): ready (OCR now uses PP-OCR + PaddleOCR-VL)"),
+            Ok(LlmStatus::Failed(why)) => println!("  • OCR reader (PaddleOCR-VL): FAILED — {why}; OCR is PP-OCR only"),
+            Ok(other) => println!("  • OCR reader (PaddleOCR-VL): {other:?}"),
+            Err(_) => println!("  • OCR reader (PaddleOCR-VL): still loading"),
+        }
+        debug_assert!(services.vision_server_running() || services.vision_status() != LlmStatus::Ready);
+    }
     Ok(())
 }
 
