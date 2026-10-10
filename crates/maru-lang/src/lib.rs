@@ -65,6 +65,11 @@ impl Analyzer {
         self.primary.name()
     }
 
+    /// `text` with missing spaces inserted, when the analyser can do that (Kiwi can).
+    pub fn respace(&self, text: &str) -> Option<String> {
+        self.primary.respace(text)
+    }
+
     /// Never fails: if the primary analyser errors, the heuristic one answers.
     pub fn analyze(&self, text: &str) -> Analysis {
         let (tokens, analyzer) = match self.primary.tokenize(text) {

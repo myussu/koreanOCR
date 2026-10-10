@@ -151,6 +151,9 @@ impl Engine {
     pub fn config(&self) -> &Config {
         &self.inner.cfg
     }
+    pub fn analyzer(&self) -> maru_lang::Analyzer {
+        self.inner.analyzer.clone()
+    }
     pub fn analyzer_name(&self) -> &'static str {
         self.inner.analyzer.name()
     }

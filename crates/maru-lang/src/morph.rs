@@ -32,4 +32,9 @@ impl RawToken {
 pub trait Morphology: Send + Sync {
     fn name(&self) -> &'static str;
     fn tokenize(&self, text: &str) -> Result<Vec<RawToken>, MorphError>;
+
+    /// The same text with missing spaces inserted (OCR drops them), if this analyser can.
+    fn respace(&self, _text: &str) -> Option<String> {
+        None
+    }
 }

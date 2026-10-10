@@ -12,7 +12,7 @@ use image::RgbImage;
 use maru_core::{Point, Rect, WordBox};
 use thiserror::Error;
 
-pub use geometry::{reading_order, words_from_chars};
+pub use geometry::{reading_order, resplit_words, words_from_chars};
 pub use prep::{Prepared, prepare};
 
 #[derive(Debug, Error)]

@@ -308,6 +308,7 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
             }
             Err(_) => None,
         }
+        .map(|o| crate::respace::RespacingOcr::wrap(o, &analyzer))
     };
 
     // Language model: external endpoint, or our own supervised llama-server.

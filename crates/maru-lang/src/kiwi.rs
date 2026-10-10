@@ -17,6 +17,7 @@ type Reply = mpsc::Sender<Result<Vec<RawToken>, MorphError>>;
 
 enum Request {
     Tokenize(String, Reply),
+    Space(String, mpsc::Sender<Option<String>>),
 }
 
 pub struct KiwiAnalyzer {
@@ -67,17 +68,24 @@ impl KiwiAnalyzer {
                         return;
                     }
                 };
-                while let Ok(Request::Tokenize(text, reply)) = rx.recv() {
-                    let result = kiwi
-                        .tokenize(&text)
-                        .map(|tokens| {
-                            tokens
-                                .into_iter()
-                                .map(|t| RawToken::new(t.form, t.tag, t.position, t.position + t.length.max(1)))
-                                .collect()
-                        })
-                        .map_err(|e| MorphError::Failed(e.to_string()));
-                    let _ = reply.send(result);
+                while let Ok(request) = rx.recv() {
+                    match request {
+                        Request::Tokenize(text, reply) => {
+                            let result = kiwi
+                                .tokenize(&text)
+                                .map(|tokens| {
+                                    tokens
+                                        .into_iter()
+                                        .map(|t| RawToken::new(t.form, t.tag, t.position, t.position + t.length.max(1)))
+                                        .collect()
+                                })
+                                .map_err(|e| MorphError::Failed(e.to_string()));
+                            let _ = reply.send(result);
+                        }
+                        Request::Space(text, reply) => {
+                            let _ = reply.send(kiwi.space(&text, false).ok());
+                        }
+                    }
                 }
             })
             .map_err(|e| MorphError::Unavailable(e.to_string()))?;
@@ -108,5 +116,11 @@ impl Morphology for KiwiAnalyzer {
             .send(Request::Tokenize(text.to_owned(), reply_tx))
             .map_err(|_| MorphError::Unavailable("kiwi thread is gone".into()))?;
         reply_rx.recv().map_err(|_| MorphError::Failed("kiwi thread dropped the request".into()))?
+    }
+
+    fn respace(&self, text: &str) -> Option<String> {
+        let (reply_tx, reply_rx) = mpsc::channel();
+        self.tx.lock().ok()?.send(Request::Space(text.to_owned(), reply_tx)).ok()?;
+        reply_rx.recv().ok().flatten()
     }
 }

@@ -75,6 +75,44 @@ pub fn words_from_chars(text: &str, line: Rect, char_boxes: &[Rect]) -> Vec<Word
     words
 }
 
+/// Re-divide recognised words to follow `respaced`, a copy of the same text with spaces
+/// *inserted* (Kiwi's spacing restoration). Each split word's box is shared out by glyph width.
+///
+/// Returns `None` unless `respaced` is exactly the words with extra breaks, so a spacer that
+/// also deleted, merged or rewrote anything can never corrupt the boxes.
+pub fn resplit_words(words: &[WordBox], respaced: &str) -> Option<Vec<WordBox>> {
+    let tokens: Vec<&str> = respaced.split_whitespace().collect();
+    let mut next = 0;
+    let mut out = Vec::with_capacity(words.len());
+    for word in words {
+        let mut pieces: Vec<&str> = Vec::new();
+        let mut joined = String::new();
+        while joined.len() < word.text.len() {
+            let t = tokens.get(next)?;
+            joined.push_str(t);
+            pieces.push(t);
+            next += 1;
+        }
+        if joined != word.text {
+            return None;
+        }
+        if pieces.len() == 1 {
+            out.push(word.clone());
+            continue;
+        }
+        let chars: Vec<char> = word.text.chars().collect();
+        let boxes = proportional(&chars, word.rect);
+        let mut at = 0;
+        for piece in pieces {
+            let n = piece.chars().count();
+            let rect = boxes[at..at + n].iter().flatten().copied().reduce(|a, b| a.union(&b))?;
+            out.push(WordBox { text: piece.to_string(), rect });
+            at += n;
+        }
+    }
+    (next == tokens.len()).then_some(out)
+}
+
 fn proportional(chars: &[char], line: Rect) -> Vec<Option<Rect>> {
     let total: f32 = chars.iter().map(|&c| char_weight(c)).sum();
     if total <= 0.0 {
@@ -156,6 +194,23 @@ mod tests {
         let texts = |s: &str| words_from_chars(s, line, &[]).into_iter().map(|w| w.text).collect::<Vec<_>>();
         assert_eq!(texts("정한다.정기회의 100일을,임시회의"), ["정한다.", "정기회의", "100일을,", "임시회의"]);
         assert_eq!(texts("3.14 www.naver.com"), ["3.14", "www.naver.com"]);
+    }
+
+    #[test]
+    fn respacing_splits_a_word_box_and_rejects_anything_but_insertions() {
+        let w = |t: &str, x: f32, width: f32| WordBox { text: t.into(), rect: Rect::new(x, 0.0, width, 20.0) };
+        let words = vec![w("천까지승차해", 0.0, 120.0), w("주시기", 130.0, 60.0)];
+        let out = resplit_words(&words, "천까지 승차해 주시기").unwrap();
+        assert_eq!(out.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(), ["천까지", "승차해", "주시기"]);
+        // the pieces tile the original box, in order
+        assert!((out[0].rect.x - 0.0).abs() < 0.01 && (out[1].rect.right() - 120.0).abs() < 0.01);
+        assert!(out[0].rect.right() <= out[1].rect.x + 0.01);
+        assert_eq!(out[2].rect, words[1].rect);
+        // unchanged text is accepted as is; anything that deletes, merges or rewrites is not
+        assert_eq!(resplit_words(&words, "천까지승차해 주시기").unwrap(), words);
+        assert!(resplit_words(&words, "천까지승차해주시기").is_none());
+        assert!(resplit_words(&words, "전까지 승차해 주시기").is_none());
+        assert!(resplit_words(&words, "천까지 승차해").is_none());
     }
 
     #[test]

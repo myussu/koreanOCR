@@ -298,7 +298,12 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     EngineArg::Paddle => {
                         let pc = maru_ocr::paddle::PaddleConfig::resolve(&s.engine.config().ocr, &paths);
                         match maru_ocr::paddle::PaddleOcr::load(&pc) {
-                            Ok(o) => engines.push((format!("PP-OCR ({})", pc.device), Arc::new(o))),
+                            Ok(o) => {
+                                let o: Arc<dyn maru_ocr::OcrEngine> = Arc::new(o);
+                                // Same spacing repair the overlay applies, so the score reflects real use.
+                                let o = maru_engine::respace::RespacingOcr::wrap(o, &s.engine.analyzer());
+                                engines.push((format!("PP-OCR ({})", pc.device), o));
+                            }
                             Err(err) => eprintln!("(PP-OCR unavailable: {err}; skipping)"),
                         }
                     }
