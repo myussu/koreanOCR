@@ -104,6 +104,8 @@ pub(crate) struct Inner {
     pub translate_task: Mutex<Option<JoinHandle<()>>>,
     pub deep_task: Mutex<Option<JoinHandle<()>>>,
     pub anki: Option<AnkiClient>,
+    /// A sync with AnkiWeb is already scheduled.
+    pub anki_sync_pending: std::sync::atomic::AtomicBool,
     pub runtime: tokio::runtime::Handle,
 }
 
@@ -133,7 +135,12 @@ impl Engine {
     pub fn new(parts: EngineParts) -> Self {
         let cfg = parts.config;
         let capturer = Capturer::new(parts.platform.clone(), parts.ocr.clone(), cfg.capture.clone(), cfg.ocr.min_confidence);
-        let anki = cfg.learning.anki.enabled.then(|| AnkiClient::new(cfg.learning.anki.clone()));
+        // Configs written by older versions name the plain "Basic" note type; ours has the fields the cards need.
+        let mut anki_cfg = cfg.learning.anki.clone();
+        if anki_cfg.note_type.trim().is_empty() || anki_cfg.note_type == "Basic" {
+            anki_cfg.note_type = maru_core::config::AnkiConfig::default().note_type;
+        }
+        let anki = cfg.learning.anki.enabled.then(|| AnkiClient::new(anki_cfg));
         let inner = Inner {
             analyzer: parts.analyzer,
             dict: parts.dict,
@@ -153,6 +160,7 @@ impl Engine {
             translate_task: Mutex::new(None),
             deep_task: Mutex::new(None),
             anki,
+            anki_sync_pending: std::sync::atomic::AtomicBool::new(false),
             runtime: tokio::runtime::Handle::current(),
             cfg,
         };
@@ -308,7 +316,6 @@ impl Engine {
             let _ = self.inner.vocab.enrich(key, meaning.as_deref(), entry.level.as_deref());
         }
         let rec = self.inner.vocab.get(key)?.ok_or_else(|| EngineError::Vocab(format!("unknown word: {key}")))?;
-        self.push_to_anki(rec.clone());
         Ok(status_of(&rec))
     }
 
@@ -350,32 +357,6 @@ impl Engine {
 
     pub fn vocab_stats(&self) -> Result<maru_srs::VocabStats> {
         Ok(self.inner.vocab.stats(now_secs())?)
-    }
-
-    fn push_to_anki(&self, rec: WordRecord) {
-        let Some(anki) = self.inner.anki.as_ref() else { return };
-        let inner = self.inner.clone();
-        let contexts = self.inner.vocab.contexts(&rec.key, 2).unwrap_or_default();
-        let _ = anki; // borrowed above only to test the setting; the task re-borrows from `inner`
-        self.inner.runtime.spawn(async move {
-            if let Some(anki) = inner.anki.as_ref()
-                && let Err(e) = anki.add(&rec, &contexts).await
-            {
-                tracing::warn!("could not add {} to Anki: {e}", rec.key);
-            }
-        });
-    }
-
-    /// Send one saved word to Anki now. `Ok(None)` = Anki already has that card.
-    pub async fn export_anki(&self, key: &str) -> Result<Option<u64>> {
-        let anki = self
-            .inner
-            .anki
-            .as_ref()
-            .ok_or_else(|| EngineError::Other("Anki export is disabled: set [learning.anki] enabled = true".into()))?;
-        let rec = self.inner.vocab.get(key)?.ok_or_else(|| EngineError::Vocab(format!("unknown word: {key}")))?;
-        let contexts = self.inner.vocab.contexts(key, 2)?;
-        Ok(anki.add(&rec, &contexts).await?)
     }
 
     /// Write every saved word as a tab-separated file Anki can import. Returns the card count.

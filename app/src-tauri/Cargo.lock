@@ -2794,6 +2794,7 @@ dependencies = [
 name = "maru-srs"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "maru-core",
  "reqwest",
  "rusqlite",

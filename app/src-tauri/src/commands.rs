@@ -77,11 +77,6 @@ pub fn set_known(state: S, key: String, known: bool) -> Res<WordStatus> {
 }
 
 #[tauri::command]
-pub async fn export_anki(state: S<'_>, key: String) -> Res<Option<u64>> {
-    state.engine().export_anki(&key).await.map_err(err)
-}
-
-#[tauri::command]
 pub fn review_word(state: S, key: String, rating: u8) -> Res<ReviewResult> {
     state.engine().review_word(&key, rating).map_err(err)
 }
@@ -121,6 +116,8 @@ pub struct Status {
     pub scan_visible: bool,
     /// The lite (game) profile is in effect.
     pub lite: bool,
+    /// Anki is the place words are reviewed.
+    pub anki: bool,
     /// Speech: `off`, `loading`, `ready` or `failed: …`.
     pub tts: String,
     /// Where speech comes from: `local`, `server` or empty when off.
@@ -155,6 +152,7 @@ pub fn status(state: S) -> Status {
         vocab: e.vocab_stats().ok().map(|s| VocabCounts { total: s.total, saved: s.saved, known: s.known, due_now: s.due_now }),
         scan_visible: state.scan().visible,
         lite: state.services.lite,
+        anki: e.config().learning.anki.enabled,
         tts: match state.services.tts_status() {
             LlmStatus::Disabled => "off".into(),
             LlmStatus::Starting => "loading".into(),
@@ -344,4 +342,119 @@ pub async fn tts_clip(state: S<'_>, text: String) -> Res<Clip> {
 #[tauri::command]
 pub fn tts_reading(state: S, active: bool) {
     state.panel().reading = active;
+}
+
+// ───────────── Anki ─────────────
+
+use maru_engine::anki_flow::{AnkiAdded, AnkiAddOptions, AnkiOverview};
+
+/// Is Anki up, which decks it has, what we would suggest for this word and where it already is.
+#[tauri::command]
+pub async fn anki_overview(state: S<'_>, key: String, app: Option<String>) -> Res<AnkiOverview> {
+    state.engine().anki_overview(&key, app.as_deref()).await.map_err(err)
+}
+
+#[derive(serde::Deserialize)]
+pub struct AnkiAddRequest {
+    pub key: String,
+    pub deck: String,
+    pub tags: Vec<String>,
+    /// `subdeck`, `same_deck` or `off`; empty uses the configured one.
+    pub reverse: Option<String>,
+    pub app: Option<String>,
+    /// Attach the spoken word and sentence.
+    pub audio: bool,
+}
+
+#[derive(Serialize)]
+pub struct AnkiAddReply {
+    #[serde(flatten)]
+    pub added: AnkiAdded,
+    /// Something that did not go as hoped but did not stop the card (no audio, ...).
+    pub note: Option<String>,
+}
+
+/// Spoken `text` as a file for Anki: `Ok(None)` when speech is off or not ready.
+async fn spoken(state: &AppState, text: &str) -> Result<Option<maru_engine::anki_flow::Media>, String> {
+    let Some(tts) = state.services.tts.clone() else { return Ok(None) };
+    if !matches!(state.services.tts_status(), LlmStatus::Ready) {
+        return Err("the voice is not ready".into());
+    }
+    let (audio, _) = tts.speak(text).await.map_err(err)?;
+    let ext = match audio.mime.as_str() {
+        "audio/mpeg" => "mp3",
+        "audio/ogg" => "ogg",
+        "audio/flac" => "flac",
+        _ => "wav",
+    };
+    Ok(Some(maru_engine::anki_flow::Media { filename: format!("maru_{}.{ext}", tts.client().cache_key(text)), data: audio.bytes }))
+}
+
+/// Add a word to Anki, in the chosen deck, with tags and (if wanted and possible) its spoken audio.
+#[tauri::command]
+pub async fn anki_add(state: S<'_>, request: AnkiAddRequest) -> Res<AnkiAddReply> {
+    let engine = state.engine();
+    let cfg = engine.config().learning.anki.clone();
+    let reverse = match request.reverse.as_deref() {
+        Some("subdeck") => maru_core::config::ReverseMode::Subdeck,
+        Some("same_deck") => maru_core::config::ReverseMode::SameDeck,
+        Some("off") => maru_core::config::ReverseMode::Off,
+        _ => cfg.reverse,
+    };
+    let (mut word_audio, mut sentence_audio, mut note) = (None, None, None);
+    if request.audio && cfg.audio {
+        let sentence = engine.word_contexts(&request.key, 1).ok().and_then(|c| c.into_iter().next()).map(|c| c.sentence);
+        let made = async {
+            let word = spoken(&state, &request.key).await?;
+            let sent = match &sentence {
+                Some(s) => spoken(&state, s).await?,
+                None => None,
+            };
+            Ok::<_, String>((word, sent))
+        }
+        .await;
+        match made {
+            Ok((w, s)) => (word_audio, sentence_audio) = (w, s),
+            Err(e) => note = Some(format!("Added without audio: {e}")),
+        }
+    }
+    let added = engine
+        .anki_add(AnkiAddOptions { key: request.key, deck: request.deck, tags: request.tags, reverse, app: request.app, word_audio, sentence_audio })
+        .await
+        .map_err(err)?;
+    Ok(AnkiAddReply { added, note })
+}
+
+/// Put the sentence the word was just met in on its existing card.
+#[tauri::command]
+pub async fn anki_add_example(state: S<'_>, key: String, audio: bool) -> Res<bool> {
+    let engine = state.engine();
+    let Some(ctx) = engine.word_contexts(&key, 1).map_err(err)?.into_iter().next() else { return Err("there is no sentence to add".into()) };
+    let media = if audio && engine.config().learning.anki.audio { spoken(&state, &ctx.sentence).await.ok().flatten() } else { None };
+    engine.anki_add_example(&key, &ctx.sentence, ctx.translation.as_deref(), media).await.map_err(err)
+}
+
+/// Ask Anki to sync with AnkiWeb now.
+#[tauri::command]
+pub async fn anki_sync(state: S<'_>) -> Res<()> {
+    state.engine().anki_sync().await.map_err(err)
+}
+
+/// Settings → Anki: can we reach it, is the note type in place.
+#[tauri::command]
+pub async fn anki_check(state: S<'_>) -> Res<String> {
+    state.engine().anki_check().await.map_err(err)
+}
+
+#[derive(Serialize)]
+pub struct AnkiDue {
+    pub due: usize,
+    pub new: usize,
+}
+
+/// For the Review tab: what Anki has waiting.
+#[tauri::command]
+pub async fn anki_due(state: S<'_>) -> Res<AnkiDue> {
+    let d = state.engine().anki_due().await.map_err(err)?;
+    Ok(AnkiDue { due: d.due, new: d.new })
 }

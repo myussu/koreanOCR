@@ -33,6 +33,7 @@ image.workspace = true
 rusqlite.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
 maru-llm = { workspace = true, features = ["testing"] }
 
 # ONNX Runtime: bundled on Windows (the supported platform), located at run time elsewhere.

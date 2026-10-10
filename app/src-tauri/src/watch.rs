@@ -91,3 +91,36 @@ pub fn spawn_scan_hits(app: AppHandle, state: Arc<AppState>) {
         }
     });
 }
+
+/// Read how your cards stand in Anki: once at start-up (waiting for Anki to be open) and then every
+/// `refresh_minutes`. Words you hold for weeks become known, so their glosses fade.
+pub fn spawn_anki_refresh(state: Arc<AppState>) {
+    let cfg = state.engine().config().learning.anki.clone();
+    if !cfg.enabled {
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        let mut waited = 0u32;
+        loop {
+            match state.engine().anki_refresh().await {
+                Ok(n) => {
+                    tracing::info!("Anki: {n} of your words are there");
+                    waited = 0;
+                }
+                // Anki is usually closed at start-up: try again soon, then settle into the normal rhythm.
+                Err(e) => {
+                    tracing::debug!("Anki refresh: {e}");
+                    if cfg.refresh_minutes == 0 {
+                        return;
+                    }
+                    waited += 1;
+                }
+            }
+            if cfg.refresh_minutes == 0 {
+                return;
+            }
+            let wait = if waited > 0 && waited < 6 { Duration::from_secs(60) } else { Duration::from_secs(u64::from(cfg.refresh_minutes) * 60) };
+            tokio::time::sleep(wait).await;
+        }
+    });
+}

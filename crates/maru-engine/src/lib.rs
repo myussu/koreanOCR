@@ -6,6 +6,7 @@
 //! * [`continuous`] — watch a region and report when its text changes
 //! * [`annotate`], [`cache`], [`memory`], [`change`] — the supporting pieces
 
+pub mod anki_flow;
 pub mod annotate;
 pub mod bootstrap;
 pub mod cache;

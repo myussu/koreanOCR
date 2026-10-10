@@ -394,7 +394,8 @@ async fn saved_words_export_as_an_anki_import_file() {
     assert!(text.starts_with("학교\t") && text.trim_end().ends_with("\tmaru"), "{text}");
     assert!(text.contains("school"), "the card's answer must not be empty: {text}");
     std::fs::remove_file(path).ok();
-    assert!(h.engine.export_anki("학교").await.is_err(), "disabled by default with an actionable message");
+    let err = h.engine.anki_overview("학교", None).await.unwrap_err().to_string();
+    assert!(err.contains("Settings → Anki"), "disabled by default with an actionable message: {err}");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -675,4 +676,52 @@ mod scan {
         let events = collect(engine.scan(SCREEN).1).await;
         assert!(events.iter().any(|e| matches!(e, Event::Error { stage: Stage::Ocr, message, .. } if message.contains("OCR"))));
     }
+}
+
+/// An AnkiConnect that has the note type already and no words yet; every call is logged.
+fn ankiconnect(_path: &str, body: &str) -> MockResponse {
+    let req: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    let result = match req["action"].as_str().unwrap_or_default() {
+        "version" => serde_json::json!(6),
+        "deckNames" => serde_json::json!(["Default", "Korean"]),
+        "modelNames" => serde_json::json!(["Maru Korean"]),
+        "modelFieldNames" => serde_json::json!(maru_srs::anki::FIELDS),
+        "modelStyling" => serde_json::json!({ "css": format!("/* maru-model-v{} */", maru_srs::anki::MODEL_VERSION) }),
+        "findNotes" => serde_json::json!([]),
+        "addNote" => serde_json::json!(77),
+        "notesInfo" => serde_json::json!([{ "noteId": 77, "cards": [770, 771], "fields": {}, "tags": [] }]),
+        _ => serde_json::json!(null),
+    };
+    MockResponse { status: 200, chunks: vec![serde_json::json!({ "result": result, "error": null }).to_string().into_bytes()], delay_ms: 0 }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
+    use maru_engine::anki_flow::{AnkiAddOptions, AnkiAdded};
+    let anki = spawn_mock(ankiconnect).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.note_type = "Basic".into(); // an old config: it is replaced by our own note type
+    cfg.learning.anki.url = anki.url.clone();
+    let h = build(cfg, None, None);
+    h.vocab.record_lookup(&maru_srs::LookupInfo { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), meaning: Some("school".into()), level: Some("TOPIK 1".into()), context: None }, 100).unwrap();
+
+    let before = h.engine.anki_overview("학교", Some("hades.exe")).await.unwrap();
+    assert!(before.connected && before.existing.is_none());
+    assert_eq!(before.suggestions.first().map(|s| s.deck.as_str()), Some("Korean::Hades"), "named after the program the first time");
+    assert!(before.suggestions.iter().any(|s| s.deck == "Korean" && s.exists));
+    assert!(before.tags.contains(&"app::hades".to_string()) && before.tags.contains(&"topik-1".to_string()), "{:?}", before.tags);
+
+    let opts = AnkiAddOptions { key: "학교".into(), deck: " Korean :: Games ".into(), tags: before.tags.clone(), reverse: before.reverse, app: Some("hades.exe".into()), word_audio: None, sentence_audio: None };
+    let added = h.engine.anki_add(opts).await.unwrap();
+    assert!(matches!(&added, AnkiAdded::Added { deck, reverse_deck: Some(r), cards: 2, sync: true } if deck == "Korean::Games" && r == "Korean::Games::Reverse"), "{added:?}");
+
+    let word = h.vocab.get("학교").unwrap().unwrap();
+    assert!(word.saved && word.anki_interval == Some(0.0), "the word is saved and in Anki");
+    let after = h.engine.anki_overview("학교", Some("hades.exe")).await.unwrap();
+    assert_eq!(after.suggestions.first().map(|s| s.deck.as_str()), Some("Korean::Games"), "next time the same program suggests the same deck");
+
+    let calls: Vec<String> = anki.requests.lock().unwrap().iter().filter_map(|(_, b)| serde_json::from_str::<serde_json::Value>(b).ok()).map(|v| v["action"].as_str().unwrap_or_default().to_string()).collect();
+    assert!(calls.contains(&"createDeck".to_string()) && calls.contains(&"changeDeck".to_string()), "{calls:?}");
+    assert!(h.engine.anki_add(AnkiAddOptions { key: "학교".into(), deck: "  ".into(), tags: vec![], reverse: before.reverse, app: None, word_audio: None, sentence_audio: None }).await.unwrap_err().to_string().contains("deck"), "no deck, no add");
 }

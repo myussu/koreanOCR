@@ -132,6 +132,7 @@ fn main() {
                 tracing::warn!("{problem}");
             }
             watch::spawn(app.handle().clone(), state.clone());
+            watch::spawn_anki_refresh(state.clone());
             watch::spawn_scan_hits(app.handle().clone(), state.clone());
             app.manage(state);
             Ok(())
@@ -142,7 +143,12 @@ fn main() {
             commands::save_word,
             commands::unsave_word,
             commands::set_known,
-            commands::export_anki,
+            commands::anki_overview,
+            commands::anki_add,
+            commands::anki_add_example,
+            commands::anki_sync,
+            commands::anki_check,
+            commands::anki_due,
             commands::review_word,
             commands::due_words,
             commands::recent_words,
