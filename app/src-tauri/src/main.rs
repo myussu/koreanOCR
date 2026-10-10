@@ -53,6 +53,7 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             &item("hover", format!("Toggle hover mode\t{}", keys.hover))?,
             &item("continuous", format!("Toggle continuous mode\t{}", keys.continuous))?,
             &item("continuous_area", format!("Continuous mode: choose area…\t{}", keys.continuous_area))?,
+            &item("scan", format!("Label all Korean text on screen\t{}", keys.scan))?,
             &PredefinedMenuItem::separator(app)?,
             &item("review", "Review & history…".into())?,
             &item("status", "Status…".into())?,
@@ -71,6 +72,7 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             "hover" => flow::toggle_hover(&app, &state),
             "continuous" => flow::toggle_continuous(&app, &state),
             "continuous_area" => flow::choose_continuous_area(&app, &state),
+            "scan" => flow::scan_screen(app, state),
             "review" => {
                 let _ = windows::open_hub(&app, "review");
             }
@@ -107,15 +109,17 @@ fn main() {
                 tracing::info!("{note}");
             }
             let live_region = Mutex::new(services.engine.config().continuous.region);
-            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region });
+            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region, scan: Mutex::default() });
 
             let width = state.engine().config().ui.max_width_px as f32;
             windows::create_panel(app.handle(), width)?;
+            windows::create_scan(app.handle())?;
             build_tray(app.handle(), &state)?;
             for problem in hotkeys::register(app.handle(), &state) {
                 tracing::warn!("{problem}");
             }
             watch::spawn(app.handle().clone(), state.clone());
+            watch::spawn_scan_hits(app.handle().clone(), state.clone());
             app.manage(state);
             Ok(())
         })
@@ -135,6 +139,8 @@ fn main() {
             commands::dismiss_panel,
             commands::set_pinned,
             commands::picker_done,
+            commands::scan_labels,
+            commands::scan_open,
             commands::word_contexts,
             commands::open_hub,
         ])

@@ -10,6 +10,7 @@ use crate::state::AppState;
 pub const PANEL: &str = "panel";
 pub const PICKER: &str = "picker";
 pub const HUB: &str = "hub";
+pub const SCAN: &str = "scan";
 
 /// Create the (hidden) panel at start-up so the page is loaded and composited before first use.
 pub fn create_panel(app: &AppHandle, width: f32) -> tauri::Result<WebviewWindow> {
@@ -30,6 +31,45 @@ pub fn create_panel(app: &AppHandle, width: f32) -> tauri::Result<WebviewWindow>
         .build()
 }
 
+/// The (hidden) layer that carries the screen-scan labels. Created at start-up so its page is
+/// already loaded when the first scan's events arrive; click-through until the pointer is over a label.
+pub fn create_scan(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let win = WebviewWindowBuilder::new(app, SCAN, WebviewUrl::App("scan.html".into()))
+        .title("Maru — screen labels")
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        // Never take focus from the game, and stay out of screenshots so a scan never reads its own labels.
+        .focusable(false)
+        .content_protected(true)
+        .visible(false)
+        .build()?;
+    let _ = win.set_ignore_cursor_events(true);
+    Ok(win)
+}
+
+/// Cover `monitor` with the scan layer and show it (the game keeps the keyboard).
+pub fn show_scan(app: &AppHandle, monitor: Rect) {
+    let Some(win) = app.get_webview_window(SCAN) else { return };
+    let _ = win.set_ignore_cursor_events(true);
+    let _ = win.set_position(PhysicalPosition::new(monitor.x as i32, monitor.y as i32));
+    let _ = win.set_size(PhysicalSize::new(monitor.w as u32, monitor.h as u32));
+    let _ = win.show();
+}
+
+/// Remove every scan label and hide the layer.
+pub fn hide_scan(app: &AppHandle, state: &AppState) {
+    let _ = tauri::Emitter::emit_to(app, SCAN, "maru-scan-clear", ());
+    if let Some(win) = app.get_webview_window(SCAN) {
+        let _ = win.set_ignore_cursor_events(true);
+        let _ = win.hide();
+    }
+    *state.scan() = crate::state::ScanState::default();
+}
+
 /// Union of all monitors in physical pixels (the virtual desktop).
 pub fn virtual_screen(app: &AppHandle) -> Rect {
     let monitors = app.available_monitors().unwrap_or_default();
@@ -40,7 +80,7 @@ pub fn virtual_screen(app: &AppHandle) -> Rect {
         .unwrap_or(Rect::new(0.0, 0.0, 1920.0, 1080.0))
 }
 
-fn monitor_rect(app: &AppHandle, at: Point) -> Rect {
+pub fn monitor_rect(app: &AppHandle, at: Point) -> Rect {
     match app.monitor_from_point(at.x as f64, at.y as f64) {
         Ok(Some(m)) => Rect::new(m.position().x as f32, m.position().y as f32, m.size().width as f32, m.size().height as f32),
         _ => virtual_screen(app),

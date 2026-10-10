@@ -13,6 +13,7 @@ enum Action {
     Hover,
     Continuous,
     ContinuousArea,
+    Scan,
     History,
     Dismiss,
 }
@@ -43,6 +44,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
         (keys.hover, Action::Hover),
         (keys.continuous, Action::Continuous),
         (keys.continuous_area, Action::ContinuousArea),
+        (keys.scan, Action::Scan),
         (keys.history, Action::History),
         (keys.dismiss, Action::Dismiss),
     ];
@@ -70,10 +72,11 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
                 Action::Hover => flow::toggle_hover(&app, &state),
                 Action::Continuous => flow::toggle_continuous(&app, &state),
                 Action::ContinuousArea => flow::choose_continuous_area(&app, &state),
+                Action::Scan => flow::scan_screen(app, state),
                 Action::History => {
                     let _ = windows::open_hub(&app, "history");
                 }
-                Action::Dismiss => windows::hide_panel(&app, &state),
+                Action::Dismiss => flow::dismiss_all(&app, &state),
             }
         });
         if let Err(e) = result {

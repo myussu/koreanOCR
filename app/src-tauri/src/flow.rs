@@ -50,6 +50,12 @@ fn anchor_of(capture: &Capture, fallback: Option<Point>) -> Rect {
 }
 
 pub fn show_translation(app: &AppHandle, state: &Arc<AppState>, capture: Capture, word_only: bool) {
+    show_capture(app, state, capture, word_only, false);
+}
+
+/// Show `capture` in the panel. With `auto_deep` the panel also opens the deep dive for its single
+/// content word as soon as the breakdown arrives (a click on a scan label that is one word).
+pub fn show_capture(app: &AppHandle, state: &Arc<AppState>, capture: Capture, word_only: bool, auto_deep: bool) {
     let cursor = state.engine().platform().screen.cursor();
     {
         let mut p = state.panel();
@@ -58,7 +64,10 @@ pub fn show_translation(app: &AppHandle, state: &Arc<AppState>, capture: Capture
         p.last_capture = Some(capture.clone());
     }
     windows::place_and_show(app, state, state.engine().config().ui.placement);
-    let (_, rx) = if word_only { state.engine().lookup_word(capture) } else { state.engine().translate(capture) };
+    let (id, rx) = if word_only { state.engine().lookup_word(capture) } else { state.engine().translate(capture) };
+    if auto_deep {
+        let _ = app.emit_to(PANEL, "maru-auto-deep", id);
+    }
     pump(app.clone(), rx);
 }
 
@@ -76,6 +85,52 @@ pub fn translate_selection(app: AppHandle, state: Arc<AppState>) {
             }
         }
     });
+}
+
+/// Read the whole screen the pointer is on and label every Korean text on it.
+/// Pressing it again rescans (an older scan still in flight is cancelled).
+pub fn scan_screen(app: AppHandle, state: Arc<AppState>) {
+    let cursor = state.engine().platform().screen.cursor().unwrap_or_default();
+    let monitor = windows::monitor_rect(&app, cursor);
+    {
+        let mut s = state.scan();
+        s.visible = true;
+        s.origin = (monitor.x, monitor.y);
+        s.rects.clear();
+        s.interactive = false;
+    }
+    windows::show_scan(&app, monitor);
+    refresh_tray(&app, &state);
+    let (_, mut rx) = state.engine().scan(monitor);
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let done = matches!(event, Event::Done { .. });
+            let _ = app.emit_to(windows::SCAN, "maru-scan", &event);
+            if done {
+                break;
+            }
+        }
+    });
+}
+
+/// A scan label was clicked: explain its text in the panel. One word goes straight to its deep dive.
+pub fn open_scan_item(app: AppHandle, state: Arc<AppState>, text: String, rect: Rect) {
+    tauri::async_runtime::spawn(async move {
+        let eojeols = state.engine().analyze(&text);
+        let single = eojeols.iter().filter(|e| e.content).count() == 1 && eojeols.len() <= 2;
+        let screen = state.engine().platform().screen.clone();
+        let capture = Capture { text, source: maru_core::CaptureSource::Ocr, rect: Some(rect), words: Vec::new(), cursor: screen.cursor(), app: screen.foreground_app(), confidence: None };
+        show_capture(&app, &state, capture, single, single);
+    });
+}
+
+/// Hide the panel and every screen label.
+pub fn dismiss_all(app: &AppHandle, state: &Arc<AppState>) {
+    windows::hide_panel(app, state);
+    if state.scan().visible {
+        windows::hide_scan(app, state);
+        refresh_tray(app, state);
+    }
 }
 
 pub fn translate_region(app: AppHandle, state: Arc<AppState>, rect: Rect) {
@@ -113,6 +168,9 @@ pub fn active_features(state: &AppState) -> Vec<&'static str> {
     }
     if state.continuous.lock().map(|c| c.is_some()).unwrap_or(false) {
         on.push("live subtitles");
+    }
+    if state.scan().visible {
+        on.push("screen labels");
     }
     on
 }

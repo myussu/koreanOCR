@@ -56,6 +56,8 @@ function schedule() {
 
 function render() {
   frame = 0;
+  // The window may just have moved to a monitor with another scale factor.
+  dpr = window.devicePixelRatio || 1;
   const forLayout = [];
   for (const [id, it] of items) {
     const text = it.hidden ? '' : labelText(it);
@@ -144,6 +146,7 @@ function onEvent(e) {
     clearAll();
     origin = { x: e.screen.x, y: e.screen.y };
     dpr = window.devicePixelRatio || 1;
+    say('Reading the screen…', 1800);
     return;
   }
   if (e.id !== scanId) return; // an older scan

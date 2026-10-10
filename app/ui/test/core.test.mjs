@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyState, reduce, openDeep, meaningFor, translationRows, sentenceOf } from '../core.js';
+import { emptyState, reduce, openDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget } from '../core.js';
 
 const word = (over = {}) => ({ index: 0, surface: '학교에서', lemma: '학교', content: true, state: 'new', lookups: 0, dict_glosses: ['school'], morphs: [], ...over });
 const started = (id = 1, direction = 'ko_to_en') => ({ type: 'started', id, direction, capture: { text: '학교에서 공부해요' }, cached: false });
@@ -84,4 +84,18 @@ test('errors accumulate and do not end the request', () => {
   s = reduce(s, { type: 'error', id: 1, stage: 'llm', message: 'boom' });
   assert.deepEqual(s.errors, ['boom']);
   assert.equal(s.finished, false);
+});
+
+test('a single-word scan label asks for its deep dive once the breakdown has arrived', () => {
+  let s = reduce(emptyState(), started(7));
+  assert.equal(autoDeepTarget(s, 7), null, 'nothing to open before the breakdown');
+  s = reduce(s, { type: 'breakdown', id: 7, side: 'source', eojeols: [word({ index: 0, surface: '인벤토리' }), word({ index: 1, surface: '.', content: false })], romanization: '', pronunciation: '' });
+  assert.equal(autoDeepTarget(s, 7)?.surface, '인벤토리');
+  assert.equal(autoDeepTarget(s, 8), null, 'only for the request that asked');
+});
+
+test('two content words are not a single word, so no deep dive opens by itself', () => {
+  let s = reduce(emptyState(), started(3));
+  s = reduce(s, { type: 'breakdown', id: 3, side: 'source', eojeols: [word({ index: 0 }), word({ index: 1, surface: '공부' })], romanization: '', pronunciation: '' });
+  assert.equal(autoDeepTarget(s, 3), null);
 });

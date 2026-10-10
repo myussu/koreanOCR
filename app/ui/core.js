@@ -118,6 +118,16 @@ export function openDeep(prev, { id, eojeol, sentence, translation, meaning }) {
   return state;
 }
 
+/**
+ * The word to open a deep dive for, when the request `id` was started by clicking a scan label that
+ * is a single word: its one content word, once the breakdown has arrived. Otherwise null.
+ */
+export function autoDeepTarget(state, id) {
+  if (state.id !== id || !state.source) return null;
+  const content = state.source.eojeols.filter((e) => e.content);
+  return content.length === 1 ? content[0] : null;
+}
+
 export const closeDeep = (prev) => ({ ...structuredClone(prev), deep: null });
 
 /**

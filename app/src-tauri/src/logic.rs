@@ -38,6 +38,16 @@ pub fn around_point(p: Point) -> Rect {
     Rect::new(p.x - 4.0, p.y - 10.0, 8.0, 20.0)
 }
 
+/// Is the pointer over one of the scan overlay's labels?
+///
+/// `cursor` is in physical screen pixels; the labels were reported in the overlay page's CSS pixels,
+/// which are physical pixels divided by `dpr`, measured from the window's top-left `origin`.
+pub fn over_label(cursor: Point, origin: (f32, f32), dpr: f32, labels: &[Rect]) -> bool {
+    let dpr = if dpr > 0.0 { dpr } else { 1.0 };
+    let css = Point { x: (cursor.x - origin.0) / dpr, y: (cursor.y - origin.1) / dpr };
+    labels.iter().any(|r| r.contains(css))
+}
+
 /// Fires once when the pointer has rested in place for `dwell`.
 #[derive(Debug)]
 pub struct Dwell {
@@ -186,5 +196,21 @@ mod tests {
         assert!(!a.update(t0 + Duration::from_millis(1800), far, panel, false, 300.0, after));
         // pinned never hides
         assert!(!a.update(t0 + Duration::from_secs(60), far, panel, true, 300.0, after));
+    }
+
+    #[test]
+    fn the_overlay_is_clickable_only_over_a_label() {
+        let labels = [Rect::new(100.0, 50.0, 80.0, 18.0), Rect::new(300.0, 200.0, 60.0, 18.0)];
+        let over = |x: f32, y: f32, origin: (f32, f32), dpr: f32| over_label(Point { x, y }, origin, dpr, &labels);
+        assert!(over(120.0, 60.0, (0.0, 0.0), 1.0));
+        assert!(!over(120.0, 100.0, (0.0, 0.0), 1.0), "empty space is click-through");
+        // a second monitor to the right (origin 1920) at 150% scaling: CSS = (physical - origin) / 1.5
+        assert!(over(1920.0 + 150.0 * 1.5 + 3.0, 60.0 * 1.5, (1920.0, 0.0), 1.5));
+        assert!(!over(150.0 * 1.5 + 3.0, 60.0 * 1.5, (1920.0, 0.0), 1.5), "a pointer on the other monitor is not over it");
+        // a monitor to the left has a negative origin
+        assert!(over(-1000.0 + 320.0, 210.0, (-1000.0, 0.0), 1.0));
+        assert!(!over(10.0, 10.0, (0.0, 0.0), 1.0));
+        assert!(!over_label(Point::default(), (0.0, 0.0), 1.0, &[]), "no labels, nothing to click");
+        assert!(over_label(Point { x: 120.0, y: 60.0 }, (0.0, 0.0), 0.0, &labels), "a missing scale factor counts as 1");
     }
 }

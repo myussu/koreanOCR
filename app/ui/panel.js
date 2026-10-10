@@ -1,5 +1,5 @@
 import { invoke, listen, replayFromQuery, mockCommands, inTauri } from './bridge.js';
-import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, VARIANT_LABEL } from './core.js';
+import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, VARIANT_LABEL } from './core.js';
 
 const card = document.getElementById('card');
 let state = emptyState();
@@ -216,7 +216,22 @@ function applyConfig(c) {
   card.style.maxWidth = `${cfg.max_width_px ?? 760}px`;
 }
 
-listen('maru-event', (e) => update(reduce(state, e)));
+// A click on a scan label that is a single word asks for its deep dive as soon as the breakdown is in.
+let autoDeepId = null;
+listen('maru-auto-deep', (id) => {
+  autoDeepId = id;
+});
+listen('maru-event', (e) => {
+  update(reduce(state, e));
+  if (autoDeepId == null) return;
+  const target = autoDeepTarget(state, autoDeepId);
+  if (target) {
+    autoDeepId = null;
+    startDeep(target, 'source');
+  } else if (e.type === 'done' && e.id === autoDeepId) {
+    autoDeepId = null;
+  }
+});
 listen('maru-notice', (n) => {
   state = { ...emptyState(), notice: n };
   render();

@@ -60,6 +60,8 @@ pub struct Hotkeys {
     pub continuous: String,
     /// Choose a different area for continuous mode (and start it there).
     pub continuous_area: String,
+    /// Read the whole screen and label every piece of Korean text on it (press again to rescan).
+    pub scan: String,
     /// Show/hide the history of recent lines.
     pub history: String,
     /// Dismiss the panel.
@@ -74,6 +76,7 @@ impl Default for Hotkeys {
             hover: "Ctrl+Alt+H".into(),
             continuous: "Ctrl+Alt+C".into(),
             continuous_area: "Ctrl+Alt+Shift+C".into(),
+            scan: "Ctrl+Alt+S".into(),
             history: "Ctrl+Alt+L".into(),
             dismiss: "Ctrl+Alt+Escape".into(),
         }

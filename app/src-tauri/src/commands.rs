@@ -112,6 +112,8 @@ pub struct Status {
     pub live_area: Option<Rect>,
     /// The OCR reading model: `off`, `loading`, `ready` or `failed: …`.
     pub ocr_reader: String,
+    /// Screen labels (from a scan) are showing.
+    pub scan_visible: bool,
 }
 
 #[derive(Serialize)]
@@ -140,6 +142,7 @@ pub fn status(state: S) -> Status {
         dictionary: e.has_dictionary(),
         hotkeys: e.config().hotkeys.clone(),
         vocab: e.vocab_stats().ok().map(|s| VocabCounts { total: s.total, saved: s.saved, known: s.known, due_now: s.due_now }),
+        scan_visible: state.scan().visible,
         hover_mode: state.panel().hover_mode,
         live_mode,
         live_area: if live_mode { state.live_region() } else { None },
@@ -169,6 +172,20 @@ pub fn dismiss_panel(app: AppHandle, state: S) {
 #[tauri::command]
 pub fn set_pinned(state: S, pinned: bool) {
     state.panel().pinned = pinned;
+}
+
+/// The scan overlay reports where its labels are, so the window can accept clicks only over them.
+#[tauri::command]
+pub fn scan_labels(state: S, dpr: f32, rects: Vec<Rect>) {
+    let mut scan = state.scan();
+    scan.dpr = dpr;
+    scan.rects = rects;
+}
+
+/// A scan label was clicked.
+#[tauri::command]
+pub fn scan_open(app: AppHandle, state: S, text: String, rect: Rect) {
+    flow::open_scan_item(app, state.inner().clone(), text, rect);
 }
 
 /// The picker reports a rectangle in *its own* pixels; add the window's screen origin.

@@ -53,3 +53,35 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
         }
     });
 }
+
+/// How often the scan overlay checks whether the pointer is over one of its labels. Quick enough
+/// that a click made right after moving onto a label is not lost to the game underneath.
+const SCAN_POLL: Duration = Duration::from_millis(12);
+
+/// The scan overlay is click-through, so the game stays playable under it; this switches it to
+/// accept the mouse only while the pointer is over a label (to click it, or its delete button).
+pub fn spawn_scan_hits(app: AppHandle, state: Arc<AppState>) {
+    tauri::async_runtime::spawn(async move {
+        let screen = state.engine().platform().screen.clone();
+        let mut ticker = tokio::time::interval(SCAN_POLL);
+        ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            ticker.tick().await;
+            let (visible, origin, dpr, interactive) = {
+                let s = state.scan();
+                (s.visible, s.origin, s.dpr, s.interactive)
+            };
+            if !visible {
+                continue;
+            }
+            let Some(cursor) = screen.cursor() else { continue };
+            let over = crate::logic::over_label(Point { x: cursor.x, y: cursor.y }, origin, dpr, &state.scan().rects);
+            if over != interactive {
+                if let Some(win) = tauri::Manager::get_webview_window(&app, windows::SCAN) {
+                    let _ = win.set_ignore_cursor_events(!over);
+                }
+                state.scan().interactive = over;
+            }
+        }
+    });
+}

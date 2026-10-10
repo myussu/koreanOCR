@@ -2728,6 +2728,7 @@ dependencies = [
  "maru-ocr",
  "maru-platform",
  "maru-srs",
+ "rusqlite",
  "serde",
  "thiserror 2.0.21",
  "tokio",
