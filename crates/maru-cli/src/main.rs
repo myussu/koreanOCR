@@ -3,6 +3,7 @@
 mod render;
 mod setup;
 mod tools;
+mod tts;
 
 use std::io::{IsTerminal, Read};
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ use clap::{Parser, Subcommand};
 use maru_core::{Capture, Config, Event, Paths, Register};
 use maru_engine::{BootOptions, DeepDiveRequest, Services, boot};
 use render::Renderer;
+use setup::fetch_hf;
 
 #[derive(Parser)]
 #[command(name = "maru", version, about = "Local Korean reading assistant: translate, break down, learn")]
@@ -93,6 +95,36 @@ enum Command {
         #[arg(long)]
         vlm_prompt: Option<String>,
     },
+    /// Speak text with the voice from your settings (sentence by sentence) into a WAV file.
+    Tts {
+        text: Vec<String>,
+        /// Where to write it.
+        #[arg(short, long, default_value = "speech.wav")]
+        out: PathBuf,
+    },
+    /// Listen to voices: speaks sentences that show sound changes, numbers and intonation, and writes a page to play them.
+    TtsEval {
+        /// Folder for the audio and index.html (default: inside Maru's data folder).
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Voice name to compare; repeat for several (default: the one in your settings).
+        #[arg(long)]
+        voice: Vec<String>,
+        /// Use a speech server at this address instead of your settings (any OpenAI-style one).
+        #[arg(long)]
+        endpoint: Option<String>,
+        #[arg(long)]
+        api_key: Option<String>,
+        #[arg(long)]
+        model: Option<String>,
+        #[arg(long)]
+        language: Option<String>,
+        #[arg(long)]
+        instructions: Option<String>,
+        /// Your own sentences, one per line.
+        #[arg(long, value_name = "FILE")]
+        sentences: Option<PathBuf>,
+    },
     /// Install things Maru does not bundle.
     #[command(subcommand)]
     Setup(SetupCommand),
@@ -130,6 +162,18 @@ enum SetupCommand {
     },
     /// PaddleOCR-VL, the reading model that makes OCR text noticeably more accurate (about 1.8 GB).
     OcrVl,
+    /// Text to speech: the local voice server and the Qwen3-TTS model (about 2.5 GB). Switches speech on in your settings.
+    Tts {
+        /// A smaller, slightly less natural model (about 1 GB).
+        #[arg(long)]
+        small: bool,
+        /// Where to download tts-server from (a zip), instead of this repository's latest build.
+        #[arg(long)]
+        server_url: Option<String>,
+        /// Do not start the server to try it afterwards.
+        #[arg(long)]
+        no_test: bool,
+    },
     /// llama.cpp server, and the model configured in [llm].
     Llm {
         #[arg(long, value_enum, default_value = "cuda")]
@@ -241,17 +285,6 @@ async fn fetch_paddle_vl(paths: &Paths) -> Result<()> {
         fetch_hf(maru_engine::vision::REPO, file, &dir).await.with_context(|| format!("downloading {file}"))?;
     }
     Ok(())
-}
-
-/// Download `file` from a Hugging Face repo into `dir` unless it is already there.
-async fn fetch_hf(repo: &str, file: &str, dir: &std::path::Path) -> Result<PathBuf> {
-    let dest = dir.join(file);
-    if dest.metadata().is_ok_and(|m| m.len() > 0) {
-        return Ok(dest);
-    }
-    std::fs::create_dir_all(dir)?;
-    setup::download(&format!("https://huggingface.co/{repo}/resolve/main/{file}"), &dest, file).await?;
-    Ok(dest)
 }
 
 fn with_args(base: &maru_core::config::LlmConfig, args: &[String], extra: &[String]) -> maru_core::config::LlmConfig {
@@ -523,6 +556,14 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             tools::print_scores(&scores);
             Ok(0)
         }
+        Command::Tts { text, out } => {
+            tts::speak(&paths, &cfg, &read_text(&text)?, &out).await?;
+            Ok(0)
+        }
+        Command::TtsEval { out, voice, endpoint, api_key, model, language, instructions, sentences } => {
+            tts::eval(&paths, &cfg, tts::EvalOptions { out, voices: voice, endpoint, api_key, model, language, instructions, sentences_file: sentences }).await?;
+            Ok(0)
+        }
         Command::Setup(cmd) => {
             match cmd {
                 SetupCommand::Kiwi { release } => setup::kiwi(&paths, release).await?,
@@ -534,6 +575,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     println!("PaddleOCR-VL is installed. Maru starts it automatically next to the translation model (OCR uses it once it has loaded).");
                     println!("Compare it on your own screenshots: maru eval-ocr <folder> --engine paddle hybrid");
                 }
+                SetupCommand::Tts { small, server_url, no_test } => tts::setup(&paths, &cfg, tts::SetupOptions { small, server_url, no_test }).await?,
                 SetupCommand::Llm { backend, cuda } => setup::llm(&paths, &cfg, backend, cuda).await?,
             }
             Ok(0)

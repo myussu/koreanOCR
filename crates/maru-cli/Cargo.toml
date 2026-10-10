@@ -19,6 +19,7 @@ maru-srs.workspace = true
 maru-llm.workspace = true
 maru-ocr.workspace = true
 maru-engine.workspace = true
+maru-tts.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 tokio.workspace = true

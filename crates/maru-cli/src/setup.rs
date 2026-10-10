@@ -83,6 +83,17 @@ async fn first_reachable(base: &str, candidates: &[&str]) -> Option<String> {
     None
 }
 
+/// Download `file` from a Hugging Face repo into `dir` unless it is already there.
+pub async fn fetch_hf(repo: &str, file: &str, dir: &Path) -> Result<PathBuf> {
+    let dest = dir.join(file);
+    if dest.metadata().is_ok_and(|m| m.len() > 0) {
+        return Ok(dest);
+    }
+    std::fs::create_dir_all(dir)?;
+    download(&format!("https://huggingface.co/{repo}/resolve/main/{file}"), &dest, file).await?;
+    Ok(dest)
+}
+
 // ───────────────────────────── Kiwi ─────────────────────────────
 
 const KIWI_RELEASES_API: &str = "https://api.github.com/repos/bab2min/Kiwi/releases?per_page=20";
