@@ -50,7 +50,8 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 | `Ctrl+Alt+T` | translate the selection (falls back to the text under the cursor) |
 | `Ctrl+Alt+R` | draw a rectangle anywhere and translate what is inside |
 | `Ctrl+Alt+H` | hover mode: rest the pointer on a Korean word for its meaning |
-| `Ctrl+Alt+C` | live mode for subtitles and dialogue boxes (translates when the text changes) |
+| `Ctrl+Alt+C` | live mode for subtitles and dialogue boxes (translates when the text changes), on the last chosen area |
+| `Ctrl+Alt+Shift+C` | choose a different live-mode area (and start it there) |
 | `Ctrl+Alt+L` | history, review and status |
 
 ## The command line

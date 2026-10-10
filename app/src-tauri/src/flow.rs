@@ -113,7 +113,17 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
         *slot = Some(handle);
     }
     state.panel().pinned = true;
-    notice(&app, &state, Some(Point { x: region.x, y: region.y + region.h }), "info", "Continuous mode on: new lines in that area are translated automatically.");
+    let keys = state.engine().config().hotkeys.clone();
+    let text = format!(
+        "Continuous mode on: new lines in the {}×{} area at ({}, {}) are translated automatically. {} turns it off; {} chooses a different area.",
+        region.w.round(),
+        region.h.round(),
+        region.x.round(),
+        region.y.round(),
+        keys.continuous,
+        keys.continuous_area
+    );
+    notice(&app, &state, Some(Point { x: region.x, y: region.y + region.h }), "info", text);
     tauri::async_runtime::spawn(async move {
         while let Some(capture) = rx.recv().await {
             {
@@ -129,21 +139,29 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
 }
 
 pub fn toggle_continuous(app: &AppHandle, state: &Arc<AppState>) {
-    if state.continuous.lock().map(|mut c| c.take().is_some()).unwrap_or(false) {
+    if state.stop_continuous() {
         state.panel().pinned = false;
         notice(app, state, None, "info", "Continuous mode off.");
         return;
     }
-    match state.engine().config().continuous.region {
+    match state.live_region() {
         Some(region) => start_continuous(app.clone(), state.clone(), region),
-        None => {
-            state.panel().awaiting_continuous_region = true;
-            let _ = windows::open_picker(app);
-        }
+        None => choose_continuous_area(app, state),
     }
 }
 
-/// Keep the chosen live-mode area for next time (applies from the next launch).
+/// Let the user drag a new area for continuous mode; it starts watching there as soon as it is picked.
+pub fn choose_continuous_area(app: &AppHandle, state: &Arc<AppState>) {
+    if state.stop_continuous() {
+        state.panel().pinned = false;
+    }
+    state.panel().awaiting_continuous_region = true;
+    if windows::open_picker(app).is_err() {
+        state.panel().awaiting_continuous_region = false;
+    }
+}
+
+/// Keep the chosen live-mode area for the next launch (this session already uses it).
 fn remember_region(state: &AppState, rect: Rect) {
     let paths = &state.services.paths;
     let saved = Config::load(&paths.config_file).and_then(|mut cfg| {
@@ -161,6 +179,7 @@ pub fn picked(app: AppHandle, state: Arc<AppState>, rect: Option<Rect>) {
     let awaiting = std::mem::take(&mut state.panel().awaiting_continuous_region);
     let Some(rect) = rect else { return };
     if awaiting {
+        state.set_live_region(rect);
         remember_region(&state, rect);
         start_continuous(app, state, rect);
     } else {

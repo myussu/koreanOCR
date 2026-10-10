@@ -5,7 +5,8 @@
 translate  = "Ctrl+Alt+T"       # translate the selection (or the text under the cursor)
 region     = "Ctrl+Alt+R"       # drag a rectangle anywhere and translate what is inside
 hover      = "Ctrl+Alt+H"       # toggle hover mode: rest the pointer on a word
-continuous = "Ctrl+Alt+C"       # toggle live mode for subtitles / dialogue boxes
+continuous = "Ctrl+Alt+C"       # toggle live mode for subtitles / dialogue boxes (on the last area)
+continuous_area = "Ctrl+Alt+Shift+C"  # choose a different area for live mode, and start it there
 history    = "Ctrl+Alt+L"
 dismiss    = "Ctrl+Alt+Escape"  # (a bare Escape would be hijacked in every other app)
 

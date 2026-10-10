@@ -52,6 +52,7 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             &item("region", format!("Pick a region…\t{}", keys.region))?,
             &item("hover", format!("Toggle hover mode\t{}", keys.hover))?,
             &item("continuous", format!("Toggle continuous mode\t{}", keys.continuous))?,
+            &item("continuous_area", format!("Continuous mode: choose area…\t{}", keys.continuous_area))?,
             &PredefinedMenuItem::separator(app)?,
             &item("review", "Review & history…".into())?,
             &item("status", "Status…".into())?,
@@ -69,6 +70,7 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             }
             "hover" => flow::toggle_hover(&app, &state),
             "continuous" => flow::toggle_continuous(&app, &state),
+            "continuous_area" => flow::choose_continuous_area(&app, &state),
             "review" => {
                 let _ = windows::open_hub(&app, "review");
             }
@@ -104,7 +106,8 @@ fn main() {
             for note in &services.notes {
                 tracing::info!("{note}");
             }
-            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None) });
+            let live_region = Mutex::new(services.engine.config().continuous.region);
+            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region });
 
             let width = state.engine().config().ui.max_width_px as f32;
             windows::create_panel(app.handle(), width)?;

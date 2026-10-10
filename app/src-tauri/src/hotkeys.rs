@@ -12,6 +12,7 @@ enum Action {
     Region,
     Hover,
     Continuous,
+    ContinuousArea,
     History,
     Dismiss,
 }
@@ -24,6 +25,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
         (keys.region, Action::Region),
         (keys.hover, Action::Hover),
         (keys.continuous, Action::Continuous),
+        (keys.continuous_area, Action::ContinuousArea),
         (keys.history, Action::History),
         (keys.dismiss, Action::Dismiss),
     ];
@@ -53,6 +55,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
                 }
                 Action::Hover => flow::toggle_hover(&app, &state),
                 Action::Continuous => flow::toggle_continuous(&app, &state),
+                Action::ContinuousArea => flow::choose_continuous_area(&app, &state),
                 Action::History => {
                     let _ = windows::open_hub(&app, "history");
                 }

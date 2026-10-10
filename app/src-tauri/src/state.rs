@@ -23,11 +23,26 @@ pub struct AppState {
     pub services: Arc<Services>,
     pub panel: Mutex<PanelState>,
     pub continuous: Mutex<Option<ContinuousHandle>>,
+    /// The area live mode watches: from the config at start-up, replaced whenever a new one is picked.
+    pub live_region: Mutex<Option<Rect>>,
 }
 
 impl AppState {
     pub fn engine(&self) -> &Engine {
         &self.services.engine
+    }
+
+    pub fn live_region(&self) -> Option<Rect> {
+        *self.live_region.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    pub fn set_live_region(&self, rect: Rect) {
+        *self.live_region.lock().unwrap_or_else(|p| p.into_inner()) = Some(rect);
+    }
+
+    /// Stop the live-mode watcher; true if one was running.
+    pub fn stop_continuous(&self) -> bool {
+        self.continuous.lock().map(|mut c| c.take().is_some()).unwrap_or(false)
     }
 
     pub fn panel(&self) -> MutexGuard<'_, PanelState> {

@@ -58,6 +58,8 @@ pub struct Hotkeys {
     pub hover: String,
     /// Toggle continuous mode on the configured region (subtitles/dialogue).
     pub continuous: String,
+    /// Choose a different area for continuous mode (and start it there).
+    pub continuous_area: String,
     /// Show/hide the history of recent lines.
     pub history: String,
     /// Dismiss the panel.
@@ -71,6 +73,7 @@ impl Default for Hotkeys {
             region: "Ctrl+Alt+R".into(),
             hover: "Ctrl+Alt+H".into(),
             continuous: "Ctrl+Alt+C".into(),
+            continuous_area: "Ctrl+Alt+Shift+C".into(),
             history: "Ctrl+Alt+L".into(),
             dismiss: "Ctrl+Alt+Escape".into(),
         }
