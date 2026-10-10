@@ -57,13 +57,17 @@ pub fn words_from_chars(text: &str, line: Rect, char_boxes: &[Rect]) -> Vec<Word
         }
         cur.clear();
     };
-    for (c, b) in chars.iter().zip(per_char) {
+    for (i, (c, b)) in chars.iter().zip(per_char).enumerate() {
         if c.is_whitespace() {
             flush(&mut cur, &mut rect, &mut words);
         } else {
             cur.push(*c);
             if let Some(b) = b {
                 rect = Some(rect.map_or(b, |r| r.union(&b)));
+            }
+            // PP-OCR often drops the space after sentence punctuation ("정한다.정기회의").
+            if matches!(c, '.' | ',' | '!' | '?' | ';') && chars.get(i + 1).is_some_and(|n| ('가'..='힣').contains(n)) {
+                flush(&mut cur, &mut rect, &mut words);
             }
         }
     }
@@ -144,6 +148,14 @@ mod tests {
         let w = words_from_chars("AI 모델", Rect::new(0.0, 0.0, 200.0, 20.0), &[]);
         assert_eq!(w.len(), 2);
         assert!(w[0].rect.w < w[1].rect.w, "two Latin capitals are narrower than two Hangul syllables");
+    }
+
+    #[test]
+    fn missing_space_after_sentence_punctuation_is_restored_but_numbers_and_domains_are_not() {
+        let line = Rect { x: 0.0, y: 0.0, w: 300.0, h: 20.0 };
+        let texts = |s: &str| words_from_chars(s, line, &[]).into_iter().map(|w| w.text).collect::<Vec<_>>();
+        assert_eq!(texts("정한다.정기회의 100일을,임시회의"), ["정한다.", "정기회의", "100일을,", "임시회의"]);
+        assert_eq!(texts("3.14 www.naver.com"), ["3.14", "www.naver.com"]);
     }
 
     #[test]

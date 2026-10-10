@@ -120,8 +120,11 @@ impl OcrEngine for PaddleOcr {
                 }
                 let rect = rect_of(&region.bounding_box, &p);
                 let boxes: Vec<Rect> = region.word_boxes.iter().flatten().map(|b| rect_of(b, &p)).collect();
+                let words = geometry::words_from_chars(&text, rect, &boxes);
+                // Rebuilt from the words so repaired spacing reaches the analyser and the model too.
+                let text = if words.is_empty() { text } else { words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ") };
                 Some(OcrLine {
-                    words: geometry::words_from_chars(&text, rect, &boxes),
+                    words,
                     text,
                     rect,
                     confidence: region.confidence.unwrap_or(0.0),

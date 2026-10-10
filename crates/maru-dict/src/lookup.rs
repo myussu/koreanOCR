@@ -57,6 +57,29 @@ pub fn short_gloss(g: &str) -> String {
     s
 }
 
+/// Pick UI-sized meanings across a word's entries.
+///
+/// Proper-noun homographs are skipped when a common-word entry exists (정말 is
+/// also an old name for Denmark), and usage notes ("Used after a clause…") only
+/// fill in when there is no real meaning.
+fn collect_glosses(entries: &[DictEntry], max: usize) -> Vec<String> {
+    let common: Vec<&DictEntry> = entries.iter().filter(|e| e.pos != "proper noun").collect();
+    let pool: Vec<&DictEntry> = if common.is_empty() { entries.iter().collect() } else { common };
+    let (mut meanings, mut notes) = (Vec::new(), Vec::new());
+    for entry in pool {
+        for sense in entry.senses.iter().take(2) {
+            let g = short_gloss(&sense.gloss);
+            let bucket = if sense.gloss.starts_with("Used ") { &mut notes } else { &mut meanings };
+            if !g.is_empty() && !bucket.contains(&g) {
+                bucket.push(g);
+            }
+        }
+    }
+    meanings.extend(notes);
+    meanings.truncate(max);
+    meanings
+}
+
 impl Dictionary {
     pub fn lookup(&self, lemma: &str) -> Result<Vec<DictEntry>> {
         let conn = self.conn();
@@ -124,36 +147,13 @@ impl Dictionary {
 
     /// Up to `max` short meanings for the word, best part-of-speech match first.
     pub fn short_glosses(&self, e: &Eojeol, max: usize) -> Result<Vec<String>> {
-        let mut out: Vec<String> = Vec::new();
-        for entry in self.lookup_word(e)? {
-            for sense in entry.senses.iter().take(2) {
-                let g = short_gloss(&sense.gloss);
-                if !g.is_empty() && !out.contains(&g) {
-                    out.push(g);
-                }
-                if out.len() >= max {
-                    return Ok(out);
-                }
-            }
-        }
-        Ok(out)
+        Ok(collect_glosses(&self.lookup_word(e)?, max))
     }
 
     /// Short meanings and course level in a single pass (what the overlay shows under a word).
     pub fn gloss_and_level(&self, e: &Eojeol, max: usize) -> Result<(Vec<String>, Option<String>)> {
         let entries = self.lookup_word(e)?;
-        let mut glosses: Vec<String> = Vec::new();
-        'outer: for entry in &entries {
-            for sense in entry.senses.iter().take(2) {
-                let g = short_gloss(&sense.gloss);
-                if !g.is_empty() && !glosses.contains(&g) {
-                    glosses.push(g);
-                }
-                if glosses.len() >= max {
-                    break 'outer;
-                }
-            }
-        }
+        let glosses = collect_glosses(&entries, max);
         let mut level = entries.iter().find_map(|en| en.level.clone());
         if level.is_none() {
             level = self.level_of(e.vocab_key())?;
@@ -309,6 +309,26 @@ not json at all
         assert_eq!(normalize_level("고급").as_deref(), Some("Advanced"));
         assert_eq!(normalize_level("7"), None);
         assert_eq!(normalize_level("level"), None);
+    }
+
+    #[test]
+    fn homographs_and_usage_notes_do_not_crowd_out_real_meanings() {
+        let e = |pos: &str, glosses: &[&str]| DictEntry {
+            lemma: "정말".into(),
+            pos: pos.into(),
+            senses: glosses.iter().map(|g| DictSense { gloss: (*g).into(), examples: vec![] }).collect(),
+            hanja: None,
+            etymology: None,
+            level: None,
+        };
+        let entries = [
+            e("adverb", &["Used after a clause ending in a verb", "really"]),
+            e("noun", &["truth"]),
+            e("proper noun", &["Denmark (a country in Europe)"]),
+        ];
+        assert_eq!(collect_glosses(&entries, 3), ["really", "truth", "Used after a clause ending in a verb"]);
+        // a name that has no common-word entry is still shown
+        assert_eq!(collect_glosses(&entries[2..], 3), ["Denmark (a country in Europe)"]);
     }
 
     #[test]
