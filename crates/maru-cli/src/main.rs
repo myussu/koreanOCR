@@ -225,7 +225,7 @@ async fn run_events(mut rx: maru_engine::EventRx, json: bool) -> usize {
 fn main() -> Result<()> {
     let cli = Cli::parse();
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| if cli.verbose { "debug".into() } else { "warn".into() }))
+        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| if cli.verbose { "info,maru_engine=debug".into() } else { "warn".into() }))
         .with_writer(std::io::stderr)
         .init();
     let paths = paths_for(&cli);
@@ -268,6 +268,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             Ok(i32::from(run_events(rx, false).await > 0))
         }
         Command::Doctor { deep } => {
+            eprintln!("Starting up: loading Kiwi, OCR and the dictionary (add --verbose to see each step) …");
             let mut s = services(&paths, cfg, true).await;
             tools::doctor(&mut s, deep).await?;
             Ok(0)

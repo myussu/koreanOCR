@@ -47,10 +47,11 @@ impl<S: 'static> ComWorker<S> {
                 unsafe { CoUninitialize() };
             })
             .map_err(|e| PlatformError::Failed(e.to_string()))?;
-        match ready_rx.recv() {
+        match ready_rx.recv_timeout(Duration::from_secs(20)) {
             Ok(Ok(())) => Ok(Self { tx }),
             Ok(Err(e)) => Err(PlatformError::Failed(e)),
-            Err(_) => Err(PlatformError::Failed("COM thread exited during start-up".into())),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(PlatformError::Failed(format!("{name} did not start within 20 seconds"))),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(PlatformError::Failed("COM thread exited during start-up".into())),
         }
     }
 

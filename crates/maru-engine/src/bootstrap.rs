@@ -180,6 +180,7 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         notes.push(format!("Could not create {}: {e}", paths.data_dir.display()));
     }
 
+    tracing::info!("boot: loading the Korean analyser");
     let analyzer = {
         let paths = paths.clone();
         match tokio::task::spawn_blocking(move || {
@@ -197,7 +198,9 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         }
     };
 
+    tracing::info!("boot: opening the dictionary");
     let dict = open_dictionary(&paths, &mut notes);
+    tracing::info!("boot: opening the vocabulary");
 
     let srs = SrsConfig::from_learning(&cfg.learning);
     let vocab = match Vocab::open(&paths.vocab_db(), srs) {
@@ -208,10 +211,12 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         }
     };
 
+    tracing::info!("boot: setting up screen access (UI Automation, Windows OCR)");
     let platform = {
         let blocking = tokio::task::spawn_blocking(Platform::native).await;
         blocking.unwrap_or_else(|_| Platform::native())
     };
+    tracing::info!("boot: loading OCR");
     let ocr = {
         let (cfg, paths) = (cfg.clone(), paths.clone());
         let platform = platform.clone();
@@ -246,6 +251,7 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         None
     };
 
+    tracing::info!("boot: starting the engine");
     let engine = Engine::new(EngineParts {
         config: cfg.clone(),
         analyzer,

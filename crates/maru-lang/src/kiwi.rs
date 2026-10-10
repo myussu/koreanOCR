@@ -81,10 +81,16 @@ impl KiwiAnalyzer {
                 }
             })
             .map_err(|e| MorphError::Unavailable(e.to_string()))?;
-        match ready_rx.recv() {
+        // Loading a native library can stall (e.g. a missing system DLL); never wait forever.
+        match ready_rx.recv_timeout(std::time::Duration::from_secs(45)) {
             Ok(Ok(())) => Ok(Self { tx: Mutex::new(tx) }),
             Ok(Err(e)) => Err(MorphError::Unavailable(e)),
-            Err(_) => Err(MorphError::Unavailable("kiwi thread exited during start-up".into())),
+            Err(mpsc::RecvTimeoutError::Timeout) => Err(MorphError::Unavailable(
+                "loading Kiwi took more than 45 seconds (is the Microsoft Visual C++ runtime installed?)".into(),
+            )),
+            Err(mpsc::RecvTimeoutError::Disconnected) => Err(MorphError::Unavailable(
+                "the Kiwi thread stopped while loading (the library may have crashed; try `maru setup kiwi` again)".into(),
+            )),
         }
     }
 }
