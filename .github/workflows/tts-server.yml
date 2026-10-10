@@ -88,10 +88,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           tag="tts-server-${{ steps.src.outputs.sha }}"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" tts-server-windows-vulkan-x64.zip --clobber
+          repo="$GITHUB_REPOSITORY"   # there is no checkout of this repository here, so gh must be told which one
+          if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
+            gh release upload "$tag" tts-server-windows-vulkan-x64.zip --clobber --repo "$repo"
           else
-            gh release create "$tag" tts-server-windows-vulkan-x64.zip \
+            gh release create "$tag" tts-server-windows-vulkan-x64.zip --repo "$repo" --target "${{ github.sha }}" \
               --title "tts-server (qwentts.cpp ${{ steps.src.outputs.sha }}, ${{ steps.src.outputs.date }})" \
               --notes "Windows build of qwentts.cpp's tts-server with Vulkan, for \`maru setup tts\`. MIT licence (see the zip)."
           fi
