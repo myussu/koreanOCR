@@ -69,6 +69,8 @@ jobs:
           $out = & .\tts-server.exe 2>&1 | Out-String
           Write-Host $out
           if ($out -notmatch "Usage") { throw "tts-server did not print its usage; it may be missing a DLL" }
+          # the server exits with 1 when started without a model; that is the expected outcome here
+          exit 0
 
       - name: Pack
         shell: pwsh
