@@ -33,6 +33,14 @@ pub fn place_panel(anchor: Rect, size: (f32, f32), monitor: Rect, placement: Pla
     Point { x, y }
 }
 
+/// Keep a panel the user dragged fully on the monitor, with a margin. A panel bigger than the monitor
+/// is pinned to its top-left corner.
+pub fn keep_on_screen(pos: Point, size: (f32, f32), monitor: Rect) -> Point {
+    let max_x = (monitor.right() - size.0 - MARGIN).max(monitor.x + MARGIN);
+    let max_y = (monitor.bottom() - size.1 - MARGIN).max(monitor.y + MARGIN);
+    Point { x: pos.x.clamp(monitor.x + MARGIN, max_x), y: pos.y.clamp(monitor.y + MARGIN, max_y) }
+}
+
 /// A rectangle around a point, used when the capture has no position (clipboard copy).
 pub fn around_point(p: Point) -> Rect {
     Rect::new(p.x - 4.0, p.y - 10.0, 8.0, 20.0)
@@ -155,6 +163,19 @@ mod tests {
     fn a_panel_taller_than_the_screen_is_pinned_to_the_top() {
         let p = place_panel(Rect::new(100.0, 500.0, 100.0, 20.0), (600.0, 2000.0), MON, Placement::Auto);
         assert_eq!(p.y, 8.0);
+    }
+
+    #[test]
+    fn a_dragged_panel_cannot_leave_the_screen() {
+        let size = (600.0, 300.0);
+        let at = |x: f32, y: f32| keep_on_screen(Point { x, y }, size, MON);
+        assert_eq!((at(500.0, 400.0).x, at(500.0, 400.0).y), (500.0, 400.0), "inside: untouched");
+        assert_eq!((at(-300.0, -50.0).x, at(-300.0, -50.0).y), (8.0, 8.0));
+        assert_eq!((at(1800.0, 1000.0).x, at(1800.0, 1000.0).y), (1920.0 - 600.0 - 8.0, 1080.0 - 300.0 - 8.0));
+        let huge = keep_on_screen(Point { x: 900.0, y: 900.0 }, (3000.0, 2000.0), MON);
+        assert_eq!((huge.x, huge.y), (8.0, 8.0), "bigger than the monitor: top-left corner");
+        let second = Rect::new(1920.0, 0.0, 1280.0, 1024.0);
+        assert!(keep_on_screen(Point { x: 1000.0, y: 10.0 }, size, second).x >= 1928.0, "a second monitor keeps its own bounds");
     }
 
     #[test]

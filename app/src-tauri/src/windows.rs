@@ -105,7 +105,12 @@ pub fn place_and_show(app: &AppHandle, state: &AppState, placement: Placement) {
         (p.anchor, p.size)
     };
     let monitor = monitor_rect(app, Point { x: anchor.x + anchor.w / 2.0, y: anchor.y + anchor.h / 2.0 });
-    let at = logic::place_panel(anchor, size, monitor, placement);
+    let mut at = logic::place_panel(anchor, size, monitor, placement);
+    // A panel the user dragged stays where it was put, however its content grows.
+    if let Some((x, y)) = state.panel().custom_pos {
+        let there = Point { x, y };
+        at = logic::keep_on_screen(there, size, monitor_rect(app, Point { x: x + size.0 / 2.0, y: y + size.1 / 2.0 }));
+    }
     let _ = win.set_size(PhysicalSize::new(size.0.max(1.0) as u32, size.1.max(1.0) as u32));
     let _ = win.set_position(PhysicalPosition::new(at.x as i32, at.y as i32));
     if !state.panel().visible {

@@ -194,7 +194,39 @@ pub fn dismiss_panel(app: AppHandle, state: S) {
 
 #[tauri::command]
 pub fn set_pinned(state: S, pinned: bool) {
-    state.panel().pinned = pinned;
+    let mut p = state.panel();
+    p.pinned = pinned;
+    if !pinned {
+        p.custom_pos = None; // unpinned: it goes back next to its text with the next answer
+    }
+}
+
+/// The user drags the panel by its top bar. `dx`/`dy` are physical pixels from where the drag began.
+/// A dragged panel pins itself and stays where it is put.
+#[tauri::command]
+pub fn panel_drag(app: AppHandle, state: S, phase: String, dx: f32, dy: f32) {
+    let Some(win) = tauri::Manager::get_webview_window(&app, windows::PANEL) else { return };
+    match phase.as_str() {
+        "start" => {
+            let at = win.outer_position().map(|p| (p.x as f32, p.y as f32)).unwrap_or_default();
+            let mut p = state.panel();
+            p.drag_origin = Some(at);
+            p.pinned = true;
+        }
+        "move" => {
+            let (origin, size) = {
+                let p = state.panel();
+                (p.drag_origin, win.outer_size().map(|s| (s.width as f32, s.height as f32)).unwrap_or(p.size))
+            };
+            let Some((ox, oy)) = origin else { return };
+            let want = maru_core::Point { x: ox + dx, y: oy + dy };
+            let monitor = windows::monitor_rect(&app, maru_core::Point { x: want.x + size.0 / 2.0, y: want.y + size.1 / 2.0 });
+            let at = crate::logic::keep_on_screen(want, size, monitor);
+            let _ = win.set_position(tauri::PhysicalPosition::new(at.x as i32, at.y as i32));
+            state.panel().custom_pos = Some((at.x, at.y));
+        }
+        _ => state.panel().drag_origin = None,
+    }
 }
 
 /// The scan overlay reports where its labels are, so the window can accept clicks only over them.

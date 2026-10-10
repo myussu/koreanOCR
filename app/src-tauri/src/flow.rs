@@ -24,6 +24,9 @@ pub fn notice(app: &AppHandle, state: &AppState, anchor: Option<Point>, level: &
         let mut p = state.panel();
         p.anchor = anchor;
         p.size = (state.cfg().ui.max_width_px as f32, 80.0);
+        if !p.pinned {
+            p.custom_pos = None; // a new answer goes next to its text again, unless it was pinned in place
+        }
     }
     windows::place_and_show(app, state, state.cfg().ui.placement);
     let _ = app.emit_to(PANEL, "maru-notice", Notice { level, text: text.into() });
@@ -62,6 +65,9 @@ pub fn show_capture(app: &AppHandle, state: &Arc<AppState>, capture: Capture, wo
         let mut p = state.panel();
         p.anchor = anchor_of(&capture, cursor);
         p.size = (state.cfg().ui.max_width_px as f32, 160.0);
+        if !p.pinned {
+            p.custom_pos = None;
+        }
         p.last_capture = Some(capture.clone());
     }
     windows::place_and_show(app, state, state.cfg().ui.placement);

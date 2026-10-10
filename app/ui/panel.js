@@ -196,7 +196,8 @@ function render() {
     kids.push(
       h(
         'div',
-        { class: 'bar' },
+        { class: 'bar', title: 'drag to move' },
+        h('span', { class: 'grip', text: '⠿' }),
         h('span', { class: 'dir', text: dir }),
         h('span', { class: 'chip', text: SOURCE_LABEL[s.capture?.source] ?? s.capture?.source ?? '' }),
         s.cached && h('span', { class: 'chip', text: 'cached' }),
@@ -268,6 +269,44 @@ function flash(message) {
   next.deep.message = message;
   update(next);
 }
+
+// ───────────── moving the panel ─────────────
+
+// Drag it by the top bar (anywhere that is not a button). The app keeps it where it is put and pins it.
+// Moves are measured in screen pixels from where the drag began, so the window moving under the
+// pointer does not matter, and are sent at most once per frame.
+let drag = null;
+card.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0 || !e.target.closest('.bar') || e.target.closest('button')) return;
+  drag = { x: e.screenX, y: e.screenY, id: e.pointerId, queued: false, dx: 0, dy: 0 };
+  document.documentElement.setPointerCapture(e.pointerId); // the bar is rebuilt as results stream in; the page is not
+  pinned = true;
+  invoke('panel_drag', { phase: 'start', dx: 0, dy: 0 }).catch(() => {});
+  document.body.classList.add('dragging');
+  e.preventDefault();
+});
+document.documentElement.addEventListener('pointermove', (e) => {
+  if (!drag) return;
+  const dpr = window.devicePixelRatio || 1;
+  drag.dx = (e.screenX - drag.x) * dpr;
+  drag.dy = (e.screenY - drag.y) * dpr;
+  if (drag.queued) return;
+  drag.queued = true;
+  requestAnimationFrame(() => {
+    if (!drag) return;
+    drag.queued = false;
+    invoke('panel_drag', { phase: 'move', dx: drag.dx, dy: drag.dy }).catch(() => {});
+  });
+});
+const endDrag = () => {
+  if (!drag) return;
+  invoke('panel_drag', { phase: 'move', dx: drag.dx, dy: drag.dy }).catch(() => {}).finally(() => invoke('panel_drag', { phase: 'end', dx: 0, dy: 0 }).catch(() => {}));
+  drag = null;
+  document.body.classList.remove('dragging');
+  render(); // shows the pin
+};
+document.documentElement.addEventListener('pointerup', endDrag);
+document.documentElement.addEventListener('pointercancel', endDrag);
 
 // ───────────── sizing ─────────────
 
@@ -360,6 +399,7 @@ if (!inTauri) {
     tts_plan: ({ text }) => text.split(/(?<=[.!?])\s+/).filter(Boolean),
     tts_clip: () => silentClip(),
     tts_reading: () => {},
+    panel_drag: () => {},
     resize_panel: () => {},
     dismiss_panel: () => {},
     set_pinned: () => {},

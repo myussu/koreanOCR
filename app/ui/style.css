@@ -132,3 +132,9 @@ button.btn[disabled] { opacity: 0.5; cursor: default; }
 .w.speaking, .punct.speaking { background: var(--accent-soft); border-color: var(--accent); }
 .w.speaking .ko { color: var(--accent); }
 .deep h3 .speak-word { display: inline-flex; gap: 2px; align-items: center; }
+
+/* moving the panel */
+.bar { cursor: grab; user-select: none; }
+.bar .grip { color: var(--muted); margin-right: -2px; letter-spacing: -1px; }
+body.dragging, body.dragging .bar { cursor: grabbing; }
+.bar button { cursor: pointer; }
