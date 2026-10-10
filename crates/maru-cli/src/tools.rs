@@ -153,6 +153,29 @@ pub fn cer(truth: &str, got: &str) -> f64 {
     edit_distance(&t, &g) as f64 / t.chars().count() as f64
 }
 
+/// Order-independent character overlap: `(found, extra)` as fractions.
+///
+/// `found` is the share of the expected characters present anywhere in the output;
+/// `extra` is the share of the output's characters that are not in the expected text
+/// (real text the ground truth left out, noise, or misreads). Reading order is ignored,
+/// so a scene with several text blocks is not punished for the order they come out in.
+pub fn overlap(truth: &str, got: &str) -> (f64, f64) {
+    use std::collections::HashMap;
+    let count = |s: &str| {
+        let mut m: HashMap<char, usize> = HashMap::new();
+        for c in s.chars().filter(|c| !c.is_whitespace()) {
+            *m.entry(c).or_default() += 1;
+        }
+        m
+    };
+    let (t, g) = (count(truth), count(got));
+    let shared: usize = t.iter().map(|(c, n)| (*n).min(g.get(c).copied().unwrap_or(0))).sum();
+    let (tn, gn): (usize, usize) = (t.values().sum(), g.values().sum());
+    let found = if tn == 0 { 1.0 } else { shared as f64 / tn as f64 };
+    let extra = if gn == 0 { 0.0 } else { (gn - shared) as f64 / gn as f64 };
+    (found, extra)
+}
+
 /// Score OCR engines on your own screenshots: `name.png` + `name.txt` (the true text) per case.
 pub fn eval_ocr(engines: &[(String, std::sync::Arc<dyn maru_ocr::OcrEngine>)], dir: &Path) -> Result<()> {
     let mut cases = Vec::new();
@@ -170,7 +193,7 @@ pub fn eval_ocr(engines: &[(String, std::sync::Arc<dyn maru_ocr::OcrEngine>)], d
     }
     println!("{} test image(s)\n", cases.len());
     for (name, engine) in engines {
-        let (mut total_cer, mut times) = (0.0, Vec::new());
+        let (mut total_cer, mut total_found, mut total_extra, mut times) = (0.0, 0.0, 0.0, Vec::new());
         println!("{name}:");
         for (img_path, truth_path) in &cases {
             let img = image::open(img_path)?.to_rgb8();
@@ -180,15 +203,31 @@ pub fn eval_ocr(engines: &[(String, std::sync::Arc<dyn maru_ocr::OcrEngine>)], d
             let ms = t.elapsed().as_millis() as u32;
             let got = out.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ");
             let c = cer(&truth, &got);
+            let (found, extra) = overlap(&truth, &got);
             total_cer += c;
+            total_found += found;
+            total_extra += extra;
             times.push(ms);
             let file = img_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            println!("  {file:<28} CER {:>5.1}%  {ms:>4} ms  conf {:.2}", c * 100.0, out.confidence());
+            println!(
+                "  {file:<28} CER {:>5.1}%  found {:>5.1}%  extra {:>5.1}%  {ms:>4} ms  conf {:.2}",
+                c * 100.0,
+                found * 100.0,
+                extra * 100.0,
+                out.confidence()
+            );
             if c > 0.0 {
                 println!("      expected: {}\n      got:      {got}", truth.trim());
             }
         }
-        println!("  mean CER {:.1}%\n{}\n", 100.0 * total_cer / cases.len() as f64, summarize("latency", times));
+        let n = cases.len() as f64;
+        println!(
+            "  mean CER {:.1}%   found {:.1}%   extra {:.1}%\n{}\n",
+            100.0 * total_cer / n,
+            100.0 * total_found / n,
+            100.0 * total_extra / n,
+            summarize("latency", times)
+        );
     }
     Ok(())
 }
@@ -204,6 +243,15 @@ mod tests {
         assert_eq!(cer("", ""), 0.0);
         assert_eq!(cer("", "x"), 1.0);
         assert_eq!(cer("abcd", ""), 1.0);
+    }
+
+    #[test]
+    fn overlap_ignores_order_and_separates_missing_from_extra() {
+        assert_eq!(overlap("가나 다라", "다라가나"), (1.0, 0.0)); // same text, different order
+        let (found, extra) = overlap("가나다라", "가나 마바"); // 2 of 4 found, 2 of 4 extra
+        assert!((found - 0.5).abs() < 1e-9 && (extra - 0.5).abs() < 1e-9);
+        assert_eq!(overlap("", ""), (1.0, 0.0));
+        assert_eq!(overlap("가", ""), (0.0, 0.0));
     }
 
     #[test]
