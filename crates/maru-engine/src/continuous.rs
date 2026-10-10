@@ -88,11 +88,15 @@ async fn watch(
         };
         let Ok(Ok(frame)) = grab else { continue };
         let sig = signature(&frame);
-        if let Some(prev) = &last_sig
-            && changed_fraction(prev, &sig, CELL_THRESHOLD) > cfg.diff_threshold
-        {
-            last_change = Instant::now();
-            dirty = true;
+        match &last_sig {
+            // The first frame counts as a change at the moment it is seen, not when the watcher
+            // started: a slow first grab (a busy machine) must not make it look long settled.
+            None => last_change = Instant::now(),
+            Some(prev) if changed_fraction(prev, &sig, CELL_THRESHOLD) > cfg.diff_threshold => {
+                last_change = Instant::now();
+                dirty = true;
+            }
+            Some(_) => {}
         }
         last_sig = Some(sig);
 

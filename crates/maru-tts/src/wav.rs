@@ -83,7 +83,7 @@ pub fn concat_pcm16(parts: &[Vec<u8>], gap_secs: f32) -> Option<Vec<u8>> {
             samples.extend(std::iter::repeat_n(0i16, (gap_secs * i.sample_rate as f32) as usize));
         }
         let data = part.windows(4).position(|w| w == b"data").map(|p| p + 8)?;
-        samples.extend(part[data..].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])));
+        samples.extend(part[data..].as_chunks::<2>().0.iter().map(|c| i16::from_le_bytes(*c)));
     }
     Some(encode_pcm16(&samples, rate?))
 }
