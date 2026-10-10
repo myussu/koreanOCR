@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { SECTIONS, ALL_FIELDS, appliesLive, labelFor, valueAt, toEditor, fromEditor, withEdit, shown, isDefault, withReset, splitKeys, joinKeys, keyName, comboFromEvent, keyRisk } from '../settings-core.js';
+import { isVisible, SPEECH, SECTIONS, ALL_FIELDS, appliesLive, labelFor, valueAt, toEditor, fromEditor, withEdit, shown, isDefault, withReset, splitKeys, joinKeys, keyName, comboFromEvent, keyRisk } from '../settings-core.js';
 
 const current = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
 const defaults = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
@@ -9,7 +9,7 @@ test('every field has a unique path, a label and a known type', () => {
   const paths = ALL_FIELDS.map((f) => f.path);
   assert.equal(new Set(paths).size, paths.length);
   for (const f of ALL_FIELDS) {
-    assert.ok(f.label && ['toggle', 'select', 'number', 'range', 'percent', 'text', 'keys'].includes(f.type), f.path);
+    assert.ok(f.label && ['toggle', 'select', 'number', 'range', 'percent', 'text', 'password', 'keys'].includes(f.type), f.path);
     if (f.type === 'select') assert.ok(f.options.length >= 2, f.path);
     if (f.type === 'range' || f.type === 'number' || f.type === 'percent') assert.ok(f.min < f.max && f.step > 0, f.path);
   }
@@ -89,4 +89,22 @@ test('warns about keys that would be taken from every program', () => {
   assert.equal(keyRisk('F15'), null);
   assert.match(keyRisk('F6'), /browsers/);
   assert.match(keyRisk('T'), /everywhere else/);
+});
+
+test('speech settings: server fields only show for a server, local ones for the local voice', () => {
+  const key = SPEECH.fields.find((f) => f.path === 'tts.api_key');
+  const device = SPEECH.fields.find((f) => f.path === 'tts.device');
+  const cur = { tts: { provider: 'local' } };
+  const def = { tts: { provider: 'local' } };
+  assert.ok(!isVisible(key, {}, cur, def) && isVisible(device, {}, cur, def));
+  const draft = { 'tts.provider': 'endpoint' };
+  assert.ok(isVisible(key, draft, cur, def) && !isVisible(device, draft, cur, def));
+  assert.ok(isVisible(SPEECH.fields[0], {}, cur, def), 'fields without a condition always show');
+  assert.ok(SECTIONS.includes(SPEECH) && SECTIONS.indexOf(SPEECH) < SECTIONS.findIndex((s) => s.id === 'model'));
+});
+
+test('an API key is nullable text and never echoed into a label', () => {
+  const key = ALL_FIELDS.find((f) => f.path === 'tts.api_key');
+  assert.equal(key.type, 'password');
+  assert.equal(fromEditor({ ...key, type: 'text' }, '  '), null);
 });

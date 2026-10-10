@@ -2679,9 +2679,11 @@ dependencies = [
 name = "maru-app"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "maru-core",
  "maru-engine",
  "maru-llm",
+ "maru-tts",
  "serde",
  "serde_json",
  "tauri",
@@ -2729,6 +2731,7 @@ dependencies = [
  "maru-ocr",
  "maru-platform",
  "maru-srs",
+ "maru-tts",
  "rusqlite",
  "serde",
  "thiserror 2.0.21",
@@ -2797,6 +2800,19 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "tracing",
+]
+
+[[package]]
+name = "maru-tts"
+version = "0.1.0"
+dependencies = [
+ "maru-core",
+ "maru-llm",
+ "reqwest",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tokio",
  "tracing",
 ]
 

@@ -118,6 +118,10 @@ pub struct Status {
     pub scan_visible: bool,
     /// The lite (game) profile is in effect.
     pub lite: bool,
+    /// Speech: `off`, `loading`, `ready` or `failed: …`.
+    pub tts: String,
+    /// Where speech comes from: `local`, `server` or empty when off.
+    pub tts_source: String,
 }
 
 #[derive(Serialize)]
@@ -148,6 +152,17 @@ pub fn status(state: S) -> Status {
         vocab: e.vocab_stats().ok().map(|s| VocabCounts { total: s.total, saved: s.saved, known: s.known, due_now: s.due_now }),
         scan_visible: state.scan().visible,
         lite: state.services.lite,
+        tts: match state.services.tts_status() {
+            LlmStatus::Disabled => "off".into(),
+            LlmStatus::Starting => "loading".into(),
+            LlmStatus::Ready => "ready".into(),
+            LlmStatus::Failed(why) => format!("failed: {why}"),
+        },
+        tts_source: match (state.services.tts.is_some(), e.config().tts.provider) {
+            (false, _) => String::new(),
+            (true, maru_core::config::TtsProvider::Local) => "local".into(),
+            (true, maru_core::config::TtsProvider::Endpoint) => "server".into(),
+        },
         hover_mode: state.panel().hover_mode,
         live_mode,
         live_area: if live_mode { state.live_region() } else { None },
@@ -218,4 +233,47 @@ pub fn word_contexts(state: S, key: String) -> Res<Vec<WordContext>> {
 #[tauri::command]
 pub fn open_hub(app: AppHandle, tab: String) -> Res<()> {
     windows::open_hub(&app, &tab).map_err(err)
+}
+
+/// A spoken clip for the page to play.
+#[derive(Serialize)]
+pub struct Clip {
+    pub mime: String,
+    /// The audio file, base64.
+    pub data: String,
+    pub seconds: Option<f32>,
+    pub cached: bool,
+    pub took_ms: u64,
+}
+
+/// Speak a sentence with the *saved* speech settings, so a change can be tried without a restart
+/// (a local voice still needs its server running, which only a restart starts).
+#[tauri::command]
+pub async fn tts_test(state: S<'_>, text: Option<String>) -> Res<Clip> {
+    use base64::Engine as _;
+    use maru_core::config::TtsProvider;
+    let paths = state.services.paths.clone();
+    let cfg = maru_core::Config::load(&paths.config_file).map_err(err)?.tts;
+    if !cfg.enabled {
+        return Err("Speech is switched off. Turn it on, save, and restart.".into());
+    }
+    if cfg.provider == TtsProvider::Local {
+        match state.services.tts_status() {
+            LlmStatus::Ready => {}
+            LlmStatus::Starting => return Err("The local voice is still loading; try again in a moment.".into()),
+            LlmStatus::Failed(why) => return Err(format!("The local voice is not running: {why}")),
+            LlmStatus::Disabled => return Err("The local voice is not running yet. Save and restart Maru to start it.".into()),
+        }
+    }
+    let tts = maru_tts::Tts::new(&cfg, &paths).map_err(err)?;
+    let text = text.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "안녕하세요. 만나서 반갑습니다. 한국어를 공부하고 있어요.".into());
+    let started = std::time::Instant::now();
+    let (audio, cached) = tts.speak(&text).await.map_err(err)?;
+    Ok(Clip {
+        seconds: maru_tts::wav::info(&audio.bytes).map(|i| i.seconds),
+        mime: audio.mime,
+        data: base64::engine::general_purpose::STANDARD.encode(&audio.bytes),
+        cached,
+        took_ms: started.elapsed().as_millis() as u64,
+    })
 }

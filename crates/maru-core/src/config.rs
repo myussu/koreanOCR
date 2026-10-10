@@ -414,6 +414,8 @@ pub enum TtsProvider {
 #[serde(default)]
 pub struct TtsConfig {
     pub enabled: bool,
+    /// Also start the local server in game mode (`lite`). Off by default: it uses the GPU.
+    pub run_in_lite: bool,
     pub provider: TtsProvider,
     /// `Endpoint`: where the server is, e.g. `http://192.168.1.20:8080` or `https://api.openai.com/v1`.
     pub endpoint: Option<String>,
@@ -448,6 +450,7 @@ impl Default for TtsConfig {
     fn default() -> Self {
         Self {
             enabled: false,
+            run_in_lite: false,
             provider: TtsProvider::Local,
             endpoint: None,
             api_key: None,

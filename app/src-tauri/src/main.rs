@@ -154,6 +154,7 @@ fn main() {
             commands::scan_open,
             commands::word_contexts,
             commands::open_hub,
+            commands::tts_test,
             settings::get_settings,
             settings::save_settings,
             settings::restart_app,

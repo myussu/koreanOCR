@@ -74,3 +74,19 @@ hint = "dialogue from a fantasy role-playing game"
 gloss_mode = "all"
 [profile.glossary]
 "이도현" = "Lee Do-hyun"
+
+[tts]
+# Hear Korean read aloud (for studying). `maru setup tts` installs the local voice and switches this on;
+# `maru tts-eval` lets you listen to voices side by side first.
+enabled = false
+provider = "local"    # local = a voice on this PC (uses the GPU) | endpoint = a server
+voice = "sohee"       # the Korean voice of the local Qwen3-TTS model
+# A server on another PC (the same tts-server running there), or any OpenAI-style speech API, so this PC's GPU stays free:
+# provider = "endpoint"
+# endpoint = "http://192.168.1.20:8080"
+# api_key = "sk-..."          # paid services only
+# model = "tts-1"             # the name that service expects
+# voice = "alloy"
+# instructions = "Speak clearly and a little slowly"   # only models that support style instructions
+cache_mb = 300        # spoken sentences are kept so hearing them again is free
+run_in_lite = false   # keep the local voice off in game mode so the game has the GPU

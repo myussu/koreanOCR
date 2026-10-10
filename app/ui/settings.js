@@ -4,7 +4,7 @@
 // never re-renders the page (that would drop the cursor): each field updates itself.
 
 import { invoke } from './bridge.js';
-import { SECTIONS, appliesLive, labelFor, toEditor, fromEditor, withEdit, withReset, shown, isDefault, valueAt, splitKeys, joinKeys, comboFromEvent, keyRisk } from './settings-core.js';
+import { SECTIONS, isVisible, appliesLive, labelFor, toEditor, fromEditor, withEdit, withReset, shown, isDefault, valueAt, splitKeys, joinKeys, comboFromEvent, keyRisk } from './settings-core.js';
 
 function h(tag, props = {}, ...kids) {
   const el = document.createElement(tag);
@@ -60,6 +60,10 @@ const ensureStyles = () => {
     .keys .add { font-size: 12px; }
     .keys .add.listening { background: var(--accent); color: #fff; border-color: var(--accent); }
     .keys-note { grid-column: 1 / -1; font-size: 11.5px; color: var(--warn); text-align: right; }
+    .set-row[hidden] { display: none; }
+    .test-row { display: flex; gap: 10px; align-items: center; margin: 10px 0 2px; flex-wrap: wrap; }
+    .test-row .res { font-size: 12.5px; color: var(--muted); }
+    .test-row .res.bad { color: var(--bad); }
     .adv-toggle { all: unset; cursor: pointer; color: var(--muted); font-size: 12.5px; padding: 6px 2px; }
     .adv-toggle:hover { color: var(--accent); }
     .banner { margin: 14px 0 0; padding: 10px 14px; border-radius: 10px; font-size: 13px; }
@@ -138,8 +142,8 @@ export async function settingsView() {
       const unit = field.type === 'percent' ? '%' : field.unit;
       return { el: h('div', { class: 'set-ctl' }, input, unit && h('span', { class: 'unit', text: unit }), reset), sync, rebuild: set };
     }
-    if (field.type === 'text') {
-      input = h('input', { type: 'text', placeholder: field.placeholder ?? '', spellcheck: 'false', oninput: (e) => edit(fromEditor(field, e.target.value)) });
+    if (field.type === 'text' || field.type === 'password') {
+      input = h('input', { type: field.type, autocomplete: 'off', placeholder: field.placeholder ?? '', spellcheck: 'false', oninput: (e) => edit(fromEditor(field, e.target.value)) });
       const set = () => (input.value = toEditor(field, value()));
       set();
       return { el: h('div', { class: 'set-ctl' }, input, reset), sync, rebuild: set };
@@ -224,6 +228,7 @@ export async function settingsView() {
     build();
     updaters.push(() => {
       holder.classList.toggle('changed', field.path in draft);
+      holder.hidden = !isVisible(field, draft, data.values, data.defaults);
       ctl.sync();
     });
     holder.dataset.path = field.path;
@@ -304,11 +309,40 @@ export async function settingsView() {
       const toggle = h('button', { class: 'adv-toggle', onclick: () => (open.has(s.id) ? open.delete(s.id) : open.add(s.id), draw(), refreshAll()) });
       const body = fieldRows(s, false);
       if (adv) draw();
-      return h('section', { class: 'set-sec' }, h('h3', { text: s.title }), s.intro && h('p', { class: 'intro', text: s.intro }), body, adv && toggle, adv && advBox);
+      return h('section', { class: 'set-sec' }, h('h3', { text: s.title }), s.intro && h('p', { class: 'intro', text: s.intro }), body, adv && toggle, adv && advBox, s.action === 'tts-test' && ttsTest());
     });
     updaters.push(drawBar);
     root.replaceChildren(banner, h('h2', { text: 'Settings', style: 'margin:0' }), ...sections, components(), fileRow(), bar);
     refreshAll();
+  }
+
+  // ───────────── speech test ─────────────
+
+  function ttsTest() {
+    const res = h('span', { class: 'res' });
+    const button = btn('Test voice', async () => {
+      button.disabled = true;
+      res.className = 'res';
+      res.textContent = 'Speaking…';
+      try {
+        const clip = await invoke('tts_test', { text: null });
+        const audio = new Audio(`data:${clip.mime};base64,${clip.data}`);
+        await audio.play();
+        res.textContent = `${clip.seconds ? `${clip.seconds.toFixed(1)} s of speech` : 'Speech'} ${clip.cached ? 'from the cache' : `made in ${(clip.took_ms / 1000).toFixed(1)} s`}`;
+      } catch (e) {
+        res.className = 'res bad';
+        res.textContent = String(e);
+      } finally {
+        button.disabled = false;
+      }
+    });
+    const sync = () => {
+      const dirty = Object.keys(draft).some((p) => p.startsWith('tts.'));
+      button.disabled = dirty;
+      button.title = dirty ? 'Save first: the test uses the saved settings' : '';
+    };
+    updaters.push(sync);
+    return h('div', { class: 'test-row' }, button, res, h('span', { class: 'res', text: 'Uses the saved settings.' }));
   }
 
   // ───────────── components and the file ─────────────
@@ -329,6 +363,7 @@ export async function settingsView() {
         row('Korean analyser', status.analyser === 'kiwi', status.analyser === 'kiwi' ? 'Kiwi' : `${status.analyser} (basic)`, 'maru setup kiwi'),
         row('Dictionary', status.dictionary, status.dictionary ? 'installed' : 'not installed', 'maru dict download'),
         row('Text reader (PP-OCR)', status.ocr, status.ocr ? 'ready' : 'not installed', 'maru setup ocr'),
+        row('Speech', status.tts === 'ready', status.tts === 'off' ? 'off' : status.tts === 'ready' ? (status.tts_source === 'local' ? 'ready (this PC)' : 'ready (server)') : status.tts, 'maru setup tts'),
         row('OCR reading model', status.ocr_reader === 'ready', status.ocr_reader === 'ready' ? 'ready' : status.ocr_reader === 'off' ? 'not in use' : status.ocr_reader, 'maru setup ocr-vl'),
       ),
     );

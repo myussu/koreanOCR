@@ -15,6 +15,8 @@ default-run = "maru-app"
 maru-core = { path = "../../crates/maru-core" }
 maru-engine = { path = "../../crates/maru-engine" }
 maru-llm = { path = "../../crates/maru-llm" }
+maru-tts = { path = "../../crates/maru-tts" }
+base64 = "0.22"
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }

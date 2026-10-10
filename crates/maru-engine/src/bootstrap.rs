@@ -48,6 +48,12 @@ pub struct Services {
     pub llm_status: watch::Receiver<LlmStatus>,
     /// Updates as the OCR reading model (PaddleOCR-VL) loads; `Disabled` when it is not in use.
     pub vision_status: watch::Receiver<LlmStatus>,
+    /// Speech, when it is switched on and set up (see `[tts]`); `None` otherwise.
+    pub tts: Option<maru_tts::Tts>,
+    /// Updates as the speech server starts (a remote one is just checked); `Disabled` when speech is off.
+    pub tts_status: watch::Receiver<LlmStatus>,
+    /// Keeps the local `tts-server` alive.
+    tts_server: Arc<Mutex<Option<maru_tts::local::LocalTts>>>,
     /// Keeps `llama-server` alive; it is killed when `Services` is dropped.
     server: Arc<Mutex<Option<LlamaServer>>>,
     /// Same, for the OCR reading model.
@@ -68,6 +74,13 @@ impl Services {
     pub async fn wait_for_vision(&mut self) -> LlmStatus {
         let _ = self.vision_status.wait_for(|s| !matches!(s, LlmStatus::Starting)).await;
         self.vision_status()
+    }
+    pub fn tts_status(&self) -> LlmStatus {
+        self.tts_status.borrow().clone()
+    }
+    /// The local speech server is up (always false for a remote one).
+    pub fn tts_server_running(&self) -> bool {
+        self.tts_server.lock().map(|mut s| s.as_mut().is_some_and(|s| s.is_running())).unwrap_or(false)
     }
     pub fn vision_server_running(&self) -> bool {
         self.vision_server.lock().map(|s| s.is_some()).unwrap_or(false)
@@ -455,7 +468,78 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         });
     }
 
-    Services { engine, paths, notes, lite, llm_status: status_rx, vision_status: vision_rx, server, vision_server }
+    // Speech. A remote server costs nothing here, so it is only checked; the local one loads a model,
+    // so it starts in the background and is left out of game mode unless asked for.
+    let (tts_tx, tts_rx) = watch::channel(LlmStatus::Disabled);
+    let tts_server: Arc<Mutex<Option<maru_tts::local::LocalTts>>> = Arc::new(Mutex::new(None));
+    let tts = start_speech(&cfg, &paths, lite, opts.start_llm, &mut notes, tts_tx, tts_server.clone());
+
+    Services { engine, paths, notes, lite, tts, tts_status: tts_rx, tts_server, llm_status: status_rx, vision_status: vision_rx, server, vision_server }
+}
+
+fn start_speech(
+    cfg: &Config,
+    paths: &Paths,
+    lite: bool,
+    start_servers: bool,
+    notes: &mut Vec<String>,
+    status: watch::Sender<LlmStatus>,
+    server: Arc<Mutex<Option<maru_tts::local::LocalTts>>>,
+) -> Option<maru_tts::Tts> {
+    use maru_core::config::TtsProvider;
+    if !cfg.tts.enabled {
+        return None;
+    }
+    let tts = match maru_tts::Tts::new(&cfg.tts, paths) {
+        Ok(t) => t,
+        Err(e) => {
+            notes.push(format!("Speech: {e}"));
+            let _ = status.send(LlmStatus::Failed(e.to_string()));
+            return None;
+        }
+    };
+    match cfg.tts.provider {
+        TtsProvider::Endpoint => {
+            notes.push(format!("Speech: from {}", tts.client().root()));
+            let _ = status.send(LlmStatus::Starting);
+            let client = tts.clone();
+            if start_servers {
+                tokio::spawn(async move {
+                    let _ = status.send(match client.client().check().await {
+                        Ok(()) => LlmStatus::Ready,
+                        Err(e) => LlmStatus::Failed(e.to_string()),
+                    });
+                });
+            }
+        }
+        TtsProvider::Local => {
+            if lite && !cfg.tts.run_in_lite {
+                notes.push("Speech: not started in game mode (it would use the GPU). Set [tts] run_in_lite = true, or use a speech server on another PC.".into());
+                let _ = status.send(LlmStatus::Failed("not started in game mode".into()));
+            } else if !maru_tts::local::installed(&cfg.tts, paths) {
+                notes.push("Speech: the local voice is not installed; run `maru setup tts`.".into());
+                let _ = status.send(LlmStatus::Failed("not installed (run `maru setup tts`)".into()));
+            } else if start_servers {
+                let _ = status.send(LlmStatus::Starting);
+                let (tts_cfg, paths) = (cfg.tts.clone(), paths.clone());
+                tokio::spawn(async move {
+                    match maru_tts::local::LocalTts::start(&tts_cfg, &paths).await {
+                        Ok(s) => {
+                            if let Ok(mut slot) = server.lock() {
+                                *slot = Some(s);
+                            }
+                            let _ = status.send(LlmStatus::Ready);
+                        }
+                        Err(e) => {
+                            tracing::warn!("speech server did not start: {e}");
+                            let _ = status.send(LlmStatus::Failed(e.to_string()));
+                        }
+                    }
+                });
+            }
+        }
+    }
+    Some(tts)
 }
 
 /// Convenience: `<MARU_HOME or platform dir>/config.toml` → [`Config`].

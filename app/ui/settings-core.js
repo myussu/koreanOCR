@@ -107,7 +107,45 @@ export const SECTIONS = [
   },
 ];
 
+const SPEECH_ONLY_SERVER = { path: 'tts.provider', value: 'endpoint' };
+const SPEECH_ONLY_LOCAL = { path: 'tts.provider', value: 'local' };
+
+export const SPEECH = {
+  id: 'speech',
+  title: 'Speech',
+  intro:
+    'Hear Korean read aloud, for studying. A voice on this PC uses the GPU; a server on another PC (or a paid service) does not. Anything that speaks the OpenAI speech API works, including the same local voice running on a second computer. Changes need a restart; "Test voice" tries the saved settings.',
+  action: 'tts-test',
+  fields: [
+    { path: 'tts.enabled', label: 'Read Korean aloud', type: 'toggle' },
+    {
+      path: 'tts.provider',
+      label: 'Where the voice runs',
+      type: 'select',
+      options: opts(['local', 'On this PC (uses the GPU)'], ['endpoint', 'A server: another PC, or a paid service']),
+    },
+    { path: 'tts.endpoint', label: 'Server address', help: 'e.g. http://192.168.1.20:8080 or https://api.openai.com/v1', type: 'text', nullable: true, placeholder: 'http://192.168.1.20:8080', when: SPEECH_ONLY_SERVER },
+    { path: 'tts.api_key', label: 'API key', help: 'Only paid services need one. Stored in config.toml on this PC', type: 'password', nullable: true, when: SPEECH_ONLY_SERVER },
+    { path: 'tts.model', label: 'Model name', help: 'qwen3-tts for the local voice; tts-1 or gpt-4o-mini-tts for OpenAI', type: 'text', when: SPEECH_ONLY_SERVER },
+    { path: 'tts.voice', label: 'Voice', help: 'sohee is the Korean voice of the local model; services have their own names', type: 'text' },
+    { path: 'tts.language', label: 'Language label', help: 'Empty = Korean for the local voice, the server decides otherwise', type: 'text', advanced: true },
+    { path: 'tts.instructions', label: 'Speaking style', help: 'e.g. "Speak clearly and a little slowly". Only some models obey it', type: 'text', nullable: true, advanced: true },
+    { path: 'tts.speed', label: 'Speed', help: 'The local voice ignores this', type: 'number', min: 0.25, max: 4, step: 0.05, advanced: true },
+    { path: 'tts.cache_mb', label: 'Keep spoken sentences up to', help: 'Hearing a sentence again is then instant and free. 0 = off', type: 'number', min: 0, max: 20000, step: 50, unit: 'MB', advanced: true },
+    { path: 'tts.device', label: 'Run the local voice on', type: 'select', options: opts(['auto', 'Automatic'], ['CUDA0', 'NVIDIA (CUDA)'], ['Vulkan0', 'Vulkan'], ['CPU', 'CPU']), advanced: true, when: SPEECH_ONLY_LOCAL },
+    { path: 'tts.run_in_lite', label: 'Also in game mode', help: 'Off, so a game keeps the GPU', type: 'toggle', advanced: true, when: SPEECH_ONLY_LOCAL },
+    { path: 'tts.port', label: 'Local voice port', type: 'number', min: 1024, max: 65535, step: 1, advanced: true, when: SPEECH_ONLY_LOCAL },
+  ],
+};
+
+SECTIONS.splice(SECTIONS.findIndex((x) => x.id === 'model'), 0, SPEECH);
+
 export const ALL_FIELDS = SECTIONS.flatMap((s) => s.fields);
+/** Does a field show up now? Some only matter for one choice of another setting. */
+export function isVisible(field, draft, current, defaults) {
+  return !field.when || shown(draft, current, defaults, field.when.path) === field.when.value;
+}
+
 export const labelFor = (path) => ALL_FIELDS.find((f) => f.path === path)?.label ?? path;
 
 // ───────────── values ─────────────
