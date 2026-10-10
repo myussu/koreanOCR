@@ -218,10 +218,14 @@ fn open_dictionary(paths: &Paths, notes: &mut Vec<String>) -> Option<Arc<Diction
     }
 }
 
+/// Longest image side the screen-scan detector sees at full size: a 1080p screen plus padding.
+const SCAN_DETECT_SIDE: u32 = 2048;
+
 #[cfg(feature = "paddle")]
-fn load_paddle(cfg: &Config, paths: &Paths) -> Result<Arc<dyn OcrEngine>, String> {
+fn load_paddle(cfg: &Config, paths: &Paths, detect_side: Option<u32>) -> Result<Arc<dyn OcrEngine>, String> {
     use maru_ocr::paddle::{PaddleConfig, PaddleOcr};
-    let pc = PaddleConfig::resolve(&cfg.ocr, paths);
+    let mut pc = PaddleConfig::resolve(&cfg.ocr, paths);
+    pc.detect_side = detect_side;
     // ONNX Runtime failing to load can panic inside `ort`; never let that take the app down.
     match std::panic::catch_unwind(|| PaddleOcr::load(&pc)) {
         Ok(Ok(engine)) => Ok(Arc::new(engine)),
@@ -231,7 +235,7 @@ fn load_paddle(cfg: &Config, paths: &Paths) -> Result<Arc<dyn OcrEngine>, String
 }
 
 #[cfg(not(feature = "paddle"))]
-fn load_paddle(_: &Config, _: &Paths) -> Result<Arc<dyn OcrEngine>, String> {
+fn load_paddle(_: &Config, _: &Paths, _: Option<u32>) -> Result<Arc<dyn OcrEngine>, String> {
     Err("this build has no PP-OCR support".into())
 }
 
@@ -239,7 +243,7 @@ fn choose_ocr(cfg: &Config, paths: &Paths, platform: &Platform, notes: &mut Vec<
     let windows = platform.os_ocr.clone();
     let paddle = match cfg.ocr.backend {
         OcrBackend::Windows => Err("not selected".to_string()),
-        _ => load_paddle(cfg, paths),
+        _ => load_paddle(cfg, paths, None),
     };
     let chosen = match (cfg.ocr.backend, paddle) {
         (OcrBackend::Windows, _) => windows,
@@ -310,23 +314,39 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         blocking.unwrap_or_else(|_| Platform::native())
     };
     tracing::info!("boot: loading OCR");
-    let ocr = {
-        let (cfg, paths) = (cfg.clone(), paths.clone());
+    let (ocr, scan_ocr) = {
+        let (blocking_cfg, blocking_paths) = (cfg.clone(), paths.clone());
         let platform = platform.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut n = Vec::new();
-            let o = choose_ocr(&cfg, &paths, &platform, &mut n);
+            let o = choose_ocr(&blocking_cfg, &blocking_paths, &platform, &mut n);
             (o, n)
         })
         .await;
-        match result {
+        let chosen = match result {
             Ok((o, n)) => {
                 notes.extend(n);
                 o
             }
             Err(_) => None,
+        };
+        // Whole-screen scans use their own copy of PP-OCR that looks at the full resolution. It is
+        // built on first use, so sessions that never scan pay nothing. (With Windows OCR as the
+        // engine there is nothing to tune: scans simply use it.)
+        let scan = chosen.as_ref().filter(|o| o.name() == "paddle").map(|_| {
+            let (cfg, paths) = (cfg.clone(), paths.clone());
+            Arc::new(maru_ocr::LazyOcr::new(move || load_paddle(&cfg, &paths, Some(SCAN_DETECT_SIDE)))) as Arc<dyn OcrEngine>
+        });
+        (chosen.map(|o| crate::respace::RespacingOcr::wrap(o, &analyzer)), scan)
+    };
+
+    // Screen-scan labels are remembered between sessions.
+    let labels = match crate::labels::LabelCache::open(&paths.labels_db()) {
+        Ok(c) => Arc::new(c),
+        Err(e) => {
+            notes.push(format!("Screen labels: could not open {} ({e}); they will not be remembered.", paths.labels_db().display()));
+            Arc::new(crate::labels::LabelCache::open_in_memory().expect("an in-memory database always opens"))
         }
-        .map(|o| crate::respace::RespacingOcr::wrap(o, &analyzer))
     };
 
     // Vision reader: PP-OCR finds the lines, PaddleOCR-VL reads them better. It loads in the
@@ -377,6 +397,8 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         llm_status: Some(status_rx.clone()),
         platform,
         ocr,
+        scan_ocr,
+        labels: Some(labels),
     });
 
     if opts.start_llm && cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart {

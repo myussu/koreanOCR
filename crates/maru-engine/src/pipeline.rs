@@ -28,22 +28,28 @@ const LLM_WAIT: std::time::Duration = std::time::Duration::from_secs(180);
 const NO_LLM: &str = "No language model is running, so only the offline breakdown is shown. Start one with `maru setup llm`.";
 
 #[derive(Clone)]
-struct Emitter {
+pub(crate) struct Emitter {
     tx: EventTx,
     id: u64,
 }
 
 impl Emitter {
-    fn send(&self, e: Event) {
+    pub(crate) fn new(tx: EventTx, id: u64) -> Self {
+        Self { tx, id }
+    }
+    pub(crate) fn id(&self) -> u64 {
+        self.id
+    }
+    pub(crate) fn send(&self, e: Event) {
         let _ = self.tx.send(e);
     }
-    fn error(&self, stage: Stage, message: impl Into<String>) {
+    pub(crate) fn error(&self, stage: Stage, message: impl Into<String>) {
         self.send(Event::Error { id: self.id, stage, message: message.into() });
     }
     fn timing(&self, stage: Stage, since: Instant) {
         self.send(Event::Timing { id: self.id, stage, ms: since.elapsed().as_millis().min(u128::from(u32::MAX)) as u32 });
     }
-    fn done(&self) {
+    pub(crate) fn done(&self) {
         self.send(Event::Done { id: self.id });
     }
 }
@@ -178,7 +184,7 @@ async fn run_glosses(
 }
 
 /// The model client once it is usable, waiting (politely, with a note) while it loads.
-async fn await_llm(inner: &Inner, em: &Emitter) -> Option<LlmClient> {
+pub(crate) async fn await_llm(inner: &Inner, em: &Emitter) -> Option<LlmClient> {
     let Some(client) = inner.llm.clone() else {
         em.error(Stage::Llm, NO_LLM);
         return None;
@@ -207,7 +213,7 @@ async fn await_llm(inner: &Inner, em: &Emitter) -> Option<LlmClient> {
     }
 }
 
-fn effective_gloss_mode(inner: &Inner, profile: Option<&maru_core::config::AppProfile>) -> GlossMode {
+pub(crate) fn effective_gloss_mode(inner: &Inner, profile: Option<&maru_core::config::AppProfile>) -> GlossMode {
     profile.and_then(|p| p.gloss_mode).unwrap_or(inner.cfg.learning.gloss_mode)
 }
 

@@ -29,6 +29,7 @@ serde.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 image.workspace = true
+rusqlite.workspace = true
 
 [dev-dependencies]
 maru-llm = { workspace = true, features = ["testing"] }

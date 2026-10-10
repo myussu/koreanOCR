@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::types::{Capture, Direction, Eojeol, Gloss, Register};
+use crate::types::{Capture, Direction, Eojeol, Gloss, LabelSource, Rect, Register, ScanItem};
 
 /// Which text a breakdown/gloss refers to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -118,6 +118,14 @@ pub enum Event {
     /// A word's learning state changed (saved, reviewed, marked known).
     WordState { id: u64, status: crate::types::WordStatus },
 
+    // ── screen scan (annotate every Korean text on screen) ──
+    /// A scan began; `screen` is the area being read, in physical screen pixels.
+    ScanStarted { id: u64, screen: Rect },
+    /// Everything found, with the instant offline labels. Paint these immediately.
+    ScanItems { id: u64, items: Vec<ScanItem> },
+    /// A better label for one item (remembered, glossary, or from the model).
+    ScanLabel { id: u64, item: u32, label: String, source: LabelSource },
+
     Timing { id: u64, stage: Stage, ms: u32 },
     Error { id: u64, stage: Stage, message: String },
     Done { id: u64 },
@@ -135,6 +143,9 @@ impl Event {
             | Event::DeepEntries { id, .. }
             | Event::DeepDelta { id, .. }
             | Event::WordState { id, .. }
+            | Event::ScanStarted { id, .. }
+            | Event::ScanItems { id, .. }
+            | Event::ScanLabel { id, .. }
             | Event::Timing { id, .. }
             | Event::Error { id, .. }
             | Event::Done { id } => *id,
@@ -155,5 +166,27 @@ mod tests {
         assert_eq!(e.id(), 7);
         let back: Event = serde_json::from_value(v).unwrap();
         assert_eq!(back, e);
+    }
+
+    #[test]
+    fn scan_events_round_trip_and_carry_their_request_id() {
+        let items = vec![ScanItem {
+            item: 3,
+            rect: Rect::new(10.0, 20.0, 80.0, 18.0),
+            text: "인벤토리".into(),
+            label: String::new(),
+            source: LabelSource::Pending,
+            known: false,
+        }];
+        for e in [
+            Event::ScanStarted { id: 9, screen: Rect::new(0.0, 0.0, 1920.0, 1080.0) },
+            Event::ScanItems { id: 9, items },
+            Event::ScanLabel { id: 9, item: 3, label: "Inventory".into(), source: LabelSource::Model },
+        ] {
+            assert_eq!(e.id(), 9);
+            let v = serde_json::to_value(&e).unwrap();
+            assert_eq!(serde_json::from_value::<Event>(v).unwrap(), e);
+        }
+        assert_eq!(serde_json::to_value(LabelSource::Cache).unwrap(), "cache");
     }
 }

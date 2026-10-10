@@ -186,7 +186,7 @@ fn distance(r: &Rect, p: Point) -> f32 {
     (dx * dx + dy * dy).sqrt()
 }
 
-fn clip(r: Rect, bounds: Rect) -> Rect {
+pub(crate) fn clip(r: Rect, bounds: Rect) -> Rect {
     let x = r.x.max(bounds.x);
     let y = r.y.max(bounds.y);
     Rect::new(x, y, (r.right().min(bounds.right()) - x).max(0.0), (r.bottom().min(bounds.bottom()) - y).max(0.0))

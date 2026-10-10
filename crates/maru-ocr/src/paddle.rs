@@ -10,7 +10,9 @@ use image::RgbImage;
 use maru_core::config::OcrConfig;
 use maru_core::{Paths, Rect};
 use oar_ocr::core::config::{OrtExecutionProvider, OrtSessionConfig};
+use oar_ocr::domain::tasks::TextDetectionConfig;
 use oar_ocr::oarocr::{OAROCR, OAROCRBuilder};
+use oar_ocr::processors::LimitType;
 
 use crate::{OcrEngine, OcrError, OcrLine, OcrOutput, Result, geometry, prep};
 
@@ -23,6 +25,10 @@ pub struct PaddleConfig {
     pub dict_path: PathBuf,
     /// `cpu`, `cuda[:N]`, `directml[:N]`
     pub device: String,
+    /// Longest image side the detector may look at without shrinking it. `None` keeps the library's
+    /// default (960 px), which suits selections; reading a whole 1080p screen needs about 2048 or
+    /// small interface text shrinks out of existence.
+    pub detect_side: Option<u32>,
 }
 
 impl PaddleConfig {
@@ -34,6 +40,7 @@ impl PaddleConfig {
             rec_model: cfg.rec_model.clone().unwrap_or_else(|| dir.join("rec.onnx")),
             dict_path: cfg.dict_path.clone().unwrap_or_else(|| dir.join("dict.txt")),
             device: cfg.device.clone(),
+            detect_side: None,
         }
     }
 
@@ -85,6 +92,14 @@ impl PaddleOcr {
             .return_word_box(true);
         if let Some(session) = session_config(&cfg.device)? {
             builder = builder.ort_session(session);
+        }
+        if let Some(side) = cfg.detect_side {
+            builder = builder.text_detection_config(TextDetectionConfig {
+                limit_side_len: Some(side),
+                limit_type: Some(LimitType::Max),
+                max_side_len: Some(side.max(4000)),
+                ..Default::default()
+            });
         }
         let ocr = builder.build().map_err(|e| OcrError::Init(e.to_string()))?;
         Ok(Self { ocr })

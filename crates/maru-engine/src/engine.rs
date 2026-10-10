@@ -59,6 +59,11 @@ pub struct EngineParts {
     pub llm_status: Option<tokio::sync::watch::Receiver<LlmStatus>>,
     pub platform: Platform,
     pub ocr: Option<Arc<dyn OcrEngine>>,
+    /// Reads whole screens for [`Engine::scan`]: the plain detector at a high resolution, without the
+    /// vision reader (which only sees about a megapixel and would blur small game text). `None` = use `ocr`.
+    pub scan_ocr: Option<Arc<dyn OcrEngine>>,
+    /// Remembered scan labels. `None` = labels are not remembered between scans.
+    pub labels: Option<Arc<crate::labels::LabelCache>>,
 }
 
 /// A click on a word, with the context needed to explain it.
@@ -89,6 +94,9 @@ pub(crate) struct Inner {
     pub capturer: Capturer,
     pub platform: Platform,
     pub ocr: Option<Arc<dyn OcrEngine>>,
+    pub scan_ocr: Option<Arc<dyn OcrEngine>>,
+    pub labels: Option<Arc<crate::labels::LabelCache>>,
+    pub scan_task: Mutex<Option<JoinHandle<()>>>,
     pub cache: Mutex<Cache>,
     pub memory: Mutex<Memory>,
     pub history: Mutex<History>,
@@ -135,6 +143,9 @@ impl Engine {
             capturer,
             platform: parts.platform,
             ocr: parts.ocr,
+            scan_ocr: parts.scan_ocr,
+            labels: parts.labels,
+            scan_task: Mutex::new(None),
             cache: Mutex::new(Cache::new(256)),
             memory: Mutex::new(Memory::new(cfg.llm.context_lines)),
             history: Mutex::new(History::new(cfg.continuous.history_len)),
@@ -225,6 +236,16 @@ impl Engine {
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = self.inner.clone();
         self.spawn_into(&self.inner.translate_task, pipeline::translate(inner, id, capture, tx));
+        (id, rx)
+    }
+
+    /// Read the Korean text in `screen` (physical pixels) and label it: dictionary meanings at once,
+    /// remembered labels instantly, the rest from the model. A newer scan cancels an older one.
+    pub fn scan(&self, screen: Rect) -> (u64, EventRx) {
+        let id = self.next_id();
+        let (tx, rx) = mpsc::unbounded_channel();
+        let inner = self.inner.clone();
+        self.spawn_into(&self.inner.scan_task, crate::scan::run(inner, id, screen, tx));
         (id, rx)
     }
 

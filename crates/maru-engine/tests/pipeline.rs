@@ -76,6 +76,8 @@ fn build(cfg: Config, llm: Option<LlmClient>, server: Option<MockServer>) -> Har
         llm_status: None,
         platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
         ocr: None,
+        scan_ocr: None,
+        labels: None,
     });
     Harness { engine, vocab, server }
 }
@@ -110,6 +112,9 @@ fn names(events: &[Event]) -> Vec<&'static str> {
             Event::DeepEntries { .. } => "deep_entries",
             Event::DeepDelta { .. } => "deep_delta",
             Event::WordState { .. } => "word_state",
+            Event::ScanStarted { .. } => "scan_started",
+            Event::ScanItems { .. } => "scan_items",
+            Event::ScanLabel { .. } => "scan_label",
             Event::Timing { .. } => "timing",
             Event::Error { .. } => "error",
             Event::Done { .. } => "done",
@@ -407,6 +412,8 @@ async fn requests_wait_for_a_model_that_is_still_loading() {
         llm_status: Some(status_rx),
         platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
         ocr: None,
+        scan_ocr: None,
+        labels: None,
     });
     assert_eq!(engine.llm_status(), LlmStatus::Starting);
 
@@ -442,8 +449,220 @@ async fn a_model_that_failed_to_start_explains_why() {
         llm_status: Some(status_rx),
         platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
         ocr: None,
+        scan_ocr: None,
+        labels: None,
     });
     let events = collect(engine.translate(Capture::typed(SENTENCE)).1).await;
     assert!(events.iter().any(|e| matches!(e, Event::Error { message, .. } if message.contains("out of VRAM"))));
     assert!(events.iter().any(|e| matches!(e, Event::Breakdown { .. })));
+}
+
+// ───────────────────────────── screen scan ─────────────────────────────
+
+mod scan {
+    use maru_core::config::GlossMode;
+    use maru_core::{LabelSource, Rect, ScanItem};
+    use maru_engine::labels::LabelCache;
+    use maru_ocr::{OcrEngine, OcrLine, OcrOutput};
+
+    use super::*;
+
+    /// Returns the same recognised lines for every screen.
+    struct FakeOcr(Vec<OcrLine>);
+
+    impl OcrEngine for FakeOcr {
+        fn name(&self) -> &'static str {
+            "fake"
+        }
+        fn recognize(&self, _: &image::RgbImage) -> maru_ocr::Result<OcrOutput> {
+            Ok(OcrOutput { lines: self.0.clone() })
+        }
+    }
+
+    fn line(text: &str, x: f32, y: f32) -> OcrLine {
+        OcrLine { text: text.into(), rect: Rect::new(x, y, 120.0, 22.0), words: vec![], confidence: 0.95 }
+    }
+
+    /// A model that labels the screen strings it recognises, line by line, and counts as `?` the rest.
+    fn labeller(_path: &str, body: &str) -> MockResponse {
+        let table = [("인벤토리", "Inventory"), ("확인", "OK"), ("상점", "Shop"), ("학교", "School")];
+        let mut lines = Vec::new();
+        // the request body is JSON: its newlines arrive as the two characters `\n`
+        for part in body.split("\\n") {
+            let Some((n, text)) = part.split_once('|') else { continue };
+            if let Ok(n) = n.trim().parse::<usize>() {
+                let label = table.iter().find(|(k, _)| text.trim() == *k).map(|(_, v)| *v).unwrap_or("?");
+                lines.push(format!("{n}|{label}\n"));
+            }
+        }
+        let refs: Vec<&str> = lines.iter().map(String::as_str).collect();
+        MockResponse { status: 200, chunks: sse_answer(&refs), delay_ms: 1 }
+    }
+
+    struct Setup {
+        engine: Engine,
+        vocab: Arc<Vocab>,
+        server: Option<MockServer>,
+    }
+
+    impl Setup {
+        fn model_requests(&self) -> usize {
+            self.server.as_ref().map_or(0, |s| s.requests.lock().unwrap().iter().filter(|(_, b)| b.contains("Strings:")).count())
+        }
+    }
+
+    async fn setup(lines: Vec<OcrLine>, with_model: bool, tweak: impl FnOnce(&mut Config), labels: Option<Arc<LabelCache>>) -> Setup {
+        let server = if with_model { Some(spawn_mock(labeller).await) } else { None };
+        let mut cfg = Config::default();
+        tweak(&mut cfg);
+        let dict = Dictionary::open_in_memory().unwrap();
+        dict.import_kaikki(Cursor::new(KAIKKI), |_| {}).unwrap();
+        let vocab = Arc::new(Vocab::open_in_memory(SrsConfig::from_learning(&cfg.learning)).unwrap());
+        let screen = FakeScreen { app: Some(AppInfo { exe: "game.exe".into(), title: "Game".into() }), ..FakeScreen::new(vec![FakeScreen::blank(1920, 1080)]) };
+        let llm = server.as_ref().map(|s| LlmClient::new(&s.url, &cfg.llm));
+        let engine = Engine::new(EngineParts {
+            config: cfg,
+            analyzer: Analyzer::heuristic(),
+            dict: Some(Arc::new(dict)),
+            vocab: vocab.clone(),
+            llm,
+            llm_status: None,
+            platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(screen), os_ocr: None },
+            ocr: None,
+            scan_ocr: Some(Arc::new(FakeOcr(lines))),
+            labels,
+        });
+        Setup { engine, vocab, server }
+    }
+
+    const SCREEN: Rect = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+
+    fn items_of(events: &[Event]) -> Vec<ScanItem> {
+        events
+            .iter()
+            .find_map(|e| if let Event::ScanItems { items, .. } = e { Some(items.clone()) } else { None })
+            .expect("a ScanItems event")
+    }
+
+    fn model_labels(events: &[Event]) -> Vec<(u32, String)> {
+        events.iter().filter_map(|e| if let Event::ScanLabel { item, label, .. } = e { Some((*item, label.clone())) } else { None }).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_screen_fills_in_dictionary_first_then_model_labels_in_one_request() {
+        let s = setup(vec![line("인벤토리", 100.0, 100.0), line("Menu", 100.0, 150.0), line("학교", 100.0, 200.0), line("확인", 900.0, 900.0)], true, |_| {}, None).await;
+        let (_, rx) = s.engine.scan(SCREEN);
+        let events = collect(rx).await;
+
+        // order: started → items → labels → done, and nothing that is not Korean
+        let order = names(&events);
+        assert_eq!(order.first(), Some(&"scan_started"));
+        assert!(first_index(&events, "scan_items") < first_index(&events, "scan_label"));
+        assert_eq!(order.last(), Some(&"done"));
+        let items = items_of(&events);
+        assert_eq!(items.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(), ["인벤토리", "학교", "확인"]);
+
+        // the dictionary's meaning is on screen before the model has answered
+        let school = items.iter().find(|i| i.text == "학교").unwrap();
+        assert_eq!((school.label.as_str(), school.source), ("school", LabelSource::Dictionary));
+        assert_eq!(items[0].source, LabelSource::Pending);
+
+        // every string was asked in a single batched request, and answered
+        assert_eq!(s.model_requests(), 1);
+        let labels = model_labels(&events);
+        assert!(labels.contains(&(0, "Inventory".into())) && labels.contains(&(2, "OK".into())) && labels.contains(&(1, "School".into())), "{labels:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::Timing { stage: Stage::Ocr, .. })));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_second_visit_to_the_same_screen_needs_no_model() {
+        let cache = Arc::new(LabelCache::open_in_memory().unwrap());
+        let s = setup(vec![line("인벤토리", 100.0, 100.0), line("확인", 300.0, 400.0)], true, |_| {}, Some(cache.clone())).await;
+        collect(s.engine.scan(SCREEN).1).await;
+        assert_eq!(s.model_requests(), 1);
+        assert_eq!(cache.len(), 2, "the labels were remembered");
+
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        assert_eq!(s.model_requests(), 1, "no second request");
+        let items = items_of(&events);
+        assert!(items.iter().all(|i| i.source == LabelSource::Cache), "{items:?}");
+        assert_eq!(items.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(), ["Inventory", "OK"]);
+        assert!(model_labels(&events).is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn glossary_entries_are_fixed_labels_and_never_asked() {
+        let s = setup(
+            vec![line("인벤토리", 100.0, 100.0), line("상점", 100.0, 200.0)],
+            true,
+            |cfg| {
+                let mut p = AppProfile { name: "game".into(), exe: vec!["game.exe".into()], ..Default::default() };
+                p.glossary.insert("인벤토리".into(), "Bag".into());
+                cfg.profiles.push(p);
+            },
+            None,
+        )
+        .await;
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        let items = items_of(&events);
+        assert_eq!((items[0].label.as_str(), items[0].source), ("Bag", LabelSource::Glossary));
+        let asked = s.server.as_ref().unwrap().requests.lock().unwrap().iter().map(|(_, b)| b.clone()).collect::<Vec<_>>();
+        assert!(asked.iter().all(|b| !b.contains("0|인벤토리")), "the glossary word was not sent to the model: {asked:?}");
+        assert_eq!(model_labels(&events), vec![(1, "Shop".to_string())]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn words_you_know_are_faded_or_hidden_and_not_sent_to_the_model() {
+        for (mode, shown, known_flag) in [(GlossMode::FadeKnown, 2usize, true), (GlossMode::HideKnown, 1, false), (GlossMode::All, 2, false)] {
+            let s = setup(vec![line("학교", 100.0, 100.0), line("상점", 100.0, 200.0)], true, |cfg| cfg.learning.gloss_mode = mode, None).await;
+            s.vocab.mark_known("학교", true, maru_srs::now_secs()).unwrap();
+            let events = collect(s.engine.scan(SCREEN).1).await;
+            let items = items_of(&events);
+            assert_eq!(items.len(), shown, "{mode:?}");
+            if let Some(school) = items.iter().find(|i| i.text == "학교") {
+                assert_eq!(school.known, known_flag, "{mode:?}");
+            }
+            let asked = s.server.as_ref().unwrap().requests.lock().unwrap().iter().map(|(_, b)| b.clone()).collect::<Vec<_>>();
+            let sent_school = asked.iter().any(|b| b.contains("|학교"));
+            assert_eq!(sent_school, mode == GlossMode::All, "{mode:?}: a known word is only sent when every word is wanted");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn without_a_model_the_dictionary_labels_still_appear_with_one_clear_error() {
+        let s = setup(vec![line("학교", 100.0, 100.0), line("인벤토리", 100.0, 200.0)], false, |_| {}, None).await;
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        assert_eq!(items_of(&events)[0].label, "school");
+        let errors: Vec<_> = events.iter().filter(|e| matches!(e, Event::Error { stage: Stage::Llm, .. })).collect();
+        assert_eq!(errors.len(), 1);
+        assert_eq!(names(&events).last(), Some(&"done"));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_screen_with_no_korean_just_finishes() {
+        let s = setup(vec![line("Press any key", 10.0, 10.0)], true, |_| {}, None).await;
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        assert!(items_of(&events).is_empty());
+        assert_eq!(s.model_requests(), 0, "nothing to ask");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn no_ocr_engine_is_reported_not_hidden() {
+        let server = spawn_mock(labeller).await;
+        let cfg = Config::default();
+        let engine = Engine::new(EngineParts {
+            config: cfg.clone(),
+            analyzer: Analyzer::heuristic(),
+            dict: None,
+            vocab: Arc::new(Vocab::open_in_memory(SrsConfig::default()).unwrap()),
+            llm: Some(LlmClient::new(&server.url, &cfg.llm)),
+            llm_status: None,
+            platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
+            ocr: None,
+            scan_ocr: None,
+            labels: None,
+        });
+        let events = collect(engine.scan(SCREEN).1).await;
+        assert!(events.iter().any(|e| matches!(e, Event::Error { stage: Stage::Ocr, message, .. } if message.contains("OCR"))));
+    }
 }

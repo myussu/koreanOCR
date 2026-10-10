@@ -15,9 +15,11 @@ pub mod continuous;
 pub mod engine;
 pub mod memory;
 mod pipeline;
+mod scan;
 pub mod respace;
 pub mod vision;
 pub mod hybrid_ocr;
+pub mod labels;
 pub mod vlm_ocr;
 
 pub use bootstrap::{BootOptions, Services, boot, load_config};

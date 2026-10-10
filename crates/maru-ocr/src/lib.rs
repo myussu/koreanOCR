@@ -86,6 +86,34 @@ impl OcrOutput {
 }
 
 /// Anything that can read text from an image.
+/// An engine that is only built the first time it is used.
+///
+/// A second, differently tuned copy of PP-OCR (for whole-screen scans) costs a second or so to
+/// load and about a hundred megabytes; most sessions never scan, so nothing is paid until then.
+pub struct LazyOcr {
+    build: Box<dyn Fn() -> std::result::Result<std::sync::Arc<dyn OcrEngine>, String> + Send + Sync>,
+    engine: std::sync::OnceLock<std::result::Result<std::sync::Arc<dyn OcrEngine>, String>>,
+}
+
+impl LazyOcr {
+    pub fn new(build: impl Fn() -> std::result::Result<std::sync::Arc<dyn OcrEngine>, String> + Send + Sync + 'static) -> Self {
+        Self { build: Box::new(build), engine: std::sync::OnceLock::new() }
+    }
+}
+
+impl OcrEngine for LazyOcr {
+    fn name(&self) -> &'static str {
+        "lazy"
+    }
+
+    fn recognize(&self, image: &RgbImage) -> Result<OcrOutput> {
+        match self.engine.get_or_init(|| (self.build)()) {
+            Ok(engine) => engine.recognize(image),
+            Err(why) => Err(OcrError::Init(why.clone())),
+        }
+    }
+}
+
 pub trait OcrEngine: Send + Sync {
     fn name(&self) -> &'static str;
     /// Recognise text in `image`. Coordinates in the result are image pixels.
@@ -95,6 +123,31 @@ pub trait OcrEngine: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_lazy_engine_is_built_once_on_first_use() {
+        struct Echo;
+        impl OcrEngine for Echo {
+            fn name(&self) -> &'static str {
+                "echo"
+            }
+            fn recognize(&self, _: &RgbImage) -> Result<OcrOutput> {
+                Ok(OcrOutput::default())
+            }
+        }
+        let built = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = built.clone();
+        let lazy = LazyOcr::new(move || {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(std::sync::Arc::new(Echo) as std::sync::Arc<dyn OcrEngine>)
+        });
+        assert_eq!(built.load(std::sync::atomic::Ordering::SeqCst), 0, "nothing is built until it is needed");
+        let img = RgbImage::new(4, 4);
+        assert!(lazy.recognize(&img).is_ok() && lazy.recognize(&img).is_ok());
+        assert_eq!(built.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let broken = LazyOcr::new(|| Err("no models".into()));
+        assert!(broken.recognize(&img).is_err() && broken.recognize(&img).is_err());
+    }
 
     fn line(text: &str, conf: f32, x: f32) -> OcrLine {
         OcrLine {

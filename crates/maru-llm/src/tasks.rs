@@ -49,6 +49,20 @@ pub struct GlossRequest<'a> {
     pub ctx: &'a PromptContext,
 }
 
+/// Short English labels for a batch of strings read off the screen.
+pub struct LabelRequest<'a> {
+    /// `(number, text)`; numbers come back on the answer lines.
+    pub items: &'a [(usize, &'a str)],
+    pub ctx: &'a PromptContext,
+}
+
+/// One answered line of a label batch.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LabelLine {
+    pub index: usize,
+    pub label: String,
+}
+
 pub struct DeepRequest<'a> {
     pub key: &'a str,
     pub surface: &'a str,
@@ -97,6 +111,20 @@ pub fn parse_gloss_line(line: &str) -> Option<GlossLine> {
     }
     let note = parts.next().map(str::trim).filter(|n| !n.is_empty()).map(str::to_string);
     Some(GlossLine::Gloss(Gloss { index, meaning: meaning.to_string(), note }))
+}
+
+/// Parse one `N|label` line. Tolerates `N. label`, `N: label`, bullets, bold and quotes.
+/// `?` (the model's "this is not text") is returned as is; the caller decides what to do with it.
+pub fn parse_label_line(line: &str) -> Option<LabelLine> {
+    let line = line.trim().trim_start_matches(['-', '*', '•', ' ']).trim();
+    let digits: String = line.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let index: usize = digits.parse().ok()?;
+    let rest = line[digits.len()..].trim_start_matches(['|', '.', ':', ')', ' ']);
+    let label = clean_text(rest.trim().trim_matches('*'));
+    (!label.is_empty()).then_some(LabelLine { index, label })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -222,6 +250,21 @@ impl LlmClient {
         Ok(())
     }
 
+    /// Short labels for many strings in one request, delivered line by line as the model writes them.
+    pub async fn labels(&self, req: &LabelRequest<'_>, sink: &mut (dyn FnMut(LabelLine) + Send)) -> Result<()> {
+        let messages = prompts::labels(req.items, req.ctx);
+        let opts = ChatOpts { max_tokens: Some(32 + 14 * req.items.len() as u32), temperature: Some(0.1), ..Default::default() };
+        let mut lines = LineSplitter::default();
+        let mut emit = |l: &str| {
+            if let Some(line) = parse_label_line(l) {
+                sink(line);
+            }
+        };
+        self.stream_chat(&messages, &opts, &mut |d| lines.push(d, &mut emit)).await?;
+        lines.finish(&mut emit);
+        Ok(())
+    }
+
     /// English → Korean in three registers plus a nuance note.
     pub async fn translate_en_ko(&self, req: &EnKoRequest<'_>, sink: &mut (dyn FnMut(LlmChunk) + Send)) -> Result<()> {
         let messages = prompts::en_ko(req.text, req.register, req.ctx);
@@ -325,6 +368,31 @@ mod tests {
         assert_eq!(clean_text("He said \"hi\""), "He said \"hi\"");
     }
 
+    #[test]
+    fn label_lines_are_parsed_leniently() {
+        let l = |s: &str| parse_label_line(s);
+        assert_eq!(l("3|Inventory"), Some(LabelLine { index: 3, label: "Inventory".into() }));
+        assert_eq!(l("  12. \"Save game\""), Some(LabelLine { index: 12, label: "Save game".into() }));
+        assert_eq!(l("- **0:** OK"), Some(LabelLine { index: 0, label: "OK".into() }));
+        assert_eq!(l("5|?"), Some(LabelLine { index: 5, label: "?".into() }));
+        assert_eq!(l("Here are the labels:"), None);
+        assert_eq!(l("4|"), None);
+        assert_eq!(l(""), None);
+    }
+
+    #[tokio::test]
+    async fn labels_stream_back_one_line_at_a_time_and_survive_chunking() {
+        let mock = spawn_mock(|_, body| {
+            assert!(body.contains("Strings:") && body.contains("0|확인"), "{body}");
+            MockResponse { status: 200, chunks: sse_answer(&["0|O", "K\n1|Inven", "tory\n2|?", "\n"]), delay_ms: 1 }
+        })
+        .await;
+        let items = [(0usize, "확인"), (1, "인벤토리"), (2, "ㅁㄴㅇ")];
+        let mut got = Vec::new();
+        client(&mock.url).labels(&LabelRequest { items: &items, ctx: &PromptContext::default() }, &mut |l| got.push(l)).await.unwrap();
+        assert_eq!(got.iter().map(|l| (l.index, l.label.as_str())).collect::<Vec<_>>(), [(0, "OK"), (1, "Inventory"), (2, "?")]);
+    }
+
     #[tokio::test]
     async fn ko_en_streams_and_finishes() {
         let server = spawn_mock(model).await;
@@ -416,7 +484,7 @@ mod tests {
         let server = spawn_mock(model).await;
         client(&server.url).warm_up().await;
         let reqs = server.requests.lock().unwrap();
-        assert_eq!(reqs.len(), 4);
+        assert_eq!(reqs.len(), 5);
         assert!(reqs.iter().all(|(_, b)| b.contains("\"max_tokens\":1")));
     }
 }

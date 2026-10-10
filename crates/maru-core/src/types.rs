@@ -317,3 +317,39 @@ mod tests {
         assert_eq!(c, back);
     }
 }
+
+// ───────────────────────────── screen scan ─────────────────────────────
+
+/// Where a scan label came from, cheapest first. The overlay shows whatever it has and
+/// upgrades the label as better ones arrive.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LabelSource {
+    /// Nothing yet (the model has not answered).
+    #[default]
+    Pending,
+    /// The dictionary's meaning, available instantly.
+    Dictionary,
+    /// Seen before: remembered from an earlier scan.
+    Cache,
+    /// A fixed translation from the app profile's glossary.
+    Glossary,
+    /// Written by the language model for this scan.
+    Model,
+}
+
+/// One piece of Korean text found on screen by a scan.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScanItem {
+    /// Stable within one scan; later `ScanLabel` events refer to it.
+    pub item: u32,
+    /// Where the text is, in physical screen pixels.
+    pub rect: Rect,
+    /// The recognised text.
+    pub text: String,
+    /// The label to show now (empty while pending).
+    pub label: String,
+    pub source: LabelSource,
+    /// Every content word in it is one you already know: show it faded, or not at all.
+    pub known: bool,
+}

@@ -48,6 +48,10 @@ impl Paths {
     pub fn cache_db(&self) -> PathBuf {
         self.data_dir.join("cache.db")
     }
+    /// Remembered screen-scan labels (see `maru-engine`'s `labels` module).
+    pub fn labels_db(&self) -> PathBuf {
+        self.data_dir.join("labels.db")
+    }
     pub fn screenshots_dir(&self) -> PathBuf {
         self.data_dir.join("screenshots")
     }

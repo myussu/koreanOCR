@@ -19,6 +19,7 @@ fn engine() -> Option<PaddleOcr> {
         rec_model: dir.join("rec.onnx"),
         dict_path: dir.join("dict.txt"),
         device: "cpu".into(),
+        detect_side: None,
     };
     Some(PaddleOcr::load(&cfg).expect("models load"))
 }

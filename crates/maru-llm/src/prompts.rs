@@ -92,6 +92,17 @@ EXAMPLES:
 NUANCE: <one or two sentences: how it differs from a similar word learners confuse it with; omit the line if there is nothing useful to say>
 No other text.";
 
+pub const LABEL_SYSTEM: &str = "\
+You label Korean text seen on a screen (video game menus, buttons, tooltips, HUD, signs) with a SHORT English meaning, for a learner who keeps the original text visible.
+You receive numbered strings. Each comes from a different place on the screen, so they are usually unrelated to each other.
+For each string:
+- Give the wording an English version of that game or app would use: 확인 -> OK, 저장하기 -> Save, 인벤토리 -> Inventory, 체력 -> HP.
+- Labels and buttons: 1 to 4 words. A full sentence: a faithful translation of at most 12 words.
+- People and places: standard romanization. Keep digits, units and symbols as they are.
+- If a string is not meaningful Korean (screen-reading noise), write ?
+Output exactly one line per string, in order, and nothing else:
+N|label";
+
 fn register_name(r: Register) -> &'static str {
     match r {
         Register::Polite => "POLITE",
@@ -133,6 +144,17 @@ pub fn glosses(sentence: &str, words: &[GlossWordPrompt<'_>], ctx: &PromptContex
     vec![Message::system(GLOSS_SYSTEM), Message::user(user)]
 }
 
+/// A batch of screen strings to label. `items` are `(number, text)`.
+pub fn labels(items: &[(usize, &str)], ctx: &PromptContext) -> Vec<Message> {
+    let mut user = String::new();
+    ctx.render(&mut user);
+    user.push_str("Strings:\n");
+    for (n, text) in items {
+        let _ = writeln!(user, "{n}|{text}");
+    }
+    vec![Message::system(LABEL_SYSTEM), Message::user(user)]
+}
+
 pub fn en_ko(text: &str, register: Register, ctx: &PromptContext) -> Vec<Message> {
     let mut user = String::new();
     ctx.render(&mut user);
@@ -156,7 +178,7 @@ pub fn deep(key: &str, surface: &str, sentence: &str, dictionary: &str, ctx: &Pr
 
 /// Messages that only exist to fill the KV cache with each task's system prompt.
 pub fn warmup() -> Vec<Vec<Message>> {
-    [KO_EN_SYSTEM, GLOSS_SYSTEM, EN_KO_SYSTEM, DEEP_SYSTEM]
+    [KO_EN_SYSTEM, GLOSS_SYSTEM, EN_KO_SYSTEM, DEEP_SYSTEM, LABEL_SYSTEM]
         .into_iter()
         .map(|s| vec![Message::system(s), Message::user("ok")])
         .collect()
@@ -194,7 +216,15 @@ mod tests {
     }
 
     #[test]
-    fn four_warmup_prompts_cover_every_task() {
-        assert_eq!(warmup().len(), 4);
+    fn every_task_has_a_warmup_prompt() {
+        assert_eq!(warmup().len(), 5);
+    }
+
+    #[test]
+    fn label_prompt_numbers_the_strings_and_keeps_the_system_prompt_constant() {
+        let ctx = PromptContext { hint: Some("farming sim menus".into()), ..Default::default() };
+        let m = labels(&[(0, "확인"), (7, "인벤토리")], &ctx);
+        assert_eq!(m[0].content, LABEL_SYSTEM);
+        assert!(m[1].content.contains("farming sim menus") && m[1].content.contains("0|확인\n7|인벤토리\n"), "{}", m[1].content);
     }
 }

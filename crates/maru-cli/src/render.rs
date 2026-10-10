@@ -177,6 +177,8 @@ impl<W: Write> Renderer<W> {
             Event::WordState { status, .. } => {
                 let _ = writeln!(self.out, "{} {:?}, looked up {}×{}", self.paint("2", &status.key), status.state, status.lookups, if status.saved { ", queued for review" } else { "" });
             }
+            // Scans are collected and printed by `maru scan` itself, not streamed line by line.
+            Event::ScanStarted { .. } | Event::ScanItems { .. } | Event::ScanLabel { .. } => {}
             Event::Timing { stage, ms, .. } => self.timings.push((*stage, *ms)),
             Event::Error { message, .. } => {
                 self.close_line();
