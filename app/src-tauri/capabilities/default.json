@@ -2,6 +2,6 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "What the Maru windows may do from JavaScript. Everything else goes through Maru's own commands.",
-  "windows": ["panel", "picker", "hub", "scan"],
+  "windows": ["panel", "picker", "hub", "scan", "live"],
   "permissions": ["core:default"]
 }

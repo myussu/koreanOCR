@@ -76,10 +76,12 @@ export const SECTIONS = [
     id: 'live',
     title: 'Live subtitles',
     fields: [
-      { path: 'continuous.interval_ms', label: 'Look at the area every', help: 'Lower is quicker to notice a new line and uses more CPU', type: 'range', min: 100, max: 1000, step: 25, unit: 'ms' },
-      { path: 'continuous.stable_ms', label: 'Wait for the text to hold still', help: 'Avoids translating half-typed lines', type: 'range', min: 100, max: 1500, step: 25, unit: 'ms' },
+      { path: 'continuous.interval_ms', label: 'Look at the area every', help: 'Lower notices a new line sooner and uses more CPU', type: 'range', min: 50, max: 1000, step: 25, unit: 'ms' },
+      { path: 'continuous.stable_ms', label: 'A picture this still is a finished line', help: 'A line that is still fading in is read sooner than this', type: 'range', min: 50, max: 1500, step: 25, unit: 'ms' },
+      { path: 'continuous.linger_ms', label: 'Keep the translation after the line is gone', type: 'range', min: 0, max: 5000, step: 100, unit: 'ms' },
+      { path: 'continuous.context_lines', label: 'Earlier lines the model sees', help: 'Keeps pronouns and names consistent', type: 'number', min: 0, max: 20, step: 1 },
       { path: 'continuous.diff_threshold', label: 'How much must change to count', type: 'number', min: 0.001, max: 0.2, step: 0.001, advanced: true },
-      { path: 'continuous.history_len', label: 'Lines kept in the history', type: 'number', min: 10, max: 500, step: 10, advanced: true },
+      { path: 'continuous.history_len', label: 'Lines kept in the history', type: 'number', min: 10, max: 2000, step: 10, advanced: true },
     ],
   },
   {

@@ -725,3 +725,90 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
     assert!(calls.contains(&"createDeck".to_string()) && calls.contains(&"changeDeck".to_string()), "{calls:?}");
     assert!(h.engine.anki_add(AnkiAddOptions { key: "학교".into(), deck: "  ".into(), tags: vec![], reverse: before.reverse, app: None, word_audio: None, sentence_audio: None }).await.unwrap_err().to_string().contains("deck"), "no deck, no add");
 }
+
+// ───────────── live subtitles ─────────────
+
+fn live_line(text: &str) -> maru_engine::LiveLine {
+    let mut capture = Capture::typed(text);
+    capture.source = CaptureSource::Continuous;
+    maru_engine::LiveLine { capture, appeared: std::time::Instant::now(), ready_ms: 120, ocr_ms: 30 }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_line_is_translation_only_and_goes_to_the_history_with_its_timings() {
+    let h = harness().await;
+    let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+
+    assert_eq!(names(&events).first(), Some(&"started"));
+    assert!(names(&events).contains(&"translation") && names(&events).contains(&"translation_done"));
+    assert!(!names(&events).iter().any(|n| matches!(*n, "breakdown" | "gloss" | "note")), "no breakdown or word meanings in the live lane: {:?}", names(&events));
+    assert_eq!(text_of(&events, Variant::Primary), "I studied at school.");
+    assert_eq!(h.requests().len(), 1, "one model call, not a translation plus word meanings");
+    assert!(!h.requests()[0].contains("Words:"));
+
+    let history = h.engine.history();
+    assert_eq!(history.len(), 1);
+    assert!(history[0].live);
+    assert_eq!(history[0].translation, "I studied at school.");
+    let (first, total) = (history[0].first_ms.expect("time to the first word"), history[0].total_ms.expect("time to the end"));
+    assert!(first <= total, "{first} ≤ {total}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn earlier_live_lines_reach_the_model_as_chat_turns() {
+    let h = harness().await;
+    collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    collect(h.engine.translate_live(live_line("저는 학생이에요")).1).await;
+    let reqs = h.requests();
+    assert!(!reqs[0].contains("\"assistant\""), "the first line has no earlier lines");
+    assert!(reqs[1].contains("\"assistant\"") && reqs[1].contains("I studied at school.") && reqs[1].contains(SENTENCE), "{}", reqs[1]);
+    assert!(!reqs[1].contains("Previous lines"), "turns, not the single-message list of the normal lane");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_context_can_be_switched_off() {
+    let h = harness_with(model, |c| c.continuous.context_lines = 0).await;
+    collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    collect(h.engine.translate_live(live_line("저는 학생이에요")).1).await;
+    assert!(!h.requests()[1].contains("\"assistant\""));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_line_that_comes_back_is_answered_from_the_cache() {
+    let h = harness().await;
+    collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    let Event::Started { cached, .. } = &events[0] else { panic!() };
+    assert!(*cached);
+    assert_eq!(h.requests().len(), 1, "no second model call");
+    assert_eq!(text_of(&events, Variant::Primary), "I studied at school.");
+    assert_eq!(h.engine.history().len(), 1, "an immediate repeat is the same entry");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_live_cache_does_not_hide_word_meanings_from_a_normal_translation() {
+    let h = harness().await;
+    collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    let events = collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+    let Event::Started { cached, .. } = &events[0] else { panic!() };
+    assert!(!*cached, "the normal lane has its own entry");
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::Gloss { .. })).count(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn english_on_a_korean_screen_is_left_alone_by_the_live_lane() {
+    let h = harness().await;
+    let events = collect(h.engine.translate_live(live_line("Press A to continue")).1).await;
+    assert_eq!(names(&events), ["done"]);
+    assert!(h.requests().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_lines_do_not_cancel_each_other() {
+    let h = harness().await;
+    let (_, a) = h.engine.translate_live(live_line(SENTENCE));
+    let (_, b) = h.engine.translate_live(live_line("저는 학생이에요"));
+    let (a, b) = tokio::join!(collect(a), collect(b));
+    assert!(names(&a).contains(&"translation_done") && names(&b).contains(&"translation_done"));
+    assert_eq!(h.engine.history().len(), 2);
+}

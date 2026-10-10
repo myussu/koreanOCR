@@ -96,6 +96,12 @@ pub fn history(state: S) -> Vec<HistoryItem> {
     state.engine().history()
 }
 
+/// A line in the history was clicked: show it in the panel with its word-by-word breakdown.
+#[tauri::command]
+pub fn history_open(app: AppHandle, state: S, text: String) {
+    flow::show_translation(&app, state.inner(), maru_core::Capture::typed(text), false);
+}
+
 #[derive(Serialize)]
 pub struct Status {
     pub notes: Vec<String>,
@@ -225,6 +231,12 @@ pub fn panel_drag(app: AppHandle, state: S, phase: String, dx: f32, dy: f32) {
         }
         _ => state.panel().drag_origin = None,
     }
+}
+
+/// The live translation band has faded out: hide its window.
+#[tauri::command]
+pub fn live_idle(app: AppHandle) {
+    windows::hide_live(&app);
 }
 
 /// The scan overlay reports where its labels are, so the window can accept clicks only over them.

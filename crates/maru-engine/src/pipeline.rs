@@ -4,7 +4,7 @@
 //! → `Timing`s → `Done`. Errors are events too, never panics, and an LLM failure still
 //! leaves the user with the breakdown and dictionary meanings.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -12,12 +12,13 @@ use maru_core::config::GlossMode;
 use maru_core::event::{DeepSection, Side, Stage, Variant};
 use maru_core::{Capture, CaptureSource, Direction, Eojeol, Event, Gloss, WordBox, WordState};
 use maru_lang::hangul::detect_direction;
-use maru_llm::{DeepRequest, EnKoRequest, GlossRequest, GlossWord, KoEnRequest, LlmChunk, LlmClient, LlmStatus, PromptContext};
+use maru_llm::{DeepRequest, EnKoRequest, GlossRequest, GlossWord, KoEnRequest, LiveRequest, LlmChunk, LlmClient, LlmStatus, PromptContext};
 use maru_srs::{Context, LookupInfo, now_secs};
 use tokio::sync::oneshot;
 
 use crate::annotate;
 use crate::cache::{CacheKey, Cached};
+use crate::continuous::LiveLine;
 use crate::engine::{DeepDiveRequest, EventTx, Inner, lock, status_of};
 use crate::memory::HistoryItem;
 
@@ -333,17 +334,109 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
             .map(|(_, t)| t.clone())
             .unwrap_or_default();
         lock(&inner.memory).push(&app_exe, &text, &main, Instant::now());
-        lock(&inner.history).push(HistoryItem {
-            id,
-            at: now_secs(),
-            source: text.clone(),
-            translation: main,
-            direction,
-            app: capture.app.as_ref().map(|a| a.exe.clone()),
-        });
+        lock(&inner.history).push(HistoryItem::new(id, now_secs(), text.clone(), main, direction, capture.app.as_ref().map(|a| a.exe.clone())));
         lock(&inner.cache).put(key, result);
     }
     em.timing(Stage::Total, started);
+    em.done();
+}
+
+fn since_ms(t: Instant) -> u32 {
+    t.elapsed().as_millis().min(u128::from(u32::MAX)) as u32
+}
+
+/// Remember a finished live line as context for the next one. The window grows to
+/// `context_lines + step` and then drops `step` lines at once, so the start of the prompt stays
+/// the same for several requests in a row and the server's prompt cache keeps working.
+fn remember_live_turn(inner: &Inner, source: &str, translation: &str) {
+    let cap = inner.cfg.continuous.context_lines;
+    if cap == 0 || translation.trim().is_empty() {
+        return;
+    }
+    let mut turns = lock(&inner.live_turns);
+    turns.push((source.to_string(), translation.to_string()));
+    let step = (cap / 2).max(1);
+    if turns.len() > cap + step {
+        turns.drain(..step);
+    }
+}
+
+/// Live subtitles: the translation and nothing else, as fast as the model allows. No breakdown and
+/// no word meanings (they come from the history, on a click), the earlier lines go in as chat
+/// turns, and a line that comes back is answered from its own cache. Lines never cancel each
+/// other: each one reaches the history even when the next arrives before it is done.
+pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx) {
+    let em = Emitter { tx, id };
+    let LiveLine { capture, appeared, ready_ms, ocr_ms } = line;
+    let (text, _) = prepare_text(&capture.text, inner.cfg.capture.max_chars);
+    if detect_direction(&text) != Some(Direction::KoToEn) {
+        em.done(); // an English line on a Korean game's screen: nothing to translate
+        return;
+    }
+    let app_exe = capture.app.as_ref().map(|a| a.exe.clone()).unwrap_or_default();
+    let profile = inner.cfg.profile_for(&app_exe).cloned();
+    let register = profile.as_ref().and_then(|p| p.register).unwrap_or(inner.cfg.learning.register);
+    let profile_key = (profile.as_ref().map(|p| p.name.clone()), profile.as_ref().map(|p| p.glossary.clone()), profile.as_ref().and_then(|p| p.hint.clone()));
+    // Its own cache entries: a plain translation of the same text also has word meanings, this does not.
+    let key = CacheKey::new(&text, Direction::KoToEn, register, &(&profile_key, "live"));
+    let cached = lock(&inner.cache).get(&key);
+    let mut capture = capture;
+    capture.text = text.clone();
+    em.send(Event::Started { id, direction: Direction::KoToEn, capture: capture.clone(), cached: cached.is_some() });
+
+    let (first_ms, translation) = if let Some(hit) = cached {
+        let main = hit.translations.first().map(|(_, t)| t.clone()).unwrap_or_default();
+        em.send(Event::Translation { id, variant: Variant::Primary, delta: main.clone() });
+        em.send(Event::TranslationDone { id, variant: Variant::Primary, text: main.clone() });
+        (since_ms(appeared), main)
+    } else {
+        let Some(llm) = await_llm(&inner, &em).await else {
+            em.done();
+            return;
+        };
+        let mut ctx = prompt_context(&inner, &capture, profile.as_ref());
+        ctx.history.clear(); // the earlier lines go in as chat turns instead
+        let turns = lock(&inner.live_turns).clone();
+        let collected = Mutex::new(Cached::default());
+        let first_token = AtomicBool::new(false);
+        let first = AtomicU32::new(0);
+        let llm_started = Instant::now();
+        let result = llm
+            .translate_live(&LiveRequest { text: &text, ctx: &ctx, turns: &turns }, &mut |c| {
+                if matches!(c, LlmChunk::Text { .. }) && !first_token.load(Ordering::Relaxed) {
+                    first.store(since_ms(appeared), Ordering::Relaxed);
+                }
+                forward(&em, &collected, Side::Source, &first_token, llm_started, c)
+            })
+            .await;
+        if let Err(e) = result {
+            em.error(Stage::Llm, e.to_string());
+        }
+        let result = std::mem::take(&mut *lock(&collected));
+        let main = result.translations.first().map(|(_, t)| t.clone()).unwrap_or_default();
+        if main.trim().is_empty() {
+            em.error(Stage::Llm, "The model did not return a translation for this line.");
+            em.done();
+            return;
+        }
+        lock(&inner.cache).put(key, result);
+        (first.load(Ordering::Relaxed), main)
+    };
+
+    let total_ms = since_ms(appeared);
+    tracing::info!(
+        "live line: on screen → read {ready_ms} ms (OCR {ocr_ms} ms) → first word {first_ms} ms → done {total_ms} ms, {} characters",
+        text.chars().count()
+    );
+    remember_live_turn(&inner, &text, &translation);
+    lock(&inner.memory).push(&app_exe, &text, &translation, Instant::now());
+    lock(&inner.history).push(HistoryItem {
+        live: true,
+        first_ms: Some(first_ms),
+        total_ms: Some(total_ms),
+        ..HistoryItem::new(id, now_secs(), text, translation, Direction::KoToEn, capture.app.as_ref().map(|a| a.exe.clone()))
+    });
+    em.timing(Stage::Total, appeared);
     em.done();
 }
 

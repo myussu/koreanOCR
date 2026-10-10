@@ -1,4 +1,5 @@
 import { invoke, listen, mockCommands, inTauri } from './bridge.js';
+import { latencyText } from './live-core.js';
 import { settingsView } from './settings.js';
 
 const view = document.getElementById('view');
@@ -85,12 +86,27 @@ async function ankiReview(s) {
 }
 
 // ───────────── history ─────────────
+let historyMode = 'all'; // 'all' (newest first) or 'live' (subtitles, in the order they were said)
+
 async function history() {
-  const items = (await invoke('history')).reverse();
-  if (!items.length) return [h('p', { class: 'center', text: 'Lines you translate will appear here — handy for subtitles that disappear before you finish reading.' })];
-  return items.map((i) =>
-    h('div', { class: 'hist' }, h('div', { class: i.direction === 'en_to_ko' ? 'en' : 'ko', text: i.source }), h('div', { class: i.direction === 'en_to_ko' ? 'ko' : 'en', text: i.translation }), h('div', { class: 'status', text: [i.app, new Date(i.at * 1000).toLocaleTimeString()].filter(Boolean).join(' · ') })),
-  );
+  const all = await invoke('history');
+  const live = all.filter((i) => i.live);
+  const items = historyMode === 'live' ? live : [...all].reverse();
+  const chip = (mode, label) => h('button', { class: 'chip', 'aria-pressed': String(historyMode === mode), text: label, onclick: () => { historyMode = mode; show('history'); } });
+  const bar = h('div', { class: 'chips' }, chip('all', 'Everything'), chip('live', `Live subtitles (${live.length})`));
+  if (!items.length) {
+    const msg = historyMode === 'live' ? 'Live subtitles you have watched will appear here, in order, so you can read them after a cutscene.' : 'Lines you translate will appear here — handy for subtitles that disappear before you finish reading.';
+    return [bar, h('p', { class: 'center', text: msg })];
+  }
+  const row = (i) =>
+    h(
+      'div',
+      { class: i.live ? 'hist live' : 'hist', title: 'Click for the word-by-word breakdown', onclick: () => invoke('history_open', { text: i.direction === 'en_to_ko' ? i.translation : i.source }).catch(() => {}) },
+      h('div', { class: i.direction === 'en_to_ko' ? 'en' : 'ko', text: i.source }),
+      h('div', { class: i.direction === 'en_to_ko' ? 'ko' : 'en', text: i.translation }),
+      h('div', { class: 'status', text: [i.live ? 'live' : '', i.app, new Date(i.at * 1000).toLocaleTimeString(), latencyText(i)].filter(Boolean).join(' · ') }),
+    );
+  return [bar, ...items.map(row)];
 }
 
 // ───────────── status ─────────────
@@ -129,7 +145,7 @@ listen('maru-tab', (name) => show(name));
 if (!inTauri) {
 
   // A stand-in settings store for browser screenshots and tests.
-  const flat = { 'hotkeys.translate': 'Ctrl+Alt+T | F6', 'hotkeys.region': 'Ctrl+Alt+R', 'hotkeys.hover': 'Ctrl+Alt+H', 'hotkeys.continuous': 'Ctrl+Alt+C', 'hotkeys.continuous_area': 'Ctrl+Alt+Shift+C', 'hotkeys.scan': 'Ctrl+Alt+S', 'hotkeys.speak': 'Ctrl+Alt+P', 'hotkeys.history': 'Ctrl+Alt+L', 'hotkeys.dismiss': 'Ctrl+Alt+Escape', 'ui.font_size_px': 18, 'ui.max_width_px': 760, 'ui.theme': 'auto', 'ui.placement': 'auto', 'ui.show_romanization': true, 'ui.show_pronunciation': true, 'ui.show_grammar_formula': true, 'learning.gloss_mode': 'fade_known', 'learning.register': 'polite', 'learning.track_lookups': true, 'learning.auto_save_after_lookups': 2, 'learning.known_stability_days': 21, 'learning.desired_retention': 0.9, 'learning.anki.enabled': false, 'learning.anki.deck': 'Maru', 'learning.anki.note_type': 'Basic', 'learning.anki.url': 'http://127.0.0.1:8765', 'ocr.vision_reader': true, 'ocr.backend': 'auto', 'ocr.device': 'cpu', 'ocr.min_confidence': 0.8, 'capture.use_accessibility': true, 'capture.use_clipboard_fallback': true, 'capture.use_ocr_fallback': true, 'capture.ocr_radius_px': 320, 'capture.max_chars': 500, 'continuous.interval_ms': 250, 'continuous.stable_ms': 350, 'continuous.diff_threshold': 0.01, 'continuous.history_len': 50, lite: false, 'llm.hf_repo': null, 'llm.model_path': null, 'llm.endpoint': null, 'llm.parallel': 2, 'llm.ctx_size': 4096, 'llm.gpu_layers': 'all', 'llm.flash_attn': true, 'llm.temperature': 0.2, 'llm.context_lines': 4, 'lite_profile.hf_repo': 'unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL', 'lite_profile.ctx_size': 3072, 'lite_profile.parallel': 1, 'tts.enabled': false, 'tts.run_in_lite': false, 'tts.provider': 'local', 'tts.endpoint': null, 'tts.api_key': null, 'tts.model': 'qwen3-tts', 'tts.voice': 'sohee', 'tts.language': '', 'tts.instructions': null, 'tts.speed': 1.0, 'tts.cache_mb': 300, 'tts.device': 'auto', 'tts.port': 18095, 'learning.anki.enabled': false, 'learning.anki.deck': 'Korean', 'learning.anki.reverse': 'subdeck', 'learning.anki.audio': true, 'learning.anki.sync_after_add': true, 'learning.anki.auto_tags': true, 'learning.anki.tags': ['maru'], 'learning.anki.refresh_minutes': 30, 'learning.anki.url': 'http://127.0.0.1:8765', 'learning.anki.api_key': null, 'learning.anki.note_type': 'Maru Korean', 'learning.anki.reverse_subdeck': 'Reverse' };
+  const flat = { 'hotkeys.translate': 'Ctrl+Alt+T | F6', 'hotkeys.region': 'Ctrl+Alt+R', 'hotkeys.hover': 'Ctrl+Alt+H', 'hotkeys.continuous': 'Ctrl+Alt+C', 'hotkeys.continuous_area': 'Ctrl+Alt+Shift+C', 'hotkeys.scan': 'Ctrl+Alt+S', 'hotkeys.speak': 'Ctrl+Alt+P', 'hotkeys.history': 'Ctrl+Alt+L', 'hotkeys.dismiss': 'Ctrl+Alt+Escape', 'ui.font_size_px': 18, 'ui.max_width_px': 760, 'ui.theme': 'auto', 'ui.placement': 'auto', 'ui.show_romanization': true, 'ui.show_pronunciation': true, 'ui.show_grammar_formula': true, 'learning.gloss_mode': 'fade_known', 'learning.register': 'polite', 'learning.track_lookups': true, 'learning.auto_save_after_lookups': 2, 'learning.known_stability_days': 21, 'learning.desired_retention': 0.9, 'learning.anki.enabled': false, 'learning.anki.deck': 'Maru', 'learning.anki.note_type': 'Basic', 'learning.anki.url': 'http://127.0.0.1:8765', 'ocr.vision_reader': true, 'ocr.backend': 'auto', 'ocr.device': 'cpu', 'ocr.min_confidence': 0.8, 'capture.use_accessibility': true, 'capture.use_clipboard_fallback': true, 'capture.use_ocr_fallback': true, 'capture.ocr_radius_px': 320, 'capture.max_chars': 500, 'continuous.interval_ms': 100, 'continuous.stable_ms': 150, 'continuous.linger_ms': 1500, 'continuous.context_lines': 4, 'continuous.diff_threshold': 0.01, 'continuous.history_len': 300, lite: false, 'llm.hf_repo': null, 'llm.model_path': null, 'llm.endpoint': null, 'llm.parallel': 2, 'llm.ctx_size': 4096, 'llm.gpu_layers': 'all', 'llm.flash_attn': true, 'llm.temperature': 0.2, 'llm.context_lines': 4, 'lite_profile.hf_repo': 'unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL', 'lite_profile.ctx_size': 3072, 'lite_profile.parallel': 1, 'tts.enabled': false, 'tts.run_in_lite': false, 'tts.provider': 'local', 'tts.endpoint': null, 'tts.api_key': null, 'tts.model': 'qwen3-tts', 'tts.voice': 'sohee', 'tts.language': '', 'tts.instructions': null, 'tts.speed': 1.0, 'tts.cache_mb': 300, 'tts.device': 'auto', 'tts.port': 18095, 'learning.anki.enabled': false, 'learning.anki.deck': 'Korean', 'learning.anki.reverse': 'subdeck', 'learning.anki.audio': true, 'learning.anki.sync_after_add': true, 'learning.anki.auto_tags': true, 'learning.anki.tags': ['maru'], 'learning.anki.refresh_minutes': 30, 'learning.anki.url': 'http://127.0.0.1:8765', 'learning.anki.api_key': null, 'learning.anki.note_type': 'Maru Korean', 'learning.anki.reverse_subdeck': 'Reverse' };
   const nest = (f) => Object.entries(f).reduce((o, [k, v]) => (k.split('.').reduce((t, p, i, a) => (t[p] = i === a.length - 1 ? v : (t[p] ?? {})), o), o), {});
   const mockDefaults = nest(flat);
   let mockValues = nest({ ...flat, 'llm.hf_repo': 'unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL' });
@@ -155,7 +171,8 @@ if (!inTauri) {
     due_words: () => [{ key: '공부하다', meaning: 'to study', level: 'TOPIK 1', state: 'learning', lookups: 2, saved: true }, { key: '학교', meaning: 'school', state: 'learning', lookups: 2, saved: true }],
     word_contexts: () => [{ sentence: '저는 학교에서 공부했어요', translation: 'I studied at school.' }],
     review_word: () => ({}),
-    history: () => [{ id: 1, at: 1760000000, source: '저는 학교에서 공부했어요', translation: 'I studied at school.', direction: 'ko_to_en', app: 'chrome.exe' }],
+    history: () => [{ id: 1, at: 1760000000, source: '저는 학교에서 공부했어요', translation: 'I studied at school.', direction: 'ko_to_en', app: 'chrome.exe', live: false, first_ms: null, total_ms: null }, { id: 2, at: 1760000030, source: '다시는 못 볼 줄 알았어요', translation: 'I thought I would never see you again.', direction: 'ko_to_en', app: 'game.exe', live: true, first_ms: 820, total_ms: 1410 }, { id: 3, at: 1760000034, source: '저도요', translation: 'Me too.', direction: 'ko_to_en', app: 'game.exe', live: true, first_ms: 610, total_ms: 790 }],
+    history_open: () => {},
     status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'ready', analyser: 'kiwi', ocr: true, dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, anki: false, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'ready', tts: 'off', tts_source: '' }),
   });
 }

@@ -29,6 +29,15 @@ pub struct KoEnRequest<'a> {
     pub ctx: &'a PromptContext,
 }
 
+/// One live subtitle line: translation only, with the lines before it as chat turns.
+pub struct LiveRequest<'a> {
+    pub text: &'a str,
+    /// Hint and glossary (its `history` is ignored: `turns` carries the earlier lines).
+    pub ctx: &'a PromptContext,
+    /// Earlier `(source, translation)` pairs, oldest first.
+    pub turns: &'a [(String, String)],
+}
+
 pub struct EnKoRequest<'a> {
     pub text: &'a str,
     pub register: Register,
@@ -222,6 +231,28 @@ impl LlmClient {
         let full = self
             .stream_chat(&messages, &ChatOpts::default(), &mut |d| {
                 // Drop leading whitespace so the panel does not start with a gap.
+                let d = if started { d } else { d.trim_start() };
+                if d.is_empty() {
+                    return;
+                }
+                started = true;
+                sink(LlmChunk::Text { variant: Variant::Primary, delta: d.to_string() });
+            })
+            .await?;
+        let text = clean_text(&full);
+        sink(LlmChunk::TextDone { variant: Variant::Primary, text: text.clone() });
+        Ok(text)
+    }
+
+    /// Korean → English for a subtitle line: short answers, low temperature, no extras.
+    pub async fn translate_live(&self, req: &LiveRequest<'_>, sink: &mut (dyn FnMut(LlmChunk) + Send)) -> Result<String> {
+        let messages = prompts::ko_en_live(req.text, req.ctx, req.turns);
+        // A subtitle is a sentence or two: cut off a model that starts to ramble.
+        let max_tokens = (req.text.chars().count() as u32 * 2 + 40).min(256);
+        let opts = ChatOpts { max_tokens: Some(max_tokens), temperature: Some(0.1), ..Default::default() };
+        let mut started = false;
+        let full = self
+            .stream_chat(&messages, &opts, &mut |d| {
                 let d = if started { d } else { d.trim_start() };
                 if d.is_empty() {
                     return;

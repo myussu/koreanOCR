@@ -30,7 +30,7 @@ pub struct PromptContext {
 }
 
 impl PromptContext {
-    fn render(&self, out: &mut String) {
+    fn render_head(&self, out: &mut String) {
         if let Some(h) = &self.hint {
             let _ = writeln!(out, "Context: {h}");
         }
@@ -40,18 +40,26 @@ impl PromptContext {
                 let _ = writeln!(out, "- {k} = {v}");
             }
         }
-        if !self.history.is_empty() {
-            out.push_str("Previous lines (for reference only, do not translate them):\n");
-            for (src, tr) in &self.history {
-                let _ = writeln!(out, "- {src}  =>  {tr}");
-            }
-        }
+    }
+
+    fn render_ocr_note(&self, out: &mut String) {
         if self.from_ocr {
             out.push_str(
                 "Note: the text was read from the screen by OCR and may contain small recognition errors; \
                  where the intended text is obvious, translate the intended text.\n",
             );
         }
+    }
+
+    fn render(&self, out: &mut String) {
+        self.render_head(out);
+        if !self.history.is_empty() {
+            out.push_str("Previous lines (for reference only, do not translate them):\n");
+            for (src, tr) in &self.history {
+                let _ = writeln!(out, "- {src}  =>  {tr}");
+            }
+        }
+        self.render_ocr_note(out);
     }
 }
 
@@ -62,6 +70,11 @@ Rules:
 - Fragments (menu items, buttons, titles, headlines) stay fragments.
 - Names: use the glossary if given, otherwise standard romanization.
 - Never add explanations, notes, quotes, labels or alternatives. Output only the English translation.";
+
+/// Added to [`KO_EN_SYSTEM`] for live subtitles. Constant, so the server's prefix cache keeps it.
+pub const LIVE_NOTE: &str = "\
+These lines are subtitles shown one at a time, each continuing the lines before it. Keep names, pronouns and tone consistent with the earlier lines. \
+Subtitles are spoken language: keep them short and natural, never explain.";
 
 pub const GLOSS_SYSTEM: &str = "\
 You help a learner read Korean. You are given a sentence and a numbered list of its words, each with its morpheme breakdown and optional dictionary candidates.
@@ -116,6 +129,22 @@ pub fn ko_en(text: &str, ctx: &PromptContext) -> Vec<Message> {
     ctx.render(&mut user);
     let _ = write!(user, "Translate into English:\n{text}");
     vec![Message::system(KO_EN_SYSTEM), Message::user(user)]
+}
+
+/// Live subtitles: the earlier lines are real chat turns (same format as the question), so the model
+/// continues the pattern, and the part of the prompt before the newest line changes as little as
+/// possible from one request to the next.
+pub fn ko_en_live(text: &str, ctx: &PromptContext, turns: &[(String, String)]) -> Vec<Message> {
+    let mut system = format!("{KO_EN_SYSTEM}\n{LIVE_NOTE}\n");
+    ctx.render_head(&mut system);
+    ctx.render_ocr_note(&mut system);
+    let mut messages = vec![Message::system(system.trim_end())];
+    for (source, translation) in turns {
+        messages.push(Message::user(format!("Translate into English:\n{source}")));
+        messages.push(Message::assistant(translation.as_str()));
+    }
+    messages.push(Message::user(format!("Translate into English:\n{text}")));
+    messages
 }
 
 pub struct GlossWordPrompt<'a> {
@@ -187,6 +216,27 @@ pub fn warmup() -> Vec<Vec<Message>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn live_prompt_keeps_the_start_constant_and_adds_earlier_lines_as_turns() {
+        let mut ctx = PromptContext { hint: Some("fantasy RPG".into()), from_ocr: true, history: vec![("무시".into(), "ignored".into())], ..Default::default() };
+        ctx.glossary.insert("이도현".into(), "Lee Do-hyun".into());
+        let turns = vec![("안녕".to_string(), "Hi".to_string()), ("누구세요".to_string(), "Who are you?".to_string())];
+        let a = ko_en_live("저는 이도현입니다", &ctx, &turns);
+        let b = ko_en_live("다음 줄", &ctx, &turns);
+
+        assert_eq!(a.len(), 6);
+        assert_eq!(a.iter().map(|m| m.role).collect::<Vec<_>>(), ["system", "user", "assistant", "user", "assistant", "user"]);
+        assert_eq!(a[0].content, b[0].content, "the system part does not depend on the line");
+        for needle in [KO_EN_SYSTEM, LIVE_NOTE, "fantasy RPG", "이도현 = Lee Do-hyun", "OCR"] {
+            assert!(a[0].content.contains(needle), "missing {needle}");
+        }
+        assert!(!a.iter().any(|m| m.content.contains("ignored")), "the single-message history is not used");
+        assert_eq!(a[1].content, "Translate into English:\n안녕");
+        assert_eq!(a[2].content, "Hi");
+        assert_eq!(a[5].content, "Translate into English:\n저는 이도현입니다");
+        assert_eq!(ko_en_live("x", &PromptContext::default(), &[]).len(), 2);
+    }
 
     #[test]
     fn context_is_rendered_into_the_user_turn_only() {

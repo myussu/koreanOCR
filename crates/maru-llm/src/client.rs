@@ -27,6 +27,9 @@ impl Message {
     pub fn user(content: impl Into<String>) -> Self {
         Self { role: "user", content: content.into(), image: None }
     }
+    pub fn assistant(content: impl Into<String>) -> Self {
+        Self { role: "assistant", content: content.into(), image: None }
+    }
     pub fn user_with_image(content: impl Into<String>, data_url: impl Into<String>) -> Self {
         Self { role: "user", content: content.into(), image: Some(data_url.into()) }
     }

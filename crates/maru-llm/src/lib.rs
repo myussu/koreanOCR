@@ -50,4 +50,4 @@ pub use client::{ChatOpts, LlmClient, Message};
 pub use client::testing;
 pub use prompts::PromptContext;
 pub use server::{LlamaServer, ModelSource, build_args, resolve_binary};
-pub use tasks::{DeepRequest, EnKoRequest, GlossLine, GlossRequest, GlossWord, KoEnRequest, LabelLine, LabelRequest, LlmChunk, parse_gloss_line, parse_label_line};
+pub use tasks::{DeepRequest, EnKoRequest, GlossLine, GlossRequest, GlossWord, KoEnRequest, LabelLine, LabelRequest, LiveRequest, LlmChunk, parse_gloss_line, parse_label_line};

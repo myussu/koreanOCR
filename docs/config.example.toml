@@ -73,8 +73,12 @@ show_romanization = true
 show_pronunciation = true
 
 [continuous]
-interval_ms = 250
-stable_ms = 350       # text must hold still this long before it is read
+# Live subtitles: translation only, drawn over the original line. Word breakdowns come from the history.
+interval_ms = 100     # how often the area is looked at
+stable_ms = 150       # a picture this still is a finished line and is read at once (a fading line is read sooner)
+linger_ms = 1500      # how long a translation stays after the original line is gone
+context_lines = 4     # earlier lines the model sees, for pronouns and names
+history_len = 300     # lines kept for review after a cutscene
 # region = { x = 480.0, y = 900.0, w = 960.0, h = 120.0 }   # saved automatically if you set it from the tray
 
 # Per-application behaviour. `exe` is the program's file name.

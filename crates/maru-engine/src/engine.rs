@@ -22,7 +22,7 @@ use tokio::task::JoinHandle;
 
 use crate::cache::Cache;
 use crate::capture::{CaptureError, Capturer};
-use crate::continuous::{self, ContinuousHandle};
+use crate::continuous::{self, ContinuousHandle, LiveLine};
 use crate::memory::{History, HistoryItem, Memory};
 use crate::pipeline;
 
@@ -100,6 +100,8 @@ pub(crate) struct Inner {
     pub cache: Mutex<Cache>,
     pub memory: Mutex<Memory>,
     pub history: Mutex<History>,
+    /// Earlier live-subtitle lines, `(source, translation)`, sent to the model as chat turns.
+    pub live_turns: Mutex<Vec<(String, String)>>,
     pub next_id: AtomicU64,
     pub translate_task: Mutex<Option<JoinHandle<()>>>,
     pub deep_task: Mutex<Option<JoinHandle<()>>>,
@@ -156,6 +158,7 @@ impl Engine {
             cache: Mutex::new(Cache::new(256)),
             memory: Mutex::new(Memory::new(cfg.llm.context_lines)),
             history: Mutex::new(History::new(cfg.continuous.history_len)),
+            live_turns: Mutex::new(Vec::new()),
             next_id: AtomicU64::new(1),
             translate_task: Mutex::new(None),
             deep_task: Mutex::new(None),
@@ -222,6 +225,7 @@ impl Engine {
     /// Watch `region` and emit a capture whenever its text changes.
     pub fn start_continuous(&self, region: Rect) -> Result<ContinuousHandle> {
         let ocr = self.inner.ocr.clone().ok_or(CaptureError::NoOcr)?;
+        lock(&self.inner.live_turns).clear(); // a new session is a new scene
         Ok(continuous::spawn(&self.inner.runtime, self.inner.platform.screen.clone(), ocr, self.inner.cfg.continuous.clone(), region))
     }
 
@@ -236,6 +240,14 @@ impl Engine {
         if let Some(previous) = lock(slot).replace(handle) {
             previous.abort(); // superseded: its channel closes, the UI also drops stale ids
         }
+    }
+
+    /// Translate one live subtitle line (translation only). Lines never cancel each other.
+    pub fn translate_live(&self, line: LiveLine) -> (u64, EventRx) {
+        let id = self.next_id();
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.inner.runtime.spawn(pipeline::live(self.inner.clone(), id, line, tx));
+        (id, rx)
     }
 
     /// Translate and break down `capture`. A newer call cancels an older one.

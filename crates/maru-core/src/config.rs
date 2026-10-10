@@ -399,16 +399,22 @@ pub struct ContinuousConfig {
     pub region: Option<Rect>,
     /// How often to grab the region.
     pub interval_ms: u64,
-    /// Text must stay unchanged this long before it is translated.
+    /// A picture that has not changed for this long is a finished line: it is read at once. A line
+    /// that is still fading in is read as soon as two reads in a row agree, without waiting for this.
     pub stable_ms: u64,
     /// Fraction of sampled pixels that must change to count as a new frame (0..1).
     pub diff_threshold: f32,
+    /// How many lines the history keeps (live lines are reviewed there after a cutscene).
     pub history_len: usize,
+    /// How long the translation stays on screen after the original line is gone.
+    pub linger_ms: u64,
+    /// Earlier lines the model sees, so pronouns and names stay consistent.
+    pub context_lines: usize,
 }
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 250, stable_ms: 350, diff_threshold: 0.01, history_len: 50 }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4 }
     }
 }
 

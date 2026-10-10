@@ -25,6 +25,6 @@ pub mod vlm_ocr;
 
 pub use bootstrap::{BootOptions, Services, boot, load_config};
 pub use capture::{CaptureError, Capturer};
-pub use continuous::ContinuousHandle;
+pub use continuous::{ContinuousHandle, LiveEvent, LiveLine};
 pub use engine::{DeepDiveRequest, Engine, EngineError, EngineParts, EventRx, ReviewResult};
 pub use memory::HistoryItem;

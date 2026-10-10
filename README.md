@@ -56,7 +56,7 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 | `Ctrl+Alt+T` | translate the selection (falls back to the text under the cursor) |
 | `Ctrl+Alt+R` | draw a rectangle anywhere and translate what is inside |
 | `Ctrl+Alt+H` | hover mode: rest the pointer on a Korean word for its meaning |
-| `Ctrl+Alt+C` | live mode for subtitles and dialogue boxes (translates when the text changes), on the last chosen area |
+| `Ctrl+Alt+C` | live subtitles: the translation appears over the original line as soon as it is read, on the last chosen area |
 | `Ctrl+Alt+Shift+C` | choose a different live-mode area (and start it there) |
 | `Ctrl+Alt+S` | label every Korean text on the screen (game menus, HUDs); press again to rescan |
 | `Ctrl+Alt+L` | history, review and status |
@@ -67,6 +67,8 @@ Each action accepts several keys separated by `|` in `config.toml` (e.g. `transl
 **Speech.** `maru setup tts` installs a local Korean voice (Qwen3-TTS through qwentts.cpp's `tts-server`, about 2.5 GB; Windows build from this repository's `tts-server` workflow) and `maru tts-eval` writes a page that plays the same tricky sentences (sound changes, numbers, intonation, a paragraph) in each voice so you can judge by ear. To keep the GPU free for a game, point `[tts]` at a server on another PC or at any OpenAI-style speech API (`provider = "endpoint"`); both are in Settings → Speech, with a Test voice button. Long text is spoken sentence by sentence (the next one is made while one plays) and every sentence is cached. In the panel, 🔊 reads the text aloud with the spoken sentence and its words highlighted, with previous / pause / next / say-again / repeat-each-sentence controls; the deep dive has 🔊 buttons for a single word; `Ctrl+Alt+P` (`hotkeys.speak`) translates the selection and reads it, and stops when pressed again. The panel stays up while it reads and dismissing it stops the voice.
 
 **Moving the panel.** Drag it by its top bar (the ⠿ grip) to put it anywhere: it pins itself and stays there while it translates the next thing, however much it grows. Unpin (📌) to let it go back next to the text again.
+
+**Live subtitles** draw the English in a dark band over the original line, stay while it is on screen and for a moment after (`continuous.linger_ms`), and every line goes into **History → Live subtitles** in order, with how long it took, so you can read a cutscene afterwards; click a line for its word-by-word breakdown. Each line is logged in `maru-app.log` (`live line: on screen → read … → first word … → done …`).
 
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
 
@@ -107,7 +109,7 @@ positions, so they are a candidate for a "double-check" mode rather than a repla
 3. The model server is started in the background at launch, kept warm, and its prompt prefix is cached
    (constant system prompts, `--cache-reuse`); thinking is switched off.
 4. Selecting text is read **exactly** through UI Automation (no OCR error, no OCR time); OCR is the fallback.
-5. Live mode OCRs only after the picture changed *and then held still*, and ignores one-character OCR jitter.
+5. Live subtitles read a line as soon as two reads in a row agree (or the picture holds still), without waiting for a fade to finish, read a moving scene without text slowly, and ignore one-character OCR jitter. Their translation is its own lane: translation only (no word breakdown), the earlier lines as chat turns, a short answer cap and low temperature. The normal translation is not touched.
 6. Repeated lines come from a cache; words you know are not sent for glossing at all.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the extension points.

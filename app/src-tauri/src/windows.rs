@@ -11,6 +11,7 @@ pub const PANEL: &str = "panel";
 pub const PICKER: &str = "picker";
 pub const HUB: &str = "hub";
 pub const SCAN: &str = "scan";
+pub const LIVE: &str = "live";
 
 /// Create the (hidden) panel at start-up so the page is loaded and composited before first use.
 pub fn create_panel(app: &AppHandle, width: f32) -> tauri::Result<WebviewWindow> {
@@ -53,6 +54,48 @@ pub fn create_scan(app: &AppHandle) -> tauri::Result<WebviewWindow> {
         .build()?;
     let _ = win.set_ignore_cursor_events(true);
     Ok(win)
+}
+
+/// The (hidden) window that carries the live-subtitle translation. Click-through, never focused, and
+/// out of screenshots so live mode never reads its own translation back.
+pub fn create_live(app: &AppHandle) -> tauri::Result<WebviewWindow> {
+    let win = WebviewWindowBuilder::new(app, LIVE, WebviewUrl::App("live.html".into()))
+        .title("Maru — live subtitles")
+        .decorations(false)
+        .transparent(true)
+        .shadow(false)
+        .resizable(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .focusable(false)
+        .content_protected(true)
+        .visible(false)
+        .build()?;
+    let _ = win.set_ignore_cursor_events(true);
+    Ok(win)
+}
+
+/// Put the live window over the subtitle area (it stays hidden until a translation arrives).
+pub fn place_live(app: &AppHandle, window: Rect) {
+    let Some(win) = app.get_webview_window(LIVE) else { return };
+    let _ = win.set_position(PhysicalPosition::new(window.x as i32, window.y as i32));
+    let _ = win.set_size(PhysicalSize::new(window.w as u32, window.h as u32));
+}
+
+pub fn show_live(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(LIVE)
+        && !win.is_visible().unwrap_or(false)
+    {
+        let _ = win.set_ignore_cursor_events(true);
+        let _ = win.show();
+    }
+}
+
+pub fn hide_live(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window(LIVE) {
+        let _ = tauri::Emitter::emit_to(app, LIVE, "maru-live-off", ());
+        let _ = win.hide();
+    }
 }
 
 /// Cover `monitor` with the scan layer and show it (the game keeps the keyboard).

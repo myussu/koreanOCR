@@ -1,3 +1,4 @@
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use maru_core::{Capture, Config, Point, Rect};
@@ -47,6 +48,10 @@ pub struct AppState {
     pub continuous: Mutex<Option<ContinuousHandle>>,
     /// The area live mode watches: from the config at start-up, replaced whenever a new one is picked.
     pub live_region: Mutex<Option<Rect>>,
+    /// The id of the newest live line: the band shows only that one (older lines still reach the history).
+    pub live_latest: std::sync::atomic::AtomicU64,
+    /// A failed live translation has already been reported this session.
+    pub live_error_shown: AtomicBool,
     pub scan: Mutex<ScanState>,
     /// The settings the shell itself reads (shortcuts, panel look): replaced as soon as they are
     /// saved. The engine keeps the settings it started with until Maru restarts.

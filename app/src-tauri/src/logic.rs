@@ -41,6 +41,32 @@ pub fn keep_on_screen(pos: Point, size: (f32, f32), monitor: Rect) -> Point {
     Point { x: pos.x.clamp(monitor.x + MARGIN, max_x), y: pos.y.clamp(monitor.y + MARGIN, max_y) }
 }
 
+/// The window that carries the live translation band, for subtitles watched in `region`: as wide as
+/// the region (at least `MIN_BAND_W`), tall enough to let a translation of several lines grow away from
+/// the screen edge. Returns the window and whether the band grows upward (subtitles in the lower half).
+pub fn band_window(region: Rect, monitor: Rect) -> (Rect, bool) {
+    const MIN_BAND_W: f32 = 720.0;
+    let w = region.w.max(MIN_BAND_W).min(monitor.w);
+    let x = (region.x + region.w / 2.0 - w / 2.0).clamp(monitor.x, (monitor.right() - w).max(monitor.x));
+    let extra = region.h.max(160.0);
+    let grows_up = region.y + region.h / 2.0 > monitor.y + monitor.h / 2.0;
+    let (y, h) = if grows_up {
+        let y = (region.y - extra).max(monitor.y);
+        (y, (region.bottom() - y).min(monitor.bottom() - y))
+    } else {
+        let y = region.y.max(monitor.y);
+        (y, (region.h + extra).min(monitor.bottom() - y))
+    };
+    (Rect::new(x, y, w, h), grows_up)
+}
+
+/// The text box to cover with the translation: what OCR found, or the whole watched region when it
+/// gave no position, relative to the band window's top-left corner.
+pub fn band_cover(found: Option<Rect>, region: Rect, window: Rect) -> Rect {
+    let r = found.filter(|r| !r.is_empty()).unwrap_or(region);
+    Rect::new(r.x - window.x, r.y - window.y, r.w, r.h)
+}
+
 /// A rectangle around a point, used when the capture has no position (clipboard copy).
 pub fn around_point(p: Point) -> Rect {
     Rect::new(p.x - 4.0, p.y - 10.0, 8.0, 20.0)
@@ -121,6 +147,43 @@ mod tests {
 
     const MON: Rect = Rect::new(0.0, 0.0, 1920.0, 1080.0);
     const SIZE: (f32, f32) = (600.0, 300.0);
+
+    #[test]
+    fn the_band_window_for_bottom_subtitles_grows_upward_and_stays_on_the_monitor() {
+        let region = Rect::new(480.0, 900.0, 960.0, 120.0);
+        let (win, up) = band_window(region, MON);
+        assert!(up);
+        assert_eq!((win.x, win.w), (480.0, 960.0));
+        assert_eq!(win.bottom(), region.bottom(), "bottom edge stays at the subtitles");
+        assert!(win.y >= 0.0 && win.h >= region.h + 160.0 - 1.0, "room for several lines above: {win:?}");
+    }
+
+    #[test]
+    fn the_band_window_for_top_subtitles_grows_downward() {
+        let (win, up) = band_window(Rect::new(300.0, 40.0, 1200.0, 100.0), MON);
+        assert!(!up);
+        assert_eq!(win.y, 40.0);
+        assert!(win.bottom() <= MON.bottom());
+    }
+
+    #[test]
+    fn a_narrow_region_gets_a_wide_enough_band_and_never_leaves_the_monitor() {
+        let (win, _) = band_window(Rect::new(0.0, 900.0, 200.0, 60.0), MON);
+        assert_eq!(win.w, 720.0);
+        assert_eq!(win.x, 0.0, "clamped at the left edge");
+        let (win, _) = band_window(Rect::new(1800.0, 900.0, 120.0, 60.0), MON);
+        assert_eq!(win.right(), 1920.0, "clamped at the right edge");
+        let (win, _) = band_window(Rect::new(0.0, 0.0, 5000.0, 90.0), Rect::new(0.0, 0.0, 1280.0, 720.0));
+        assert_eq!(win.w, 1280.0);
+    }
+
+    #[test]
+    fn the_cover_is_relative_to_the_window_and_falls_back_to_the_region() {
+        let win = Rect::new(100.0, 200.0, 800.0, 300.0);
+        assert_eq!(band_cover(Some(Rect::new(150.0, 380.0, 400.0, 40.0)), Rect::new(100.0, 360.0, 800.0, 100.0), win), Rect::new(50.0, 180.0, 400.0, 40.0));
+        assert_eq!(band_cover(None, Rect::new(100.0, 360.0, 800.0, 100.0), win), Rect::new(0.0, 160.0, 800.0, 100.0));
+        assert_eq!(band_cover(Some(Rect::new(0.0, 0.0, 0.0, 0.0)), Rect::new(100.0, 360.0, 800.0, 100.0), win), Rect::new(0.0, 160.0, 800.0, 100.0));
+    }
 
     #[test]
     fn goes_below_the_selection_when_there_is_room() {

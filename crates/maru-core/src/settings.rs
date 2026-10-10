@@ -146,6 +146,8 @@ pub fn validate(cfg: &Config) -> Result<()> {
     check(cfg.learning.known_stability_days >= 1.0, "a known word needs at least 1 day of stability");
     check(cfg.continuous.interval_ms >= 50, "live mode must look at least every 50 ms");
     check((0.0..=1.0).contains(&cfg.continuous.diff_threshold), "change threshold must be between 0 and 1");
+    check(cfg.continuous.linger_ms <= 10_000, "a live translation can stay at most 10 seconds after its line is gone");
+    check(cfg.continuous.context_lines <= 20, "live mode can show the model at most 20 earlier lines");
     check((1024..=65535).contains(&cfg.tts.port), "speech server port must be between 1024 and 65535");
     check(cfg.tts.speed >= 0.25 && cfg.tts.speed <= 4.0, "speech speed must be between 0.25 and 4");
     check(cfg.tts.timeout_secs >= 5, "speech timeout must be at least 5 seconds");

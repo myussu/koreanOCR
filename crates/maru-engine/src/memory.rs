@@ -63,6 +63,17 @@ pub struct HistoryItem {
     pub translation: String,
     pub direction: Direction,
     pub app: Option<String>,
+    /// Read from live subtitles.
+    pub live: bool,
+    /// Live lines: from the line appearing on screen until its translation started / finished, in ms.
+    pub first_ms: Option<u32>,
+    pub total_ms: Option<u32>,
+}
+
+impl HistoryItem {
+    pub fn new(id: u64, at: i64, source: String, translation: String, direction: Direction, app: Option<String>) -> Self {
+        Self { id, at, source, translation, direction, app, live: false, first_ms: None, total_ms: None }
+    }
 }
 
 pub struct History {
@@ -75,6 +86,12 @@ impl History {
         Self { items: VecDeque::new(), cap: cap.max(1) }
     }
     pub fn push(&mut self, item: HistoryItem) {
+        // A live line that comes back right after it went away (a flicker) is the same line.
+        if item.live
+            && self.items.back().is_some_and(|last| last.live && last.source == item.source && item.at - last.at <= 3)
+        {
+            return;
+        }
         self.items.push_back(item);
         while self.items.len() > self.cap {
             self.items.pop_front();
@@ -122,10 +139,21 @@ mod tests {
     }
 
     #[test]
+    fn a_live_line_repeated_at_once_is_one_entry_but_later_it_is_a_new_one() {
+        let live = |id, at, src: &str| HistoryItem { live: true, ..HistoryItem::new(id, at, src.into(), "t".into(), Direction::KoToEn, None) };
+        let mut h = History::new(10);
+        h.push(live(1, 100, "안녕"));
+        h.push(live(2, 101, "안녕")); // flicker
+        h.push(live(3, 120, "안녕")); // said again later
+        h.push(HistoryItem::new(4, 121, "안녕".into(), "t".into(), Direction::KoToEn, None)); // typed by hand: always kept
+        assert_eq!(h.items().iter().map(|i| i.id).collect::<Vec<_>>(), [1, 3, 4]);
+    }
+
+    #[test]
     fn history_is_bounded() {
         let mut h = History::new(2);
         for id in 0..5 {
-            h.push(HistoryItem { id, at: 0, source: String::new(), translation: String::new(), direction: Direction::KoToEn, app: None });
+            h.push(HistoryItem::new(id, 0, String::new(), String::new(), Direction::KoToEn, None));
         }
         assert_eq!(h.items().iter().map(|i| i.id).collect::<Vec<_>>(), [3, 4]);
     }

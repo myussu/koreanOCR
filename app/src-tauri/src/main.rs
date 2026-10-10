@@ -53,8 +53,8 @@ pub fn tray_menu(app: &tauri::AppHandle, state: &AppState) -> tauri::Result<Menu
             &item("translate", format!("Translate selection\t{}", keys.translate))?,
             &item("region", format!("Pick a region…\t{}", keys.region))?,
             &item("hover", format!("Toggle hover mode\t{}", keys.hover))?,
-            &item("continuous", format!("Toggle continuous mode\t{}", keys.continuous))?,
-            &item("continuous_area", format!("Continuous mode: choose area…\t{}", keys.continuous_area))?,
+            &item("continuous", format!("Toggle live subtitles\t{}", keys.continuous))?,
+            &item("continuous_area", format!("Live subtitles: choose area…\t{}", keys.continuous_area))?,
             &item("scan", format!("Label all Korean text on screen\t{}", keys.scan))?,
             &item("speak", format!("Translate and read aloud\t{}", keys.speak))?,
             &PredefinedMenuItem::separator(app)?,
@@ -122,11 +122,12 @@ fn main() {
                 tracing::info!("{note}");
             }
             let live_region = Mutex::new(services.engine.config().continuous.region);
-            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region, scan: Mutex::default(), live: std::sync::RwLock::new(booted.clone()), booted });
+            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region, live_latest: Default::default(), live_error_shown: Default::default(), scan: Mutex::default(), live: std::sync::RwLock::new(booted.clone()), booted });
 
             let width = state.cfg().ui.max_width_px as f32;
             windows::create_panel(app.handle(), width)?;
             windows::create_scan(app.handle())?;
+            windows::create_live(app.handle())?;
             build_tray(app.handle(), &state)?;
             for problem in hotkeys::register(app.handle(), &state) {
                 tracing::warn!("{problem}");
@@ -139,6 +140,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             commands::ui_config,
+            commands::live_idle,
+            commands::history_open,
             commands::deep_dive,
             commands::save_word,
             commands::unsave_word,

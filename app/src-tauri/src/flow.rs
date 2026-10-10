@@ -232,6 +232,75 @@ pub fn toggle_hover(app: &AppHandle, state: &Arc<AppState>) {
     }
 }
 
+/// What the live window needs to draw one translation over the original subtitle (positions in
+/// physical pixels, relative to the window).
+#[derive(Serialize, Clone)]
+struct LiveBand {
+    id: u64,
+    /// The translation so far.
+    text: String,
+    done: bool,
+    cover: Rect,
+    /// Height of one line of the original text.
+    line_h: f32,
+    anchor_bottom: bool,
+    linger_ms: u64,
+}
+
+/// Where one live line's translation goes.
+#[derive(Clone, Copy)]
+struct BandSpot {
+    cover: Rect,
+    line_h: f32,
+    anchor_bottom: bool,
+}
+
+/// Height of a line of text: the middle word box, or the whole box when OCR gave no words.
+fn line_height(capture: &Capture, cover: Rect) -> f32 {
+    let mut heights: Vec<f32> = capture.words.iter().map(|w| w.rect.h).filter(|h| *h > 1.0).collect();
+    if heights.is_empty() {
+        return cover.h;
+    }
+    heights.sort_by(|a, b| a.total_cmp(b));
+    heights[heights.len() / 2]
+}
+
+/// Forward one live line's translation to the band window while it streams. Only the newest line is
+/// drawn; an older one still runs to the end so that it reaches the history.
+fn pump_live(app: AppHandle, state: Arc<AppState>, id: u64, mut rx: EventRx, spot: BandSpot) {
+    tauri::async_runtime::spawn(async move {
+        let mut text = String::new();
+        let send = |text: &str, done: bool| {
+            if state.live_latest.load(std::sync::atomic::Ordering::Relaxed) != id || text.is_empty() {
+                return;
+            }
+            windows::show_live(&app);
+            let band = LiveBand { id, text: text.to_string(), done, cover: spot.cover, line_h: spot.line_h, anchor_bottom: spot.anchor_bottom, linger_ms: state.cfg().continuous.linger_ms };
+            let _ = app.emit_to(windows::LIVE, "maru-live", band);
+        };
+        while let Some(event) = rx.recv().await {
+            match event {
+                Event::Translation { delta, .. } => {
+                    text.push_str(&delta);
+                    send(&text, false);
+                }
+                Event::TranslationDone { text: full, .. } => {
+                    text = full;
+                    send(&text, true);
+                }
+                Event::Error { message, .. } => {
+                    tracing::warn!("live translation: {message}");
+                    if !state.live_error_shown.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                        notice(&app, &state, None, "error", format!("Live subtitles could not be translated: {message}"));
+                    }
+                }
+                Event::Done { .. } => break,
+                _ => {}
+            }
+        }
+    });
+}
+
 fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
     let mut handle = match state.engine().start_continuous(region) {
         Ok(h) => h,
@@ -242,38 +311,46 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
     if let Ok(mut slot) = state.continuous.lock() {
         *slot = Some(handle);
     }
-    state.panel().pinned = true;
+    state.live_error_shown.store(false, std::sync::atomic::Ordering::Relaxed);
+    let monitor = windows::monitor_rect(&app, Point { x: region.x + region.w / 2.0, y: region.y + region.h / 2.0 });
+    let (window, anchor_bottom) = logic::band_window(region, monitor);
+    windows::place_live(&app, window);
     refresh_tray(&app, &state);
     let keys = state.cfg().hotkeys;
     let text = format!(
-        "Continuous mode on: new lines in the {}×{} area at ({}, {}) are translated automatically. {} turns it off; {} chooses a different area.",
+        "Live subtitles on: new lines in the {}×{} area at ({}, {}) are translated over the original. {} turns it off; {} chooses a different area. The history ({}) keeps every line.",
         region.w.round(),
         region.h.round(),
         region.x.round(),
         region.y.round(),
         keys.continuous,
-        keys.continuous_area
+        keys.continuous_area,
+        keys.history
     );
     notice(&app, &state, Some(Point { x: region.x, y: region.y + region.h }), "info", text);
     tauri::async_runtime::spawn(async move {
-        while let Some(capture) = rx.recv().await {
-            {
-                let mut p = state.panel();
-                p.anchor = region;
-                p.size = (state.cfg().ui.max_width_px as f32, 160.0);
+        while let Some(event) = rx.recv().await {
+            match event {
+                maru_engine::LiveEvent::Line(line) => {
+                    let cover = logic::band_cover(line.capture.rect, region, window);
+                    let spot = BandSpot { cover, line_h: line_height(&line.capture, cover), anchor_bottom };
+                    let (id, events) = state.engine().translate_live(*line);
+                    state.live_latest.store(id, std::sync::atomic::Ordering::Relaxed);
+                    pump_live(app.clone(), state.clone(), id, events, spot);
+                }
+                maru_engine::LiveEvent::Cleared => {
+                    let _ = app.emit_to(windows::LIVE, "maru-live-clear", state.live_latest.load(std::sync::atomic::Ordering::Relaxed));
+                }
             }
-            windows::place_and_show(&app, &state, maru_core::config::Placement::Below);
-            let (_, events) = state.engine().translate(capture);
-            pump(app.clone(), events);
         }
     });
 }
 
 pub fn toggle_continuous(app: &AppHandle, state: &Arc<AppState>) {
     if state.stop_continuous() {
-        state.panel().pinned = false;
+        windows::hide_live(app);
         refresh_tray(app, state);
-        notice(app, state, None, "info", "Continuous mode off.");
+        notice(app, state, None, "info", "Live subtitles off.");
         return;
     }
     match state.live_region() {
@@ -285,7 +362,7 @@ pub fn toggle_continuous(app: &AppHandle, state: &Arc<AppState>) {
 /// Let the user drag a new area for continuous mode; it starts watching there as soon as it is picked.
 pub fn choose_continuous_area(app: &AppHandle, state: &Arc<AppState>) {
     if state.stop_continuous() {
-        state.panel().pinned = false;
+        windows::hide_live(app);
         refresh_tray(app, state);
     }
     state.panel().awaiting_continuous_region = true;
