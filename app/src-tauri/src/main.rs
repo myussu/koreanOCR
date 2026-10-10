@@ -21,10 +21,25 @@ use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, RunEvent};
 
+/// Log to `maru-app.log` in the data folder (the release build has no console), and record
+/// panics there. A panic inside a native callback aborts the process with no message anywhere
+/// else, which made the first crash impossible to diagnose.
 fn init_logging() {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    let filter = tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into());
+    let paths = Paths::discover();
+    let _ = std::fs::create_dir_all(&paths.data_dir);
+    let log = paths.data_dir.join("maru-app.log");
+    let _ = std::fs::rename(&log, paths.data_dir.join("maru-app.previous.log"));
+    match std::fs::File::create(&log) {
+        Ok(file) => tracing_subscriber::fmt().with_env_filter(filter).with_ansi(false).with_writer(Mutex::new(file)).init(),
+        Err(_) => tracing_subscriber::fmt().with_env_filter(filter).init(),
+    }
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        tracing::error!("PANIC: {info}\n{}", std::backtrace::Backtrace::force_capture());
+        default_hook(info);
+    }));
+    tracing::info!("log file: {}", log.display());
 }
 
 fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()> {

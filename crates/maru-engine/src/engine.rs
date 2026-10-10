@@ -203,7 +203,7 @@ impl Engine {
     /// Watch `region` and emit a capture whenever its text changes.
     pub fn start_continuous(&self, region: Rect) -> Result<ContinuousHandle> {
         let ocr = self.inner.ocr.clone().ok_or(CaptureError::NoOcr)?;
-        Ok(continuous::spawn(self.inner.platform.screen.clone(), ocr, self.inner.cfg.continuous.clone(), region))
+        Ok(continuous::spawn(&self.inner.runtime, self.inner.platform.screen.clone(), ocr, self.inner.cfg.continuous.clone(), region))
     }
 
     // ───────────── translation ─────────────

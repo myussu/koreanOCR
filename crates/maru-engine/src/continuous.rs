@@ -46,10 +46,15 @@ impl Drop for ContinuousHandle {
     }
 }
 
-pub fn spawn(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: ContinuousConfig, region: Rect) -> ContinuousHandle {
+/// Start watching `region` on `runtime`.
+///
+/// The runtime is passed in rather than found with `tokio::spawn` because the overlay calls this
+/// from a window-event callback, which is not a Tokio thread: `tokio::spawn` there panics, and a
+/// panic inside a native callback aborts the whole process.
+pub fn spawn(runtime: &tokio::runtime::Handle, screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: ContinuousConfig, region: Rect) -> ContinuousHandle {
     let (tx, rx) = mpsc::channel(8);
     let stop = CancellationToken::new();
-    tokio::spawn(watch(screen, ocr, cfg, region, tx, stop.clone()));
+    runtime.spawn(watch(screen, ocr, cfg, region, tx, stop.clone()));
     ContinuousHandle { rx, stop }
 }
 
@@ -164,7 +169,7 @@ mod tests {
         frames.extend(vec![frame(20, 200); 200]);
         let screen = Arc::new(FakeScreen::new(frames));
         let ocr = Arc::new(FakeOcr::new(pages()));
-        let mut h = spawn(screen, ocr, cfg(), Rect::new(100.0, 800.0, 400.0, 80.0));
+        let mut h = spawn(&tokio::runtime::Handle::current(), screen, ocr, cfg(), Rect::new(100.0, 800.0, 400.0, 80.0));
 
         let a = next(&mut h, 2000).await.expect("first line");
         assert_eq!(a.text, "안녕하세요 여러분");
@@ -182,15 +187,30 @@ mod tests {
         // brightness keeps changing every frame, so the stable window never elapses
         let frames: Vec<RgbImage> = (0..400).map(|i| frame(10, if i % 2 == 0 { 40 } else { 200 })).collect();
         let ocr = Arc::new(FakeOcr::new(pages()));
-        let mut h = spawn(Arc::new(FakeScreen::new(frames)), ocr.clone(), cfg(), Rect::new(0.0, 0.0, 400.0, 80.0));
+        let mut h = spawn(&tokio::runtime::Handle::current(), Arc::new(FakeScreen::new(frames)), ocr.clone(), cfg(), Rect::new(0.0, 0.0, 400.0, 80.0));
         assert!(next(&mut h, 350).await.is_none());
         assert_eq!(*ocr.calls.lock().unwrap(), 0, "OCR must wait for the frame to settle");
+    }
+
+    /// The overlay starts live mode from a window-event callback, which is not a Tokio thread.
+    /// Using `tokio::spawn` there panicked ("there is no reactor running") and the panic, inside a
+    /// native callback, killed the whole app.
+    #[test]
+    fn can_be_started_from_a_thread_that_is_not_inside_a_runtime() {
+        let rt = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+        assert!(tokio::runtime::Handle::try_current().is_err(), "this test thread must have no runtime");
+        let ocr = Arc::new(FakeOcr::new(pages()));
+        let mut h = spawn(rt.handle(), Arc::new(FakeScreen::new(vec![frame(10, 100)])), ocr, cfg(), Rect::new(0.0, 0.0, 400.0, 80.0));
+        let mut rx = h.take_receiver();
+        let got = rt.block_on(async { tokio::time::timeout(Duration::from_secs(2), rx.recv()).await }).expect("a line within 2s");
+        assert_eq!(got.unwrap().text, "안녕하세요 여러분");
+        h.stop();
     }
 
     #[tokio::test]
     async fn the_receiver_can_be_moved_out_while_the_handle_keeps_control() {
         let ocr = Arc::new(FakeOcr::new(pages()));
-        let mut h = spawn(Arc::new(FakeScreen::new(vec![frame(10, 100)])), ocr, cfg(), Rect::new(0.0, 0.0, 400.0, 80.0));
+        let mut h = spawn(&tokio::runtime::Handle::current(), Arc::new(FakeScreen::new(vec![frame(10, 100)])), ocr, cfg(), Rect::new(0.0, 0.0, 400.0, 80.0));
         let mut rx = h.take_receiver();
         assert!(tokio::time::timeout(Duration::from_secs(1), rx.recv()).await.unwrap().is_some());
         h.stop();
@@ -200,7 +220,7 @@ mod tests {
     #[tokio::test]
     async fn stopping_ends_the_stream() {
         let ocr = Arc::new(FakeOcr::new(pages()));
-        let mut h = spawn(Arc::new(FakeScreen::new(vec![frame(10, 100)])), ocr, cfg(), Rect::new(0.0, 0.0, 400.0, 80.0));
+        let mut h = spawn(&tokio::runtime::Handle::current(), Arc::new(FakeScreen::new(vec![frame(10, 100)])), ocr, cfg(), Rect::new(0.0, 0.0, 400.0, 80.0));
         assert!(next(&mut h, 1000).await.is_some());
         h.stop();
         assert!(tokio::time::timeout(Duration::from_secs(1), h.rx.recv()).await.expect("channel closes").is_none());
