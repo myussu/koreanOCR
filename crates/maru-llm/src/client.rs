@@ -12,18 +12,43 @@ use serde_json::{Value, json};
 
 use crate::{LlmError, Result};
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub struct Message {
     pub role: &'static str,
     pub content: String,
+    /// A `data:image/png;base64,…` URL sent alongside the text (vision models only).
+    pub image: Option<String>,
 }
 
 impl Message {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system", content: content.into() }
+        Self { role: "system", content: content.into(), image: None }
     }
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user", content: content.into() }
+        Self { role: "user", content: content.into(), image: None }
+    }
+    pub fn user_with_image(content: impl Into<String>, data_url: impl Into<String>) -> Self {
+        Self { role: "user", content: content.into(), image: Some(data_url.into()) }
+    }
+}
+
+impl Serialize for Message {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut m = serializer.serialize_struct("Message", 2)?;
+        m.serialize_field("role", self.role)?;
+        match &self.image {
+            // OpenAI "content parts": the image first, then the instruction.
+            Some(url) => m.serialize_field(
+                "content",
+                &json!([
+                    { "type": "image_url", "image_url": { "url": url } },
+                    { "type": "text", "text": self.content },
+                ]),
+            )?,
+            None => m.serialize_field("content", &self.content)?,
+        }
+        m.end()
     }
 }
 
@@ -311,6 +336,15 @@ mod tests {
 
     fn cfg() -> LlmConfig {
         LlmConfig { request_timeout_secs: 2, ..Default::default() }
+    }
+
+    #[test]
+    fn image_messages_use_openai_content_parts_and_text_messages_stay_plain() {
+        let plain = serde_json::to_value(Message::user("hi")).unwrap();
+        assert_eq!(plain, json!({ "role": "user", "content": "hi" }));
+        let with_image = serde_json::to_value(Message::user_with_image("OCR:", "data:image/png;base64,AAAA")).unwrap();
+        assert_eq!(with_image["content"][0]["image_url"]["url"], "data:image/png;base64,AAAA");
+        assert_eq!(with_image["content"][1], json!({ "type": "text", "text": "OCR:" }));
     }
 
     #[test]

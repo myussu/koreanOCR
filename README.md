@@ -58,6 +58,12 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 `maru bench` (latency percentiles) · `maru eval-ocr <folder>` (score OCR engines on **your own** screenshots:
 `name.png` + `name.txt` pairs) · `maru vocab …` · `maru dict …`. The CLI uses the same engine as the overlay.
 
+`eval-ocr` can also pit vision-language models against PP-OCR (each runs in its own `llama-server`, one at a time;
+the first run downloads the model): `maru eval-ocr <folder> --engine paddle paddle-vl gemma windows`.
+If a model will not start, run it yourself and use `--engine endpoint --vlm-endpoint http://127.0.0.1:8080`
+(`--vlm-args "…"` passes extra flags such as `--jinja --chat-template-file …`). Vision models return text only, no word
+positions, so they are a candidate for a "double-check" mode rather than a replacement for PP-OCR's geometry.
+
 ## How it stays fast
 
 1. The offline breakdown (analysis, pronunciation, dictionary, your vocabulary state) is shown **before** any model

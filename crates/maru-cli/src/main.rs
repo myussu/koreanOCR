@@ -70,6 +70,21 @@ enum Command {
         /// Engines to compare.
         #[arg(long, value_enum, num_args = 1.., default_values_t = [EngineArg::Paddle, EngineArg::Windows])]
         engine: Vec<EngineArg>,
+        /// Hugging Face repo for `paddle-vl` (llama-server `-hf` syntax, e.g. `repo:Q8_0`).
+        #[arg(long, default_value = "PaddlePaddle/PaddleOCR-VL-1.5-GGUF")]
+        paddle_vl_repo: String,
+        /// Hugging Face repo for `gemma` (default: the model set in your config, else the recommended one).
+        #[arg(long)]
+        gemma_repo: Option<String>,
+        /// Extra llama-server arguments for the vision models, as one string (e.g. "--jinja --chat-template-file x.jinja").
+        #[arg(long)]
+        vlm_args: Option<String>,
+        /// Use a vision model you started yourself (OpenAI-compatible, e.g. `http://127.0.0.1:8080`) as engine `endpoint`.
+        #[arg(long)]
+        vlm_endpoint: Option<String>,
+        /// Instruction sent to the `endpoint` engine (default: the PaddleOCR-VL `OCR:` prompt).
+        #[arg(long)]
+        vlm_prompt: Option<String>,
     },
     /// Install things Maru does not bundle.
     #[command(subcommand)]
@@ -180,8 +195,16 @@ enum RegisterArg {
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum EngineArg {
+    /// PP-OCRv5 (detector + Korean recogniser), the default.
     Paddle,
+    /// Windows.Media.Ocr.
     Windows,
+    /// PaddleOCR-VL-1.5 through its own llama-server.
+    PaddleVl,
+    /// A general vision model (Gemma 4) through its own llama-server.
+    Gemma,
+    /// A vision model you already run; needs --vlm-endpoint.
+    Endpoint,
 }
 
 fn paths_for(cli: &Cli) -> Paths {
@@ -286,14 +309,35 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             tools::bench(&mut s, sentences, runs.max(1)).await?;
             Ok(0)
         }
-        Command::EvalOcr { dir, engine } => {
+        Command::EvalOcr { dir, engine, paddle_vl_repo, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt } => {
+            use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};
             let s = services(&paths, cfg, false).await;
-            let mut engines: Vec<(String, Arc<dyn maru_ocr::OcrEngine>)> = Vec::new();
+            let cases = tools::load_cases(&dir)?;
+            println!("{} test image(s)\n", cases.len());
+            let mut scores = Vec::new();
+            let extra: Vec<String> = vlm_args.as_deref().unwrap_or("").split_whitespace().map(str::to_string).collect();
+            // Vision-model servers take turns, so they never compete for VRAM (or for timing).
+            let vlm_cfg = |repo: String| {
+                let mut c = s.engine.config().llm.clone();
+                c.endpoint = None;
+                c.model_path = None;
+                c.draft_model_path = None;
+                c.hf_repo = Some(repo);
+                c.vision = true;
+                c.port = 18090;
+                c.parallel = 1;
+                c.ctx_size = 8192;
+                c.extra_args = extra.clone();
+                c
+            };
             for e in engine {
-                match e {
+                let (name, ocr, _server): (String, Arc<dyn maru_ocr::OcrEngine>, Option<maru_llm::LlamaServer>) = match e {
                     EngineArg::Windows => match s.engine.platform().os_ocr.clone() {
-                        Some(o) => engines.push(("Windows OCR".into(), o)),
-                        None => eprintln!("(Windows OCR is not available here; skipping)"),
+                        Some(o) => ("Windows OCR".into(), o, None),
+                        None => {
+                            eprintln!("(Windows OCR is not available here; skipping)\n");
+                            continue;
+                        }
                     },
                     EngineArg::Paddle => {
                         let pc = maru_ocr::paddle::PaddleConfig::resolve(&s.engine.config().ocr, &paths);
@@ -302,17 +346,60 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                                 let o: Arc<dyn maru_ocr::OcrEngine> = Arc::new(o);
                                 // Same spacing repair the overlay applies, so the score reflects real use.
                                 let o = maru_engine::respace::RespacingOcr::wrap(o, &s.engine.analyzer());
-                                engines.push((format!("PP-OCR ({})", pc.device), o));
+                                (format!("PP-OCR ({})", pc.device), o, None)
                             }
-                            Err(err) => eprintln!("(PP-OCR unavailable: {err}; skipping)"),
+                            Err(err) => {
+                                eprintln!("(PP-OCR unavailable: {err}; skipping)\n");
+                                continue;
+                            }
                         }
                     }
+                    EngineArg::PaddleVl | EngineArg::Gemma => {
+                        let (label, repo, prompt) = if e == EngineArg::PaddleVl {
+                            ("PaddleOCR-VL-1.5", paddle_vl_repo.clone(), PADDLE_VL_PROMPT)
+                        } else {
+                            let repo = gemma_repo
+                                .clone()
+                                .or_else(|| s.engine.config().llm.hf_repo.clone())
+                                .unwrap_or_else(|| setup::RECOMMENDED_MODEL.to_string());
+                            ("Gemma 4 (vision)", repo, GENERAL_VLM_PROMPT)
+                        };
+                        println!("Starting {label} from {repo} (the first run downloads the model; this can take a while) …");
+                        let cfg = vlm_cfg(repo);
+                        match maru_llm::LlamaServer::start(&cfg, &paths, SERVER_READY).await {
+                            Ok(server) => {
+                                let ocr: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, prompt));
+                                (label.to_string(), ocr, Some(server))
+                            }
+                            Err(err) => {
+                                eprintln!("({label} could not start: {err}; skipping)\n  Tip: start it yourself and use --engine endpoint --vlm-endpoint <url>; see `maru eval-ocr --help`.\n");
+                                continue;
+                            }
+                        }
+                    }
+                    EngineArg::Endpoint => {
+                        let Some(url) = vlm_endpoint.clone() else {
+                            eprintln!("(--engine endpoint needs --vlm-endpoint <url>; skipping)\n");
+                            continue;
+                        };
+                        let mut cfg = s.engine.config().llm.clone();
+                        cfg.endpoint = Some(url.clone());
+                        let prompt = vlm_prompt.clone().unwrap_or_else(|| PADDLE_VL_PROMPT.to_string());
+                        ("Vision model (endpoint)".into(), Arc::new(VlmOcr::new(&url, &cfg, &prompt)) as Arc<dyn maru_ocr::OcrEngine>, None)
+                    }
+                };
+                // Recognition is blocking (and for vision models waits on HTTP): keep the runtime free.
+                let (task_name, cases) = (name.clone(), cases.clone());
+                let result = tokio::task::spawn_blocking(move || tools::eval_engine(&task_name, ocr.as_ref(), &cases)).await?;
+                match result {
+                    Ok(score) => scores.push(score),
+                    Err(err) => eprintln!("({name} failed: {err:#})\n"),
                 }
             }
-            if engines.is_empty() {
-                bail!("no OCR engine could be loaded; run `maru setup ocr` first");
+            if scores.is_empty() {
+                bail!("no OCR engine could be evaluated; run `maru setup ocr` first");
             }
-            tools::eval_ocr(&engines, &dir)?;
+            tools::print_scores(&scores);
             Ok(0)
         }
         Command::Setup(cmd) => {

@@ -176,8 +176,18 @@ pub fn overlap(truth: &str, got: &str) -> (f64, f64) {
     (found, extra)
 }
 
-/// Score OCR engines on your own screenshots: `name.png` + `name.txt` (the true text) per case.
-pub fn eval_ocr(engines: &[(String, std::sync::Arc<dyn maru_ocr::OcrEngine>)], dir: &Path) -> Result<()> {
+/// One engine's scores over all test images.
+#[derive(Debug, Clone)]
+pub struct EngineScore {
+    pub name: String,
+    pub cer: f64,
+    pub found: f64,
+    pub extra: f64,
+    pub p50_ms: u32,
+}
+
+/// `name.png` + `name.txt` (the true text) pairs found in `dir`, sorted by name.
+pub fn load_cases(dir: &Path) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>> {
     let mut cases = Vec::new();
     for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
         let path = entry?.path();
@@ -191,45 +201,58 @@ pub fn eval_ocr(engines: &[(String, std::sync::Arc<dyn maru_ocr::OcrEngine>)], d
     if cases.is_empty() {
         bail!("no `name.png` + `name.txt` pairs found in {}", dir.display());
     }
-    println!("{} test image(s)\n", cases.len());
-    for (name, engine) in engines {
-        let (mut total_cer, mut total_found, mut total_extra, mut times) = (0.0, 0.0, 0.0, Vec::new());
-        println!("{name}:");
-        for (img_path, truth_path) in &cases {
-            let img = image::open(img_path)?.to_rgb8();
-            let truth = std::fs::read_to_string(truth_path)?;
-            let t = Instant::now();
-            let out = engine.recognize(&img).map_err(|e| anyhow::anyhow!("{e}"))?;
-            let ms = t.elapsed().as_millis() as u32;
-            let got = out.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ");
-            let c = cer(&truth, &got);
-            let (found, extra) = overlap(&truth, &got);
-            total_cer += c;
-            total_found += found;
-            total_extra += extra;
-            times.push(ms);
-            let file = img_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-            println!(
-                "  {file:<28} CER {:>5.1}%  found {:>5.1}%  extra {:>5.1}%  {ms:>4} ms  conf {:.2}",
-                c * 100.0,
-                found * 100.0,
-                extra * 100.0,
-                out.confidence()
-            );
-            if c > 0.0 {
-                println!("      expected: {}\n      got:      {got}", truth.trim());
-            }
+    Ok(cases)
+}
+
+/// Score one engine on every case and print the per-image lines.
+///
+/// One untimed warm-up run comes first: the first call of any engine pays for model and
+/// runtime start-up, which says nothing about how it feels in use.
+pub fn eval_engine(name: &str, engine: &dyn maru_ocr::OcrEngine, cases: &[(std::path::PathBuf, std::path::PathBuf)]) -> Result<EngineScore> {
+    let (mut total_cer, mut total_found, mut total_extra, mut times) = (0.0, 0.0, 0.0, Vec::new());
+    println!("{name}:");
+    let first = image::open(&cases[0].0)?.to_rgb8();
+    engine.recognize(&first).map_err(|e| anyhow::anyhow!("{e}"))?;
+    for (img_path, truth_path) in cases {
+        let img = image::open(img_path)?.to_rgb8();
+        let truth = std::fs::read_to_string(truth_path)?;
+        let t = Instant::now();
+        let out = engine.recognize(&img).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let ms = t.elapsed().as_millis() as u32;
+        let got = out.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ");
+        let c = cer(&truth, &got);
+        let (found, extra) = overlap(&truth, &got);
+        total_cer += c;
+        total_found += found;
+        total_extra += extra;
+        times.push(ms);
+        let file = img_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
+        println!("  {file:<28} CER {:>5.1}%  found {:>5.1}%  extra {:>5.1}%  {ms:>5} ms", c * 100.0, found * 100.0, extra * 100.0);
+        if c > 0.0 {
+            println!("      expected: {}\n      got:      {got}", truth.trim());
         }
-        let n = cases.len() as f64;
-        println!(
-            "  mean CER {:.1}%   found {:.1}%   extra {:.1}%\n{}\n",
-            100.0 * total_cer / n,
-            100.0 * total_found / n,
-            100.0 * total_extra / n,
-            summarize("latency", times)
-        );
     }
-    Ok(())
+    let n = cases.len() as f64;
+    println!("  mean CER {:.1}%   found {:.1}%   extra {:.1}%\n{}\n", 100.0 * total_cer / n, 100.0 * total_found / n, 100.0 * total_extra / n, summarize("latency", times.clone()));
+    times.sort_unstable();
+    Ok(EngineScore {
+        name: name.to_string(),
+        cer: total_cer / n,
+        found: total_found / n,
+        extra: total_extra / n,
+        p50_ms: times.get(times.len() / 2).copied().unwrap_or(0),
+    })
+}
+
+/// Side-by-side comparison, best (lowest CER) first.
+pub fn print_scores(scores: &[EngineScore]) {
+    let mut sorted = scores.to_vec();
+    sorted.sort_by(|a, b| a.cer.total_cmp(&b.cer));
+    println!("Summary (lower CER and extra, higher found, is better):");
+    println!("  {:<34} {:>8} {:>8} {:>8} {:>9}", "engine", "CER", "found", "extra", "median");
+    for s in sorted {
+        println!("  {:<34} {:>7.1}% {:>7.1}% {:>7.1}% {:>6} ms", s.name, s.cer * 100.0, s.found * 100.0, s.extra * 100.0, s.p50_ms);
+    }
 }
 
 #[cfg(test)]

@@ -42,6 +42,7 @@ pub fn build_args(cfg: &LlmConfig, model: &ModelSource) -> Vec<String> {
     let mut a: Vec<String> = match model {
         ModelSource::File(p) => vec!["-m".into(), p.display().to_string()],
         // The vision projector some repos ship is useless for translation and costs VRAM.
+        ModelSource::HuggingFace(repo) if cfg.vision => vec!["-hf".into(), repo.clone()],
         ModelSource::HuggingFace(repo) => vec!["-hf".into(), repo.clone(), "--no-mmproj".into()],
     };
     a.extend([
@@ -213,6 +214,10 @@ mod tests {
         let a = build_args(&cfg(), &ModelSource::HuggingFace("unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL".into()));
         assert_eq!(pair(&a, "-hf"), Some("unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"));
         assert!(a.contains(&"--no-mmproj".to_string()) && !a.contains(&"-m".to_string()));
+
+        let vision = LlmConfig { vision: true, ..cfg() };
+        let a = build_args(&vision, &ModelSource::HuggingFace("a/b".into()));
+        assert!(!a.contains(&"--no-mmproj".to_string()), "vision models keep their projector");
 
         let mut c = cfg();
         assert_eq!(ModelSource::from_config(&c), None);
