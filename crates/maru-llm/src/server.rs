@@ -19,6 +19,57 @@ use tokio::process::{Child, Command};
 use crate::client::LlmClient;
 use crate::{LlmError, Result};
 
+/// Children must not outlive us.
+///
+/// `kill_on_drop` only helps when the destructor runs. Quitting the tray app calls
+/// `process::exit`, a crash aborts, and Task Manager "End task" stops us cold: in all three the
+/// `llama-server` processes used to stay behind, each holding a model in memory. A Windows job
+/// object with "kill on close" is enforced by the OS itself: when our process ends for any
+/// reason its handle closes and every process in the job is terminated.
+#[cfg(windows)]
+mod job {
+    use std::ffi::c_void;
+    use std::sync::OnceLock;
+
+    use tokio::process::Child;
+    use windows::Win32::Foundation::HANDLE;
+    use windows::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JobObjectExtendedLimitInformation, SetInformationJobObject,
+    };
+    use windows::core::PCWSTR;
+
+    struct Job(HANDLE);
+    // A job handle is just a kernel object reference; it is never closed on purpose.
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    fn job() -> Option<&'static Job> {
+        JOB.get_or_init(|| unsafe {
+            let handle = CreateJobObjectW(None, PCWSTR::null()).ok()?;
+            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                std::ptr::from_ref(&info).cast::<c_void>(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+            .ok()?;
+            Some(Job(handle))
+        })
+        .as_ref()
+    }
+
+    /// Tie `child`'s life to ours. False if the OS refused (it then still dies with `kill_on_drop`).
+    pub fn adopt(child: &Child) -> bool {
+        let (Some(job), Some(process)) = (job(), child.raw_handle()) else { return false };
+        unsafe { AssignProcessToJobObject(job.0, HANDLE(process)).is_ok() }
+    }
+}
+
 /// Where the weights come from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ModelSource {
@@ -111,6 +162,17 @@ impl LlamaServer {
         let args = build_args(cfg, &model);
         tracing::info!("starting {} {}", binary.display(), args.join(" "));
 
+        // Something already answering on our private port is almost always a server left behind by
+        // an earlier run. Starting another would fail to bind and exit, which looks like a
+        // mysterious "llama-server exited": say what is actually wrong.
+        if LlmClient::from_config(cfg).health().await {
+            return Err(LlmError::Spawn(format!(
+                "port {} is already answered by another server (most likely a llama-server left over from an earlier run). \
+                 End it in Task Manager, or run `taskkill /F /IM llama-server.exe`, then start Maru again.",
+                cfg.port
+            )));
+        }
+
         let mut cmd = Command::new(&binary);
         cmd.args(&args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).kill_on_drop(true);
         #[cfg(windows)]
@@ -118,6 +180,11 @@ impl LlamaServer {
         let mut child = cmd
             .spawn()
             .map_err(|e| LlmError::Spawn(format!("{}: {e} (set [llm] server_path or put llama-server on PATH)", binary.display())))?;
+
+        #[cfg(windows)]
+        if !job::adopt(&child) {
+            tracing::warn!("could not tie llama-server to this process; it may outlive a crash");
+        }
 
         let log = Arc::new(Mutex::new(VecDeque::with_capacity(64)));
         if let Some(out) = child.stdout.take() {
@@ -192,6 +259,16 @@ mod tests {
 
     fn pair<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
         args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).map(String::as_str)
+    }
+
+    #[tokio::test]
+    async fn a_server_already_on_our_port_is_reported_instead_of_racing_it() {
+        use crate::client::testing::{MockResponse, spawn_mock};
+        let mock = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![b"{}".to_vec()], delay_ms: 0 }).await;
+        let port: u16 = mock.url.rsplit(':').next().unwrap().parse().unwrap();
+        let cfg = LlmConfig { port, hf_repo: Some("a/b".into()), ..Default::default() };
+        let err = LlamaServer::start(&cfg, &Paths::under(&std::env::temp_dir()), Duration::from_secs(1)).await.err().expect("must refuse").to_string();
+        assert!(err.contains(&port.to_string()) && err.contains("already") && err.contains("taskkill"), "{err}");
     }
 
     #[test]
