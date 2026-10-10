@@ -27,7 +27,7 @@ Anki *Sync* triggers it. See `docs/config.example.toml`.
 
 ## Quick start (Windows)
 
-**You need** (once): Windows 10/11 (64-bit), [Rust](https://rustup.rs) with the *Visual Studio Build Tools* ("Desktop development with C++") it asks for, Git, and the WebView2 runtime (already part of Windows 11; the app installs it on Windows 10). About 12 GB of disk for the models. Anki is optional.
+**You need** (once): Windows 10/11 (64-bit), [Rust](https://rustup.rs) with the *Visual Studio Build Tools* ("Desktop development with C++") it asks for, **kept up to date** (see below), Git, and the WebView2 runtime (already part of Windows 11; the app installs it on Windows 10). About 12 GB of disk for the models. Anki is optional.
 
 ```powershell
 git clone https://github.com/myussu/koreanOCR.git
@@ -41,6 +41,8 @@ cd app\src-tauri; cargo run --release      # the overlay (lives in the system tr
 
 (`cargo build --release -p maru-cli` also works, but it only creates `target\release\maru.exe`; run it as
 `.\target\release\maru.exe setup` or add that folder to your PATH.) The first `cargo` build takes several minutes. To update later: `git pull`, run the `cargo install` line again, and `cargo run --release` in `app\src-tauri`.
+
+**If the build ends with `LNK2001: unresolved external symbol __std_…` (for example `__std_max_8u`) and `LNK1120`**, the Visual C++ tools on that PC are too old: the prebuilt ONNX Runtime that Maru links was compiled with a newer Microsoft C++ standard library than the one installed (a toolset such as `14.34`, from Visual Studio 2022 17.4, is too old). Open the **Visual Studio Installer**, press **Update** on your Visual Studio / Build Tools 2022 (or install the latest *Build Tools for Visual Studio 2022*) with **"MSVC v143 - VS 2022 C++ x64/x86 build tools (Latest)"** ticked, then build again with `cargo install --path crates/maru-cli`. The wizard and every other command are unaffected: this only concerns building.
 
 ### The setup wizard
 
