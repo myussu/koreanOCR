@@ -142,8 +142,8 @@ export async function settingsView() {
       const unit = field.type === 'percent' ? '%' : field.unit;
       return { el: h('div', { class: 'set-ctl' }, input, unit && h('span', { class: 'unit', text: unit }), reset), sync, rebuild: set };
     }
-    if (field.type === 'text' || field.type === 'password') {
-      input = h('input', { type: field.type, autocomplete: 'off', placeholder: field.placeholder ?? '', spellcheck: 'false', oninput: (e) => edit(fromEditor(field, e.target.value)) });
+    if (field.type === 'text' || field.type === 'password' || field.type === 'tags') {
+      input = h('input', { type: field.type === 'password' ? 'password' : 'text', autocomplete: 'off', placeholder: field.placeholder ?? '', spellcheck: 'false', oninput: (e) => edit(fromEditor(field, e.target.value)) });
       const set = () => (input.value = toEditor(field, value()));
       set();
       return { el: h('div', { class: 'set-ctl' }, input, reset), sync, rebuild: set };
@@ -309,7 +309,7 @@ export async function settingsView() {
       const toggle = h('button', { class: 'adv-toggle', onclick: () => (open.has(s.id) ? open.delete(s.id) : open.add(s.id), draw(), refreshAll()) });
       const body = fieldRows(s, false);
       if (adv) draw();
-      return h('section', { class: 'set-sec' }, h('h3', { text: s.title }), s.intro && h('p', { class: 'intro', text: s.intro }), body, adv && toggle, adv && advBox, s.action === 'tts-test' && ttsTest());
+      return h('section', { class: 'set-sec' }, h('h3', { text: s.title }), s.intro && h('p', { class: 'intro', text: s.intro }), body, adv && toggle, adv && advBox, s.action === 'tts-test' && ttsTest(), s.action === 'anki' && ankiActions());
     });
     updaters.push(drawBar);
     root.replaceChildren(banner, h('h2', { text: 'Settings', style: 'margin:0' }), ...sections, components(), fileRow(), bar);
@@ -343,6 +343,37 @@ export async function settingsView() {
     };
     updaters.push(sync);
     return h('div', { class: 'test-row' }, button, res, h('span', { class: 'res', text: 'Uses the saved settings.' }));
+  }
+
+  // ───────────── Anki ─────────────
+
+  function ankiActions() {
+    const res = h('span', { class: 'res' });
+    const run = (what, command, ok) =>
+      btn(what, async (e) => {
+        const button = e.target;
+        button.disabled = true;
+        res.className = 'res';
+        res.textContent = 'Asking Anki…';
+        try {
+          const r = await invoke(command);
+          res.textContent = ok(r);
+        } catch (err) {
+          res.className = 'res bad';
+          res.textContent = String(err);
+        } finally {
+          button.disabled = false;
+        }
+      });
+    const check = run('Check Anki', 'anki_check', (r) => r);
+    const sync = run('Sync now', 'anki_sync', () => 'Asked Anki to sync with AnkiWeb. Anki shows its own progress.');
+    const sync_ = () => {
+      const dirty = Object.keys(draft).some((p) => p.startsWith('learning.anki.'));
+      check.disabled = sync.disabled = dirty;
+      check.title = sync.title = dirty ? 'Save first, then restart: these use the settings Maru started with' : '';
+    };
+    updaters.push(sync_);
+    return h('div', { class: 'test-row' }, check, sync, res);
   }
 
   // ───────────── components and the file ─────────────

@@ -1,6 +1,7 @@
 import { invoke, listen, replayFromQuery, mockCommands, inTauri } from './bridge.js';
 import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, readableText, sentenceRanges, VARIANT_LABEL } from './core.js';
 import { Reader } from './reader.js';
+import { cleanDeck, deckChoices, addTags, removeTag, intervalText, addedText, reverseChoice } from './anki.js';
 
 const card = document.getElementById('card');
 let state = emptyState();
@@ -161,7 +162,7 @@ function deepBlock() {
   return h(
     'div',
     { class: 'deep' },
-    h('h3', {}, key, h('span', { class: 'chip', text: e.pos }), entry?.hanja && h('span', { class: 'hanja', text: entry.hanja }), (entry?.level ?? e.level) && h('span', { class: 'chip level', text: entry?.level ?? e.level }), h('span', { class: 'speak-word' }, cfg.tts && h('button', { class: 'icon', title: 'hear this word', onclick: () => readAloud(spoken(e.surface)), text: '🔊' }), cfg.tts && spoken(e.surface) !== key && h('button', { class: 'icon', title: `hear the dictionary form, ${key}`, onclick: () => readAloud(key), text: '🔊 ' + key })), h('button', { class: 'icon', style: 'margin-left:auto', title: 'close', onclick: () => update(closeDeep(state)), text: '✕' })),
+    h('h3', {}, key, h('span', { class: 'chip', text: e.pos }), entry?.hanja && h('span', { class: 'hanja', text: entry.hanja }), (entry?.level ?? e.level) && h('span', { class: 'chip level', text: entry?.level ?? e.level }), h('span', { class: 'speak-word' }, cfg.tts && h('button', { class: 'icon', title: 'hear this word', onclick: () => readAloud(spoken(e.surface)), text: '🔊' }), cfg.tts && spoken(e.surface) !== key && h('button', { class: 'icon', title: `hear the dictionary form, ${key}`, onclick: () => readAloud(key), text: '🔊 ' + key })), h('button', { class: 'icon', style: 'margin-left:auto', title: 'close', onclick: () => (closeAnki(), (ankiUI = freshAnki()), update(closeDeep(state))), text: '✕' })),
     steps.length > 1 && [
       h('h4', { text: 'How this form is built' }),
       h('div', { class: 'built' }, steps.flatMap((s, i) => [i > 0 && h('span', { class: 'plus', text: '+' }), h('div', { class: 'step' }, h('b', { text: s.form }), h('span', { text: s.label }))])),
@@ -178,9 +179,8 @@ function deepBlock() {
     h(
       'div',
       { class: 'actions' },
-      h('button', { class: `btn${saved ? '' : ' primary'}`, onclick: () => act('save_word', { key }), disabled: saved, text: saved ? '✓ in your review queue' : 'Save to review' }),
+      !cfg.anki && h('button', { class: `btn${saved ? '' : ' primary'}`, onclick: () => act('save_word', { key }), disabled: saved, text: saved ? '✓ in your review queue' : 'Save to review' }),
       h('button', { class: 'btn', onclick: () => act('set_known', { key, known: !known }), text: known ? 'Not known after all' : 'I know this' }),
-      cfg.anki && h('button', { class: 'btn', onclick: () => anki(key), text: 'Add to Anki' }),
       d.status && h('span', { class: 'status', text: `looked up ${d.status.lookups}×${d.status.saved ? ' · queued' : ''}` }),
       d.message && h('span', { class: 'status', text: d.message }),
     ),
@@ -212,6 +212,7 @@ function render() {
     if (s.direction === 'en_to_ko') kids.push(translationBlock(), s.target && h('div', { class: 'tr' }, wordsBlock('target')));
     else kids.push(wordsBlock('source') ?? h('div', { class: 'empty', text: 'Analysing…' }), translationBlock());
     kids.push(deepBlock());
+    if (s.deep) kids.push(...[ankiBlock()].flat());
     for (const m of s.errors) kids.push(h('div', { class: 'err', text: m }));
     const t = s.timings;
     if (s.finished && Object.keys(t).length)
@@ -220,6 +221,7 @@ function render() {
   card.replaceChildren(...kids.filter(Boolean));
   card.style.maxWidth = '';
   reportSize();
+  restoreTyping();
 }
 
 // ───────────── actions ─────────────
@@ -243,6 +245,7 @@ async function startDeep(eojeol, side) {
   const meaning = gloss?.meaning ?? eojeol.dict_glosses?.[0] ?? null;
   const id = await invoke('deep_dive', { request: { eojeol, sentence, translation: translation ?? null, meaning, app: state.capture?.app ?? null } });
   update(openDeep(state, { id, eojeol, sentence, translation, meaning }));
+  if (cfg.anki) loadAnki(state.deep);
 }
 
 async function act(cmd, args) {
@@ -254,20 +257,230 @@ async function act(cmd, args) {
   }
 }
 
-async function anki(key) {
-  try {
-    const r = await invoke('export_anki', { key });
-    flash(r == null ? 'Already in Anki' : 'Added to Anki');
-  } catch (e) {
-    flash(String(e));
-  }
-}
-
 function flash(message) {
   if (!state.deep) return;
   const next = structuredClone(state);
   next.deep.message = message;
   update(next);
+}
+
+// ───────────── adding to Anki ─────────────
+
+// The panel's window never takes the keyboard (clicking it must not clear the selection you made
+// elsewhere), so while a text box here is in use the app is asked to allow it, and told when done.
+let typing = false;
+function setTyping(on) {
+  if (typing === on) return;
+  typing = on;
+  invoke('panel_typing', { on }).catch(() => {});
+}
+
+const freshAnki = () => ({ dirty: false, word: null, open: false, overview: null, error: null, loading: false, query: '', deck: '', tags: [], tagText: '', reverse: true, audio: true, busy: false, reply: null, message: null, focus: null, caret: 0 });
+let ankiUI = freshAnki();
+
+async function loadAnki(d) {
+  const key = d.eojeol.lemma ?? d.eojeol.surface;
+  ankiUI = { ...freshAnki(), word: key, loading: true };
+  render();
+  try {
+    const o = await invoke('anki_overview', { key, app: state.capture?.app?.exe ?? null });
+    if (ankiUI.word !== key) return;
+    ankiUI.overview = o;
+    ankiUI.loading = false;
+    ankiUI.deck = o.suggestions[0]?.deck ?? '';
+    ankiUI.query = ankiUI.deck;
+    ankiUI.tags = [...o.tags];
+    ankiUI.reverse = o.reverse !== 'off';
+    ankiUI.audio = o.audio;
+    if (o.error) ankiUI.error = o.error;
+  } catch (e) {
+    if (ankiUI.word !== key) return;
+    ankiUI.loading = false;
+    ankiUI.error = String(e);
+  }
+  render();
+}
+
+function closeAnki() {
+  ankiUI.open = false;
+  ankiUI.focus = null;
+  setTyping(false);
+  render();
+}
+
+async function submitAnki() {
+  const u = ankiUI;
+  const deck = cleanDeck(u.query || u.deck);
+  if (!deck) {
+    u.message = 'Choose or type a deck first.';
+    return render();
+  }
+  u.busy = true;
+  u.message = null;
+  render();
+  try {
+    const reply = await invoke('anki_add', { request: { key: u.word, deck, tags: addTags(u.tags, u.tagText), reverse: reverseChoice(u.reverse, u.overview?.reverse), app: state.capture?.app?.exe ?? null, audio: u.audio } });
+    u.reply = reply;
+    u.message = reply.result === 'added' ? addedText(reply) : `Already in Anki, in ${reply.deck}.`;
+    if (reply.note) u.message += ` ${reply.note}`;
+    u.open = reply.result === 'exists';
+    if (reply.result === 'added') {
+      u.overview = { ...u.overview, existing: { note_id: 0, deck: reply.deck, interval_days: 0 } };
+      closeAnki();
+    }
+  } catch (e) {
+    u.message = String(e);
+  }
+  u.busy = false;
+  render();
+}
+
+async function addExample() {
+  const u = ankiUI;
+  u.busy = true;
+  render();
+  try {
+    u.message = (await invoke('anki_add_example', { key: u.word, audio: u.audio })) ? '✓ Added this sentence to the card.' : 'The card already has this sentence.';
+  } catch (e) {
+    u.message = String(e);
+  }
+  u.busy = false;
+  render();
+}
+
+function pick(deck) {
+  ankiUI.deck = deck;
+  ankiUI.query = deck;
+  ankiUI.dirty = false;
+  ankiUI.focus = 'deck';
+  render();
+}
+
+/** Text boxes get the keyboard on press, then keep it while the popover is open. */
+function typingInput(kind, props) {
+  const input = h('input', {
+    type: 'text',
+    spellcheck: 'false',
+    autocomplete: 'off',
+    'data-anki-input': kind,
+    onpointerdown: () => setTyping(true),
+    onfocus: () => {
+      ankiUI.focus = kind;
+    },
+    ...props,
+  });
+  return input;
+}
+
+function ankiBlock() {
+  const u = ankiUI;
+  if (!cfg.anki || !u.word) return null;
+  const o = u.overview;
+  const bits = [];
+  if (u.loading) bits.push(h('span', { class: 'status', text: 'asking Anki…' }));
+  else if (u.error && !o?.connected) {
+    bits.push(h('button', { class: 'btn', title: u.error, onclick: () => state.deep && loadAnki(state.deep), text: 'Anki is not reachable · retry' }));
+    bits.push(h('span', { class: 'status', text: 'Open Anki (with the AnkiConnect add-on).' }));
+  } else if (o?.existing) {
+    bits.push(h('span', { class: 'chip level', title: 'this word is already a card', text: `✓ in Anki · ${o.existing.deck}${o.existing.interval_days ? ` · ${intervalText(o.existing.interval_days)}` : ''}` }));
+    bits.push(h('button', { class: 'btn', disabled: u.busy, title: 'put the sentence you just met it in on its card', onclick: addExample, text: '＋ this sentence' }));
+  } else if (o) {
+    bits.push(h('button', { class: `btn${u.open ? '' : ' primary'}`, 'aria-expanded': String(u.open), onclick: () => (u.open ? closeAnki() : ((u.open = true), (u.focus = 'deck'), render())), text: 'Add to Anki ▾' }));
+  }
+  if (u.message) bits.push(h('span', { class: 'status', text: u.message }));
+  const row = h('div', { class: 'actions anki-row' }, bits);
+  if (!u.open || !o) return row;
+
+  // until you type, all the suggestions show (the box starts with the best one filled in)
+  const choices = deckChoices(u.dirty ? u.query : '', o.decks, o.suggestions);
+  const deckInput = typingInput('deck', {
+    class: 'anki-deck',
+    placeholder: 'Pick a deck or type a new one (Korean::Games::…)',
+    value: u.query,
+    oninput: (e) => {
+      u.query = e.target.value;
+      u.dirty = true;
+      u.caret = e.target.selectionStart;
+      render();
+    },
+    onkeydown: (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        const first = choices[0];
+        if (first && u.query.trim() && cleanDeck(u.query) !== first.deck && first.kind === 'existing') pick(first.deck);
+        else submitAnki();
+      }
+    },
+  });
+  const tagInput = typingInput('tag', {
+    class: 'anki-tag',
+    placeholder: '+ tag',
+    value: u.tagText,
+    oninput: (e) => {
+      u.tagText = e.target.value;
+      u.caret = e.target.selectionStart;
+    },
+    onkeydown: (e) => {
+      if (e.key === 'Enter' || e.key === ',' || e.key === ' ') {
+        if (!u.tagText.trim()) return;
+        e.preventDefault();
+        u.tags = addTags(u.tags, u.tagText);
+        u.tagText = '';
+        render();
+      }
+    },
+  });
+  const here = cleanDeck(u.query);
+  return [
+    row,
+    h(
+      'div',
+      { class: 'anki-box' },
+      h('label', { class: 'anki-label', text: 'Deck' }),
+      deckInput,
+      h(
+        'div',
+        { class: 'anki-choices', role: 'listbox' },
+        choices.map((c) =>
+          h(
+            'button',
+            { class: `anki-choice ${c.kind}${cleanDeck(c.deck).toLowerCase() === here.toLowerCase() ? ' on' : ''}`, role: 'option', onpointerdown: (e) => (e.preventDefault(), pick(c.deck)) },
+            h('span', { class: 'name', text: c.kind === 'new' ? `Create “${c.deck}”` : c.deck }),
+            c.reason && c.kind !== 'new' && h('span', { class: 'why', text: `${c.reason}${c.exists ? '' : ' · new'}` }),
+          ),
+        ),
+      ),
+      h('label', { class: 'anki-label', text: 'Tags' }),
+      h('div', { class: 'anki-tags' }, u.tags.map((t) => h('span', { class: 'tagchip' }, t, h('button', { title: 'remove', onclick: () => ((u.tags = removeTag(u.tags, t)), render()), text: '×' }))), tagInput),
+      h(
+        'div',
+        { class: 'anki-opts' },
+        h('label', {}, h('input', { type: 'checkbox', checked: u.reverse, onchange: (e) => (u.reverse = e.target.checked) }), ' also English → Korean'),
+        o.audio && h('label', {}, h('input', { type: 'checkbox', checked: u.audio, onchange: (e) => (u.audio = e.target.checked) }), ' spoken audio'),
+      ),
+      h(
+        'div',
+        { class: 'actions' },
+        h('button', { class: 'btn primary', disabled: u.busy || !here, onclick: submitAnki, text: u.busy ? 'Adding…' : `Add to ${here || 'a deck'}` }),
+        h('button', { class: 'btn', onclick: closeAnki, text: 'Cancel' }),
+      ),
+    ),
+  ];
+}
+
+/** The text box that had the keyboard keeps it (and the cursor) when the panel redraws. */
+function restoreTyping() {
+  if (!ankiUI.open || !ankiUI.focus) return;
+  const el = card.querySelector(`[data-anki-input="${ankiUI.focus}"]`);
+  if (!el || document.activeElement === el) return;
+  setTyping(true);
+  el.focus({ preventScroll: true });
+  const at = Math.min(ankiUI.caret || el.value.length, el.value.length);
+  try {
+    el.setSelectionRange(at, at);
+  } catch {
+    /* not a text box */
+  }
 }
 
 // ───────────── moving the panel ─────────────
@@ -394,12 +607,16 @@ function silentClip(seconds = 0.4) {
 
 if (!inTauri) {
   mockCommands({
-    ui_config: () => ({ ...cfg, tts: true }),
+    ui_config: () => ({ ...cfg, tts: true, anki: true }),
     deep_dive: () => 100,
     tts_plan: ({ text }) => text.split(/(?<=[.!?])\s+/).filter(Boolean),
     tts_clip: () => silentClip(),
     tts_reading: () => {},
     panel_drag: () => {},
+    panel_typing: () => {},
+    anki_overview: ({ key }) => ({ connected: true, error: null, decks: ['Default', 'Korean', 'Korean::Games', 'Korean::Games::Elden Ring', 'Korean::YouTube'], suggestions: [{ deck: 'Korean::Games::Elden Ring', reason: 'what you chose last time in Elden Ring', exists: true }, { deck: 'Korean::Hades', reason: 'named after Hades', exists: false }, { deck: 'Korean', reason: 'your default deck', exists: true }], tags: ['maru', 'topik-1', 'pos::verb', 'app::elden-ring', 'added::2026-10'], existing: null, reverse: 'subdeck', app_name: 'Elden Ring', audio: true, key }),
+    anki_add: ({ request }) => ({ result: 'added', deck: request.deck, reverse_deck: request.reverse === 'off' ? null : `${request.deck}::Reverse`, cards: request.reverse === 'off' ? 1 : 2, sync: true, note: null }),
+    anki_add_example: () => true,
     resize_panel: () => {},
     dismiss_panel: () => {},
     set_pinned: () => {},

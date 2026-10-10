@@ -158,6 +158,7 @@ fn main() {
             commands::dismiss_panel,
             commands::set_pinned,
             commands::panel_drag,
+            commands::panel_typing,
             commands::picker_done,
             commands::scan_labels,
             commands::scan_open,

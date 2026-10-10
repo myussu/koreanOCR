@@ -32,6 +32,8 @@ async function show(name) {
 
 // ───────────── review ─────────────
 async function review() {
+  const s = await invoke('status');
+  if (s.anki) return ankiReview(s);
   const due = await invoke('due_words', { limit: 50 });
   if (!due.length) return [h('p', { class: 'center', text: 'Nothing is due right now. Words you look up twice join this queue automatically.' })];
   const [word, ...rest] = due;
@@ -66,6 +68,22 @@ async function review() {
   return [root, rest.length > 0 && h('p', { class: 'center', text: `Next: ${rest.slice(0, 5).map((w) => w.key).join(' · ')}${rest.length > 5 ? ' …' : ''}` })];
 }
 
+// Reviews happen in Anki: this tab says what is waiting there.
+async function ankiReview(s) {
+  const out = [h('h4', { text: 'Review in Anki' })];
+  try {
+    const d = await invoke('anki_due');
+    out.push(
+      h('p', {}, [['due now', d.due], ['new', d.new]].map(([l, v]) => h('span', { class: 'stat' }, h('b', { text: v }), l))),
+      h('p', { class: 'center', text: d.due + d.new ? 'Open Anki and study the Maru Korean cards; Maru reads your progress back so words you hold for weeks fade in the translations.' : 'Nothing is waiting in Anki. Words you add from a deep dive land there.' }),
+    );
+  } catch (e) {
+    out.push(h('p', { class: 'center', text: `Anki is not reachable: ${String(e).slice(0, 160)}` }));
+  }
+  if (s.vocab) out.push(h('p', {}, [['words seen', s.vocab.total], ['in Anki', s.vocab.saved], ['known', s.vocab.known]].map(([l, v]) => h('span', { class: 'stat' }, h('b', { text: v }), l))));
+  return out;
+}
+
 // ───────────── history ─────────────
 async function history() {
   const items = (await invoke('history')).reverse();
@@ -87,7 +105,7 @@ async function status() {
     h('table', {}, row('Hover mode', [on(s.hover_mode), ' ', h('kbd', { text: k.hover })]), row('Live subtitles', [on(s.live_mode, area), ' ', h('kbd', { text: k.continuous })]), row('Screen labels', [on(s.scan_visible), ' ', h('kbd', { text: k.scan })]), row('Lite (game) profile', s.lite ? on(true, 'lighter models') : 'off'), row('Speech', s.tts === 'ready' ? on(true, s.tts_source === 'local' ? 'voice on this PC' : 'voice from a server') : s.tts === 'off' ? 'off (Settings → Speech)' : s.tts), row('OCR reading model', s.ocr_reader === 'ready' ? on(true, 'PP-OCR + PaddleOCR-VL') : s.ocr_reader === 'off' ? 'not in use (PP-OCR only)' : s.ocr_reader)),
     s.vocab && h('p', {}, [['words', s.vocab.total], ['saved', s.vocab.saved], ['known', s.vocab.known], ['due', s.vocab.due_now]].map(([l, v]) => h('span', { class: 'stat' }, h('b', { text: v }), l))),
     h('h4', { text: 'Components' }),
-    h('table', {}, row('Language model', s.llm), row('Korean analyser', s.analyser), row('Dictionary', s.dictionary ? 'installed' : 'not installed (maru dict download)'), row('OCR', s.ocr ? 'ready' : 'not available (maru setup ocr)')),
+    h('table', {}, row('Reviews', s.anki ? 'in Anki' : 'in Maru'), row('Language model', s.llm), row('Korean analyser', s.analyser), row('Dictionary', s.dictionary ? 'installed' : 'not installed (maru dict download)'), row('OCR', s.ocr ? 'ready' : 'not available (maru setup ocr)')),
     h('h4', { text: 'Shortcuts' }),
     h('table', {}, row('Translate selection', h('kbd', { text: k.translate })), row('Pick a region', h('kbd', { text: k.region })), row('Hover mode', h('kbd', { text: k.hover })), row('Continuous mode', h('kbd', { text: k.continuous })), row('Continuous: choose area', h('kbd', { text: k.continuous_area })), row('Label all Korean text on screen', h('kbd', { text: k.scan })), row('Translate and read aloud', h('kbd', { text: k.speak })), row('History', h('kbd', { text: k.history })), row('Dismiss panel', h('kbd', { text: k.dismiss }))),
     h('h4', { text: 'Notes' }),
@@ -111,7 +129,7 @@ listen('maru-tab', (name) => show(name));
 if (!inTauri) {
 
   // A stand-in settings store for browser screenshots and tests.
-  const flat = { 'hotkeys.translate': 'Ctrl+Alt+T | F6', 'hotkeys.region': 'Ctrl+Alt+R', 'hotkeys.hover': 'Ctrl+Alt+H', 'hotkeys.continuous': 'Ctrl+Alt+C', 'hotkeys.continuous_area': 'Ctrl+Alt+Shift+C', 'hotkeys.scan': 'Ctrl+Alt+S', 'hotkeys.speak': 'Ctrl+Alt+P', 'hotkeys.history': 'Ctrl+Alt+L', 'hotkeys.dismiss': 'Ctrl+Alt+Escape', 'ui.font_size_px': 18, 'ui.max_width_px': 760, 'ui.theme': 'auto', 'ui.placement': 'auto', 'ui.show_romanization': true, 'ui.show_pronunciation': true, 'ui.show_grammar_formula': true, 'learning.gloss_mode': 'fade_known', 'learning.register': 'polite', 'learning.track_lookups': true, 'learning.auto_save_after_lookups': 2, 'learning.known_stability_days': 21, 'learning.desired_retention': 0.9, 'learning.anki.enabled': false, 'learning.anki.deck': 'Maru', 'learning.anki.note_type': 'Basic', 'learning.anki.url': 'http://127.0.0.1:8765', 'ocr.vision_reader': true, 'ocr.backend': 'auto', 'ocr.device': 'cpu', 'ocr.min_confidence': 0.8, 'capture.use_accessibility': true, 'capture.use_clipboard_fallback': true, 'capture.use_ocr_fallback': true, 'capture.ocr_radius_px': 320, 'capture.max_chars': 500, 'continuous.interval_ms': 250, 'continuous.stable_ms': 350, 'continuous.diff_threshold': 0.01, 'continuous.history_len': 50, lite: false, 'llm.hf_repo': null, 'llm.model_path': null, 'llm.endpoint': null, 'llm.parallel': 2, 'llm.ctx_size': 4096, 'llm.gpu_layers': 'all', 'llm.flash_attn': true, 'llm.temperature': 0.2, 'llm.context_lines': 4, 'lite_profile.hf_repo': 'unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL', 'lite_profile.ctx_size': 3072, 'lite_profile.parallel': 1, 'tts.enabled': false, 'tts.run_in_lite': false, 'tts.provider': 'local', 'tts.endpoint': null, 'tts.api_key': null, 'tts.model': 'qwen3-tts', 'tts.voice': 'sohee', 'tts.language': '', 'tts.instructions': null, 'tts.speed': 1.0, 'tts.cache_mb': 300, 'tts.device': 'auto', 'tts.port': 18095 };
+  const flat = { 'hotkeys.translate': 'Ctrl+Alt+T | F6', 'hotkeys.region': 'Ctrl+Alt+R', 'hotkeys.hover': 'Ctrl+Alt+H', 'hotkeys.continuous': 'Ctrl+Alt+C', 'hotkeys.continuous_area': 'Ctrl+Alt+Shift+C', 'hotkeys.scan': 'Ctrl+Alt+S', 'hotkeys.speak': 'Ctrl+Alt+P', 'hotkeys.history': 'Ctrl+Alt+L', 'hotkeys.dismiss': 'Ctrl+Alt+Escape', 'ui.font_size_px': 18, 'ui.max_width_px': 760, 'ui.theme': 'auto', 'ui.placement': 'auto', 'ui.show_romanization': true, 'ui.show_pronunciation': true, 'ui.show_grammar_formula': true, 'learning.gloss_mode': 'fade_known', 'learning.register': 'polite', 'learning.track_lookups': true, 'learning.auto_save_after_lookups': 2, 'learning.known_stability_days': 21, 'learning.desired_retention': 0.9, 'learning.anki.enabled': false, 'learning.anki.deck': 'Maru', 'learning.anki.note_type': 'Basic', 'learning.anki.url': 'http://127.0.0.1:8765', 'ocr.vision_reader': true, 'ocr.backend': 'auto', 'ocr.device': 'cpu', 'ocr.min_confidence': 0.8, 'capture.use_accessibility': true, 'capture.use_clipboard_fallback': true, 'capture.use_ocr_fallback': true, 'capture.ocr_radius_px': 320, 'capture.max_chars': 500, 'continuous.interval_ms': 250, 'continuous.stable_ms': 350, 'continuous.diff_threshold': 0.01, 'continuous.history_len': 50, lite: false, 'llm.hf_repo': null, 'llm.model_path': null, 'llm.endpoint': null, 'llm.parallel': 2, 'llm.ctx_size': 4096, 'llm.gpu_layers': 'all', 'llm.flash_attn': true, 'llm.temperature': 0.2, 'llm.context_lines': 4, 'lite_profile.hf_repo': 'unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL', 'lite_profile.ctx_size': 3072, 'lite_profile.parallel': 1, 'tts.enabled': false, 'tts.run_in_lite': false, 'tts.provider': 'local', 'tts.endpoint': null, 'tts.api_key': null, 'tts.model': 'qwen3-tts', 'tts.voice': 'sohee', 'tts.language': '', 'tts.instructions': null, 'tts.speed': 1.0, 'tts.cache_mb': 300, 'tts.device': 'auto', 'tts.port': 18095, 'learning.anki.enabled': false, 'learning.anki.deck': 'Korean', 'learning.anki.reverse': 'subdeck', 'learning.anki.audio': true, 'learning.anki.sync_after_add': true, 'learning.anki.auto_tags': true, 'learning.anki.tags': ['maru'], 'learning.anki.refresh_minutes': 30, 'learning.anki.url': 'http://127.0.0.1:8765', 'learning.anki.api_key': null, 'learning.anki.note_type': 'Maru Korean', 'learning.anki.reverse_subdeck': 'Reverse' };
   const nest = (f) => Object.entries(f).reduce((o, [k, v]) => (k.split('.').reduce((t, p, i, a) => (t[p] = i === a.length - 1 ? v : (t[p] ?? {})), o), o), {});
   const mockDefaults = nest(flat);
   let mockValues = nest({ ...flat, 'llm.hf_repo': 'unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL' });
@@ -127,6 +145,9 @@ if (!inTauri) {
       return { changed: Object.keys(changes), restart: mockPending, warnings: [] };
     },
     restart_app: () => {},
+    anki_check: () => 'Anki is reachable (AnkiConnect v6); the note type "Maru Korean" is ready; 7 decks.',
+    anki_sync: () => null,
+    anki_due: () => ({ due: 12, new: 5 }),
     tts_test: () => Promise.reject('The local voice is not running yet. Save and restart Maru to start it.'),
     open_config_file: () => {},
   });
@@ -135,7 +156,7 @@ if (!inTauri) {
     word_contexts: () => [{ sentence: '저는 학교에서 공부했어요', translation: 'I studied at school.' }],
     review_word: () => ({}),
     history: () => [{ id: 1, at: 1760000000, source: '저는 학교에서 공부했어요', translation: 'I studied at school.', direction: 'ko_to_en', app: 'chrome.exe' }],
-    status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'ready', analyser: 'kiwi', ocr: true, dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'ready', tts: 'off', tts_source: '' }),
+    status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'ready', analyser: 'kiwi', ocr: true, dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, anki: false, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'ready', tts: 'off', tts_source: '' }),
   });
 }
 show(tab);

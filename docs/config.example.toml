@@ -52,8 +52,19 @@ known_stability_days = 21    # a word counts as known once you can hold it this 
 auto_save_after_lookups = 2  # queue a word for review on the 2nd lookup
 
 [learning.anki]
+# Anki is where words are reviewed. Needs Anki open with the AnkiConnect add-on (code 2055492159).
+# Maru adds words from the deep dive (you pick or type the deck there), tags them, attaches the spoken
+# word and sentence, and reads your progress back so words you hold for weeks fade. Your AnkiWeb
+# login stays in Anki; Maru only asks Anki to sync.
 enabled = false
-deck = "Maru"
+deck = "Korean"             # suggested first; per program, a deck named after it is offered too
+reverse = "subdeck"         # the English -> Korean card: subdeck (<deck>::Reverse) | same_deck | off
+audio = true                # attach the spoken word and sentence (needs [tts])
+sync_after_add = true       # ask Anki to sync with AnkiWeb a few seconds after adding
+tags = ["maru"]             # on every card
+auto_tags = true            # + level (topik-1), pos::verb, app::<program>, added::<year-month>
+refresh_minutes = 30        # read card intervals back from Anki (0 = only at start-up)
+# api_key = "..."           # only if you set one in AnkiConnect
 
 [ui]
 placement = "auto"    # auto | below | above
@@ -91,3 +102,10 @@ voice = "sohee"       # the Korean voice of the local Qwen3-TTS model
 # instructions = "Speak clearly and a little slowly"   # only models that support style instructions
 cache_mb = 300        # spoken sentences are kept so hearing them again is free
 run_in_lite = false   # keep the local voice off in game mode so the game has the GPU
+
+# Per program: the deck and tags words met there should get (otherwise a deck named after the program is suggested).
+# [[profile]]
+# name = "Elden Ring"
+# exe = ["eldenring.exe"]
+# anki_deck = "Korean::Games::Elden Ring"
+# anki_tags = ["game"]

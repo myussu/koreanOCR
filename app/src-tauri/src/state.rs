@@ -14,6 +14,8 @@ pub struct PanelState {
     pub pinned: bool,
     /// The panel is reading aloud: it stays up until the reading ends or it is dismissed.
     pub reading: bool,
+    /// A text box in the panel has the keyboard (the deck name for Anki): the panel stays up.
+    pub editing: bool,
     /// Where the user dragged the panel to (top-left, physical pixels); it stays there while pinned.
     pub custom_pos: Option<(f32, f32)>,
     /// The panel's position when the current drag began.

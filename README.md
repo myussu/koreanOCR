@@ -16,6 +16,12 @@ Everything runs on your machine: the language model (llama.cpp), OCR (PP-OCR / W
 It also learns with you: every word you look up is tracked, queued for **spaced repetition (FSRS-6)** after the
 second lookup, can be sent to **Anki**, and words you know **fade** from the panel so it gets lighter as you improve.
 
+**Anki** is the main review. In a deep dive, *Add to Anki* lets you pick a deck (or type a new one; the program you are
+playing suggests one), tags are added automatically, and each note gets a Korean voice (the TTS you set up) plus a
+reverse card (English → Korean) in a `::Reverse` subdeck. Maru reads your intervals back, so words Anki holds for long
+enough fade from the panel. Needs the AnkiConnect add-on (`2055492159`); log in to AnkiWeb inside Anki and Settings →
+Anki *Sync* triggers it. See `docs/config.example.toml`.
+
 > Status: the engine, command line and overlay are implemented and tested, but the Windows-specific parts and the
 > Korean model quality could only be checked on a real machine. See **[What is verified](#what-is-verified)**.
 
@@ -111,7 +117,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the extensio
 Checked here, automatically (about 200 tests; `cargo test --workspace`, `node --test app/ui/test/core.test.mjs`):
 
 * Korean pronunciation and romanization rules, 어절 grouping, dictionary import, FSRS-6 (replays the reference
-  implementation's own test vector), vocabulary, Anki export (against a fake AnkiConnect).
+  implementation's own test vector), vocabulary, Anki (against a fake AnkiConnect).
 * The language-model client, streaming parsers and process supervision (against scripted servers), and the whole
   engine pipeline: event order, cancellation, cache, English→Korean follow-up analysis, degraded modes.
 * The OCR pipeline against **real ONNX Runtime and real PP-OCR models** on rendered English text, including

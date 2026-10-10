@@ -124,12 +124,14 @@ pub fn place_and_show(app: &AppHandle, state: &AppState, placement: Placement) {
 
 pub fn hide_panel(app: &AppHandle, state: &AppState) {
     if let Some(win) = app.get_webview_window(PANEL) {
+        let _ = win.set_focusable(false);
         let _ = win.hide();
     }
     {
         let mut p = state.panel();
         p.visible = false;
         p.reading = false;
+        p.editing = false;
     }
     // whatever was being read aloud stops with it
     let _ = tauri::Emitter::emit_to(app, PANEL, "maru-hidden", ());

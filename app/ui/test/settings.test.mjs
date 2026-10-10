@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isVisible, SPEECH, SECTIONS, ALL_FIELDS, appliesLive, labelFor, valueAt, toEditor, fromEditor, withEdit, shown, isDefault, withReset, splitKeys, joinKeys, keyName, comboFromEvent, keyRisk } from '../settings-core.js';
+import { ANKI, isVisible, SPEECH, SECTIONS, ALL_FIELDS, appliesLive, labelFor, valueAt, toEditor, fromEditor, withEdit, shown, isDefault, withReset, splitKeys, joinKeys, keyName, comboFromEvent, keyRisk } from '../settings-core.js';
 
 const current = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
 const defaults = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
@@ -9,7 +9,7 @@ test('every field has a unique path, a label and a known type', () => {
   const paths = ALL_FIELDS.map((f) => f.path);
   assert.equal(new Set(paths).size, paths.length);
   for (const f of ALL_FIELDS) {
-    assert.ok(f.label && ['toggle', 'select', 'number', 'range', 'percent', 'text', 'password', 'keys'].includes(f.type), f.path);
+    assert.ok(f.label && ['toggle', 'select', 'number', 'range', 'percent', 'text', 'password', 'tags', 'keys'].includes(f.type), f.path);
     if (f.type === 'select') assert.ok(f.options.length >= 2, f.path);
     if (f.type === 'range' || f.type === 'number' || f.type === 'percent') assert.ok(f.min < f.max && f.step > 0, f.path);
   }
@@ -107,4 +107,18 @@ test('an API key is nullable text and never echoed into a label', () => {
   const key = ALL_FIELDS.find((f) => f.path === 'tts.api_key');
   assert.equal(key.type, 'password');
   assert.equal(fromEditor({ ...key, type: 'text' }, '  '), null);
+});
+
+test('the Anki settings: tags are a comma list, the key is a secret, and nothing is listed twice', () => {
+  const tags = ALL_FIELDS.find((f) => f.path === 'learning.anki.tags');
+  assert.equal(toEditor(tags, ['maru', 'game']), 'maru, game');
+  assert.deepEqual(fromEditor(tags, ' maru ,, game , '), ['maru', 'game']);
+  assert.deepEqual(fromEditor(tags, ''), []);
+  const key = ALL_FIELDS.find((f) => f.path === 'learning.anki.api_key');
+  assert.equal(key.type, 'password');
+  assert.equal(fromEditor(key, '  '), null, 'an empty key removes it');
+  assert.ok(SECTIONS.includes(ANKI));
+  const paths = ALL_FIELDS.map((f) => f.path).filter((p) => p.startsWith('learning.anki.'));
+  assert.equal(new Set(paths).size, paths.length);
+  assert.ok(paths.includes('learning.anki.reverse') && paths.includes('learning.anki.sync_after_add'));
 });

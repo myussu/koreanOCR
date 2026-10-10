@@ -154,6 +154,9 @@ pub fn validate(cfg: &Config) -> Result<()> {
         cfg.tts.provider != crate::config::TtsProvider::Endpoint || !cfg.tts.enabled || cfg.tts.endpoint.as_deref().is_some_and(|e| e.trim().starts_with("http")),
         "speech from a server needs its address (starting with http:// or https://)",
     );
+    check(!cfg.learning.anki.enabled || cfg.learning.anki.url.trim().starts_with("http"), "the AnkiConnect address must start with http://");
+    check(!cfg.learning.anki.enabled || !cfg.learning.anki.deck.trim().is_empty(), "choose a default Anki deck");
+    check(cfg.learning.anki.refresh_minutes <= 1440, "reading progress back from Anki is limited to once a day at most");
     check(cfg.capture.max_chars >= 20, "the longest selection must allow at least 20 characters");
     if problems.is_empty() { Ok(()) } else { Err(Error::Config(problems.join("; "))) }
 }

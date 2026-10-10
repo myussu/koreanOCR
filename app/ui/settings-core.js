@@ -55,10 +55,6 @@ export const SECTIONS = [
       { path: 'learning.auto_save_after_lookups', label: 'Add to review after', help: 'Looked-up words join the review queue on this lookup', type: 'number', min: 1, max: 10, step: 1, unit: 'lookups' },
       { path: 'learning.known_stability_days', label: 'A word counts as known after', type: 'number', min: 1, max: 365, step: 1, unit: 'days of memory', advanced: true },
       { path: 'learning.desired_retention', label: 'Recall target for review', help: 'Higher means more reviews', type: 'percent', min: 70, max: 97, step: 1, advanced: true },
-      { path: 'learning.anki.enabled', label: 'Send saved words to Anki', help: 'Needs Anki open with the AnkiConnect add-on', type: 'toggle' },
-      { path: 'learning.anki.deck', label: 'Anki deck', type: 'text', advanced: true },
-      { path: 'learning.anki.note_type', label: 'Anki note type', type: 'text', advanced: true },
-      { path: 'learning.anki.url', label: 'AnkiConnect address', type: 'text', advanced: true },
     ],
   },
   {
@@ -141,6 +137,30 @@ export const SPEECH = {
 
 SECTIONS.splice(SECTIONS.findIndex((x) => x.id === 'model'), 0, SPEECH);
 
+export const ANKI = {
+  id: 'anki',
+  title: 'Anki',
+  intro:
+    'Anki is where words are reviewed: Maru adds them (to the deck you choose, with tags and spoken audio), reads back how well you hold them so known words fade, and asks Anki to sync with AnkiWeb. Your AnkiWeb login stays inside Anki (Tools → Preferences → Syncing); Maru never sees it. Needs Anki open with the AnkiConnect add-on (code 2055492159). Changes need a restart.',
+  action: 'anki',
+  fields: [
+    { path: 'learning.anki.enabled', label: 'Review in Anki', type: 'toggle' },
+    { path: 'learning.anki.deck', label: 'Default deck', help: 'Suggested when nothing better is known; other decks are offered per program (Korean::Games::Elden Ring)', type: 'text' },
+    { path: 'learning.anki.reverse', label: 'English → Korean card', help: 'Each word also gets a card that shows the English and reveals the Korean', type: 'select', options: opts(['subdeck', 'In a Reverse subdeck of the same deck'], ['same_deck', 'In the same deck'], ['off', 'None']) },
+    { path: 'learning.anki.audio', label: 'Add spoken audio', help: 'The word and its sentence, from the voice in Speech', type: 'toggle' },
+    { path: 'learning.anki.sync_after_add', label: 'Sync with AnkiWeb after adding', help: 'Asks Anki to sync a few seconds after the last word, so your other copies of Anki get it', type: 'toggle' },
+    { path: 'learning.anki.auto_tags', label: 'Tag by level, type, program and month', help: 'topik-1, pos::verb, app::elden-ring, added::2026-10', type: 'toggle' },
+    { path: 'learning.anki.tags', label: 'Tags every word gets', help: 'Separated by commas', type: 'tags' },
+    { path: 'learning.anki.refresh_minutes', label: 'Read your progress back every', help: '0 = only when Maru starts', type: 'number', min: 0, max: 1440, step: 5, unit: 'minutes', advanced: true },
+    { path: 'learning.anki.url', label: 'AnkiConnect address', type: 'text', advanced: true },
+    { path: 'learning.anki.api_key', label: 'AnkiConnect API key', help: 'Only if you set one in the add-on', type: 'password', nullable: true, advanced: true },
+    { path: 'learning.anki.note_type', label: 'Note type', help: 'Maru creates and keeps it up to date', type: 'text', advanced: true },
+    { path: 'learning.anki.reverse_subdeck', label: 'Reverse subdeck name', type: 'text', advanced: true },
+  ],
+};
+
+SECTIONS.splice(SECTIONS.findIndex((x) => x.id === 'screen'), 0, ANKI);
+
 export const ALL_FIELDS = SECTIONS.flatMap((s) => s.fields);
 /** Does a field show up now? Some only matter for one choice of another setting. */
 export function isVisible(field, draft, current, defaults) {
@@ -157,14 +177,16 @@ export const valueAt = (obj, path) => path.split('.').reduce((o, k) => (o == nul
 export function toEditor(field, raw) {
   if (field.type === 'percent') return Math.round((raw ?? 0) * 100);
   if (field.type === 'number' || field.type === 'range') return typeof raw === 'number' ? Math.round(raw * 1e6) / 1e6 : raw;
-  if (field.type === 'text') return raw ?? '';
+  if (field.type === 'text' || field.type === 'password') return raw ?? '';
+  if (field.type === 'tags') return Array.isArray(raw) ? raw.join(', ') : '';
   return raw;
 }
 
 /** The value to store for what the editor holds: nullable empty text removes the key. */
 export function fromEditor(field, edited) {
   if (field.type === 'percent') return Math.round(edited) / 100;
-  if (field.type === 'text') {
+  if (field.type === 'tags') return String(edited).split(',').map((t) => t.trim()).filter(Boolean);
+  if (field.type === 'text' || field.type === 'password') {
     const t = String(edited).trim();
     return field.nullable && t === '' ? null : t;
   }

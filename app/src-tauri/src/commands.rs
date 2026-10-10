@@ -458,3 +458,15 @@ pub async fn anki_due(state: S<'_>) -> Res<AnkiDue> {
     let d = state.engine().anki_due().await.map_err(err)?;
     Ok(AnkiDue { due: d.due, new: d.new })
 }
+
+/// The panel never takes the keyboard, so that clicking it keeps the selection you made elsewhere. A text
+/// box in it (the deck name) needs the keyboard: turn that on while one is in use, and off after.
+#[tauri::command]
+pub fn panel_typing(app: AppHandle, state: S, on: bool) {
+    let Some(win) = tauri::Manager::get_webview_window(&app, windows::PANEL) else { return };
+    state.panel().editing = on;
+    let _ = win.set_focusable(on);
+    if on {
+        let _ = win.set_focus();
+    }
+}
