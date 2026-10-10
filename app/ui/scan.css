@@ -1,0 +1,89 @@
+/* The screen-scan overlay: a transparent layer of small labels over the game. */
+html, body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font: 12px/14px "Segoe UI", system-ui, -apple-system, "Noto Sans", sans-serif;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Everything is click-through except the labels themselves (and the app also turns the whole
+   window click-through except while the pointer is over a label). */
+#layer { position: fixed; inset: 0; pointer-events: none; }
+
+.lab {
+  position: absolute;
+  box-sizing: border-box;
+  height: 18px;
+  padding: 2px 7px;
+  line-height: 14px;
+  border-radius: 5px;
+  background: rgba(17, 20, 27, 0.92);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.30);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+  transform-origin: left top;
+  transition: left 0.12s ease, top 0.12s ease, opacity 0.15s ease;
+}
+.lab.entering { opacity: 0; }
+.lab .t { display: block; overflow: hidden; text-overflow: ellipsis; }
+.lab:hover { background: rgba(37, 99, 235, 0.96); border-color: #fff; z-index: 5; }
+
+/* waiting for the model */
+.lab.pending { color: #b7c0d0; }
+/* a word you already know */
+.lab.known { opacity: 0.5; }
+.lab.known:hover { opacity: 1; }
+
+/* no room: a dot that opens when pointed at */
+.lab.dot { width: 12px !important; height: 12px !important; padding: 0; border-radius: 50%; background: #2563eb; border-color: #fff; }
+.lab.dot .t { display: none; }
+.lab.dot:hover { width: auto !important; height: 18px !important; padding: 2px 7px; border-radius: 5px; z-index: 10; }
+.lab.dot:hover .t { display: block; }
+
+/* delete this label */
+.lab .x {
+  display: none;
+  position: absolute;
+  right: -7px;
+  top: -8px;
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 1px solid #fff;
+  border-radius: 50%;
+  background: #b42318;
+  color: #fff;
+  font: 11px/13px system-ui, sans-serif;
+  text-align: center;
+  cursor: pointer;
+}
+.lab:hover .x { display: block; }
+
+#toast {
+  position: fixed;
+  top: 14px;
+  left: 50%;
+  transform: translateX(-50%);
+  max-width: min(70vw, 640px);
+  padding: 7px 14px;
+  border-radius: 9px;
+  background: rgba(17, 20, 27, 0.92);
+  color: #fff;
+  font-size: 13px;
+  line-height: 17px;
+  white-space: normal;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+#toast.show { opacity: 1; }
+
+/* ───── browser-only demo: a pretend game behind the labels, for layout screenshots ───── */
+#fake { position: fixed; inset: 0; background: linear-gradient(135deg, #243449, #3b2a4a 55%, #1d3a34); pointer-events: none; }
+#fake .g { position: absolute; box-sizing: border-box; color: #f3ead2; font-family: "Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic", sans-serif; overflow: hidden; white-space: nowrap; background: rgba(255, 255, 255, 0.07); outline: 1px dashed rgba(255, 220, 120, 0.55); }
