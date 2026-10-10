@@ -23,6 +23,7 @@ hover      = "Ctrl+Alt+H"       # toggle hover mode: rest the pointer on a word
 continuous = "Ctrl+Alt+C"       # toggle live mode for subtitles / dialogue boxes (on the last area)
 continuous_area = "Ctrl+Alt+Shift+C"  # choose a different area for live mode, and start it there
 scan       = "Ctrl+Alt+S"       # label every Korean text on the screen (game menus); press again to rescan
+speak      = "Ctrl+Alt+P"       # translate the selection and read it aloud (again while reading: stop). Needs [tts]
 history    = "Ctrl+Alt+L"
 dismiss    = "Ctrl+Alt+Escape"  # hides the panel and the screen labels (a bare Escape would be hijacked in every other app)
 

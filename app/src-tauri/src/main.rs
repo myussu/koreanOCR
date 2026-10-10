@@ -56,6 +56,7 @@ pub fn tray_menu(app: &tauri::AppHandle, state: &AppState) -> tauri::Result<Menu
             &item("continuous", format!("Toggle continuous mode\t{}", keys.continuous))?,
             &item("continuous_area", format!("Continuous mode: choose area…\t{}", keys.continuous_area))?,
             &item("scan", format!("Label all Korean text on screen\t{}", keys.scan))?,
+            &item("speak", format!("Translate and read aloud\t{}", keys.speak))?,
             &PredefinedMenuItem::separator(app)?,
             &item("review", "Review & history…".into())?,
             &item("status", "Status…".into())?,
@@ -80,6 +81,7 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             "continuous" => flow::toggle_continuous(&app, &state),
             "continuous_area" => flow::choose_continuous_area(&app, &state),
             "scan" => flow::scan_screen(app, state),
+            "speak" => flow::speak_selection(app, state),
             "review" => {
                 let _ = windows::open_hub(&app, "review");
             }
@@ -155,6 +157,9 @@ fn main() {
             commands::word_contexts,
             commands::open_hub,
             commands::tts_test,
+            commands::tts_plan,
+            commands::tts_clip,
+            commands::tts_reading,
             settings::get_settings,
             settings::save_settings,
             settings::restart_app,

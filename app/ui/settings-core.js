@@ -17,6 +17,7 @@ export const SECTIONS = [
     fields: [
       { path: 'hotkeys.translate', label: 'Translate selection', help: 'Selected text, or the text under the pointer', type: 'keys' },
       { path: 'hotkeys.scan', label: 'Label all Korean text on screen', help: 'Game menus: press again to rescan', type: 'keys' },
+      { path: 'hotkeys.speak', label: 'Translate and read aloud', help: 'Reads the selection in Korean; again while reading to stop. Needs Speech turned on', type: 'keys' },
       { path: 'hotkeys.region', label: 'Pick a region', help: 'Drag a rectangle and translate what is inside', type: 'keys' },
       { path: 'hotkeys.hover', label: 'Hover mode on/off', help: 'Rest the pointer on a word', type: 'keys' },
       { path: 'hotkeys.continuous', label: 'Live subtitles on/off', help: 'Watches the last chosen area', type: 'keys' },

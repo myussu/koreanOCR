@@ -112,6 +112,8 @@ pub struct Hotkeys {
     pub continuous_area: String,
     /// Read the whole screen and label every piece of Korean text on it (press again to rescan).
     pub scan: String,
+    /// Translate the selection and read it aloud (pressed again while reading: stop).
+    pub speak: String,
     /// Show/hide the history of recent lines.
     pub history: String,
     /// Dismiss the panel.
@@ -127,6 +129,7 @@ impl Default for Hotkeys {
             continuous: "Ctrl+Alt+C".into(),
             continuous_area: "Ctrl+Alt+Shift+C".into(),
             scan: "Ctrl+Alt+S".into(),
+            speak: "Ctrl+Alt+P".into(),
             history: "Ctrl+Alt+L".into(),
             dismiss: "Ctrl+Alt+Escape".into(),
         }

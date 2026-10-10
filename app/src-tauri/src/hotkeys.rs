@@ -14,6 +14,7 @@ enum Action {
     Continuous,
     ContinuousArea,
     Scan,
+    Speak,
     History,
     Dismiss,
 }
@@ -47,6 +48,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
         (keys.continuous, Action::Continuous),
         (keys.continuous_area, Action::ContinuousArea),
         (keys.scan, Action::Scan),
+        (keys.speak, Action::Speak),
         (keys.history, Action::History),
         (keys.dismiss, Action::Dismiss),
     ];
@@ -75,6 +77,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
                 Action::Continuous => flow::toggle_continuous(&app, &state),
                 Action::ContinuousArea => flow::choose_continuous_area(&app, &state),
                 Action::Scan => flow::scan_screen(app, state),
+                Action::Speak => flow::speak_selection(app, state),
                 Action::History => {
                     let _ = windows::open_hub(&app, "history");
                 }

@@ -161,3 +161,39 @@ export function sentenceOf(state, side = 'source') {
   if (side === 'target') return state.translations.polite ?? state.translations.formal ?? state.translations.casual ?? '';
   return state.capture?.text ?? '';
 }
+
+// ───────────── reading aloud ─────────────
+
+/** The Korean text to read for the current request: what was captured, or the Korean we produced. */
+export function readableText(state) {
+  if (state.id == null) return '';
+  const text = state.direction === 'en_to_ko' ? state.translations.primary : state.capture?.text;
+  return (text ?? '').trim();
+}
+
+const letters = (s) => s.replace(/[^\p{L}\p{N}]/gu, '');
+
+/**
+ * Which words belong to each spoken sentence: `[from, to)` ranges into `eojeols`, one per sentence,
+ * or null when the two do not line up (then nothing is highlighted, and nothing breaks). Words are
+ * compared by their letters and digits only, so punctuation and spacing differences do not matter.
+ */
+export function sentenceRanges(eojeols, sentences) {
+  const ranges = [];
+  let e = 0;
+  for (const sentence of sentences) {
+    const tokens = sentence.split(/\s+/).map(letters).filter(Boolean);
+    const from = e;
+    for (const token of tokens) {
+      while (e < eojeols.length && !letters(eojeols[e].surface)) e++; // pure punctuation
+      let joined = '';
+      let end = e;
+      while (end < eojeols.length && joined.length < token.length) joined += letters(eojeols[end++].surface);
+      if (joined !== token) return null;
+      e = end;
+    }
+    while (e < eojeols.length && !letters(eojeols[e].surface)) e++;
+    ranges.push([from, e]);
+  }
+  return ranges;
+}

@@ -50,12 +50,13 @@ fn anchor_of(capture: &Capture, fallback: Option<Point>) -> Rect {
 }
 
 pub fn show_translation(app: &AppHandle, state: &Arc<AppState>, capture: Capture, word_only: bool) {
-    show_capture(app, state, capture, word_only, false);
+    show_capture(app, state, capture, word_only, false, false);
 }
 
 /// Show `capture` in the panel. With `auto_deep` the panel also opens the deep dive for its single
-/// content word as soon as the breakdown arrives (a click on a scan label that is one word).
-pub fn show_capture(app: &AppHandle, state: &Arc<AppState>, capture: Capture, word_only: bool, auto_deep: bool) {
+/// content word as soon as the breakdown arrives (a click on a scan label that is one word). With
+/// `auto_speak` the panel reads the text aloud as soon as it has it.
+pub fn show_capture(app: &AppHandle, state: &Arc<AppState>, capture: Capture, word_only: bool, auto_deep: bool, auto_speak: bool) {
     let cursor = state.engine().platform().screen.cursor();
     {
         let mut p = state.panel();
@@ -67,6 +68,9 @@ pub fn show_capture(app: &AppHandle, state: &Arc<AppState>, capture: Capture, wo
     let (id, rx) = if word_only { state.engine().lookup_word(capture) } else { state.engine().translate(capture) };
     if auto_deep {
         let _ = app.emit_to(PANEL, "maru-auto-deep", id);
+    }
+    if auto_speak {
+        let _ = app.emit_to(PANEL, "maru-auto-speak", id);
     }
     pump(app.clone(), rx);
 }
@@ -81,6 +85,29 @@ pub fn translate_selection(app: AppHandle, state: Arc<AppState>) {
             }
             Err(e) => {
                 tracing::info!("translate: nothing captured: {e}");
+                notice(&app, &state, state.engine().platform().screen.cursor(), "info", e.to_string())
+            }
+        }
+    });
+}
+
+/// The speak hotkey: translate the selection and read it aloud. Pressed while reading, it stops.
+pub fn speak_selection(app: AppHandle, state: Arc<AppState>) {
+    if state.services.tts.is_none() {
+        return notice(&app, &state, state.engine().platform().screen.cursor(), "info", "Speech is off. Turn it on in Settings → Speech (or run `maru setup tts`).".to_string());
+    }
+    if state.panel().reading {
+        let _ = app.emit_to(PANEL, "maru-tts-control", "stop");
+        return;
+    }
+    tauri::async_runtime::spawn(async move {
+        match state.engine().capture_selection().await {
+            Ok(capture) => {
+                tracing::info!("speak: {:?} capture, {} characters", capture.source, capture.text.chars().count());
+                show_capture(&app, &state, capture, false, false, true)
+            }
+            Err(e) => {
+                tracing::info!("speak: nothing captured: {e}");
                 notice(&app, &state, state.engine().platform().screen.cursor(), "info", e.to_string())
             }
         }
@@ -121,7 +148,7 @@ pub fn open_scan_item(app: AppHandle, state: Arc<AppState>, text: String, rect: 
         let single = eojeols.iter().filter(|e| e.content).count() == 1 && eojeols.len() <= 2;
         let screen = state.engine().platform().screen.clone();
         let capture = Capture { text, source: maru_core::CaptureSource::Ocr, rect: Some(rect), words: Vec::new(), cursor: screen.cursor(), app: screen.foreground_app(), confidence: None };
-        show_capture(&app, &state, capture, single, single);
+        show_capture(&app, &state, capture, single, single, false);
     });
 }
 

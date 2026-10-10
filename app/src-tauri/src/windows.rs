@@ -14,7 +14,7 @@ pub const SCAN: &str = "scan";
 
 /// Create the (hidden) panel at start-up so the page is loaded and composited before first use.
 pub fn create_panel(app: &AppHandle, width: f32) -> tauri::Result<WebviewWindow> {
-    WebviewWindowBuilder::new(app, PANEL, WebviewUrl::App("index.html".into()))
+    let builder = WebviewWindowBuilder::new(app, PANEL, WebviewUrl::App("index.html".into()))
         .title("Maru")
         .inner_size(width as f64, 200.0)
         .decorations(false)
@@ -27,8 +27,12 @@ pub fn create_panel(app: &AppHandle, width: f32) -> tauri::Result<WebviewWindow>
         .focusable(false)
         // Keep the overlay out of screenshots, so continuous mode never reads its own output.
         .content_protected(true)
-        .visible(false)
-        .build()
+        .visible(false);
+    // The panel reads aloud when a hotkey asks it to, with no click inside it; WebView2 would refuse
+    // to play sound without one. (Setting the arguments replaces Tauri's defaults, so repeat them.)
+    #[cfg(windows)]
+    let builder = builder.additional_browser_args("--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --autoplay-policy=no-user-gesture-required");
+    builder.build()
 }
 
 /// The (hidden) layer that carries the screen-scan labels. Created at start-up so its page is
@@ -117,7 +121,13 @@ pub fn hide_panel(app: &AppHandle, state: &AppState) {
     if let Some(win) = app.get_webview_window(PANEL) {
         let _ = win.hide();
     }
-    state.panel().visible = false;
+    {
+        let mut p = state.panel();
+        p.visible = false;
+        p.reading = false;
+    }
+    // whatever was being read aloud stops with it
+    let _ = tauri::Emitter::emit_to(app, PANEL, "maru-hidden", ());
 }
 
 /// Where the panel currently is, in physical screen pixels.

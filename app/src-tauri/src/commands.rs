@@ -30,6 +30,8 @@ pub struct UiConfig {
     pub max_width_px: u32,
     pub theme: String,
     pub anki: bool,
+    /// Speech is set up: the panel offers to read aloud.
+    pub tts: bool,
 }
 
 #[tauri::command]
@@ -46,6 +48,7 @@ pub fn ui_config(state: S) -> UiConfig {
         max_width_px: cfg.ui.max_width_px,
         theme: cfg.ui.theme.clone(),
         anki: state.engine().config().learning.anki.enabled,
+        tts: state.services.tts.is_some(),
     }
 }
 
@@ -246,11 +249,21 @@ pub struct Clip {
     pub took_ms: u64,
 }
 
+fn clip_of(audio: maru_tts::Audio, cached: bool, started: std::time::Instant) -> Clip {
+    use base64::Engine as _;
+    Clip {
+        seconds: maru_tts::wav::info(&audio.bytes).map(|i| i.seconds),
+        data: base64::engine::general_purpose::STANDARD.encode(&audio.bytes),
+        mime: audio.mime,
+        cached,
+        took_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
 /// Speak a sentence with the *saved* speech settings, so a change can be tried without a restart
 /// (a local voice still needs its server running, which only a restart starts).
 #[tauri::command]
 pub async fn tts_test(state: S<'_>, text: Option<String>) -> Res<Clip> {
-    use base64::Engine as _;
     use maru_core::config::TtsProvider;
     let paths = state.services.paths.clone();
     let cfg = maru_core::Config::load(&paths.config_file).map_err(err)?.tts;
@@ -269,11 +282,34 @@ pub async fn tts_test(state: S<'_>, text: Option<String>) -> Res<Clip> {
     let text = text.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "안녕하세요. 만나서 반갑습니다. 한국어를 공부하고 있어요.".into());
     let started = std::time::Instant::now();
     let (audio, cached) = tts.speak(&text).await.map_err(err)?;
-    Ok(Clip {
-        seconds: maru_tts::wav::info(&audio.bytes).map(|i| i.seconds),
-        mime: audio.mime,
-        data: base64::engine::general_purpose::STANDARD.encode(&audio.bytes),
-        cached,
-        took_ms: started.elapsed().as_millis() as u64,
-    })
+    Ok(clip_of(audio, cached, started))
+}
+
+/// How `text` will be read: one entry per sentence.
+#[tauri::command]
+pub fn tts_plan(text: String) -> Vec<String> {
+    maru_tts::split::sentences(&text)
+}
+
+/// Speech for one sentence (or a single word) with the voice that is running now.
+#[tauri::command]
+pub async fn tts_clip(state: S<'_>, text: String) -> Res<Clip> {
+    let Some(tts) = state.services.tts.clone() else {
+        return Err("Speech is off. Turn it on in Settings → Speech.".into());
+    };
+    match state.services.tts_status() {
+        LlmStatus::Ready => {}
+        LlmStatus::Starting => return Err("The voice is still loading; try again in a moment.".into()),
+        LlmStatus::Failed(why) => return Err(format!("The voice is not available: {why}")),
+        LlmStatus::Disabled => return Err("Speech is off.".into()),
+    }
+    let started = std::time::Instant::now();
+    let (audio, cached) = tts.speak(&text).await.map_err(err)?;
+    Ok(clip_of(audio, cached, started))
+}
+
+/// The panel starts or stops reading aloud; while it reads, it does not hide itself.
+#[tauri::command]
+pub fn tts_reading(state: S, active: bool) {
+    state.panel().reading = active;
 }

@@ -26,7 +26,8 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
             let Some(cursor) = screen.cursor() else { continue };
             let (visible, pinned, hover_mode) = {
                 let p = state.panel();
-                (p.visible, p.pinned, p.hover_mode)
+                // reading aloud keeps the panel up like a pin does, even in hover mode
+                (p.visible, p.pinned || p.reading, p.hover_mode)
             };
             let panel = windows::panel_rect(&app);
             let over_panel = visible && panel.is_some_and(|r| r.contains(cursor));
@@ -42,7 +43,7 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
             if visible && let Some(rect) = panel {
                 // Hover tooltips should vanish quickly once the pointer leaves the word.
                 let far = if hover_mode { 90.0 } else { 320.0 };
-                if hide.update(Instant::now(), cursor, rect, pinned && !hover_mode, far, HIDE_AFTER) {
+                if hide.update(Instant::now(), cursor, rect, pinned && (!hover_mode || state.panel().reading), far, HIDE_AFTER) {
                     windows::hide_panel(&app, &state);
                     hide.reset();
                 }

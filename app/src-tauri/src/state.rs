@@ -12,6 +12,8 @@ pub struct PanelState {
     /// Panel size in physical pixels, as last reported by the page.
     pub size: (f32, f32),
     pub pinned: bool,
+    /// The panel is reading aloud: it stays up until the reading ends or it is dismissed.
+    pub reading: bool,
     pub hover_mode: bool,
     pub last_capture: Option<Capture>,
     pub last_cursor: Option<Point>,

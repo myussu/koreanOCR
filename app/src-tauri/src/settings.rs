@@ -74,6 +74,7 @@ fn check_hotkeys(cfg: &Config) -> Res<()> {
         ("continuous", &k.continuous),
         ("continuous_area", &k.continuous_area),
         ("scan", &k.scan),
+        ("speak", &k.speak),
         ("history", &k.history),
         ("dismiss", &k.dismiss),
     ];

@@ -1,11 +1,85 @@
 import { invoke, listen, replayFromQuery, mockCommands, inTauri } from './bridge.js';
-import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, VARIANT_LABEL } from './core.js';
+import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, readableText, sentenceRanges, VARIANT_LABEL } from './core.js';
+import { Reader } from './reader.js';
 
 const card = document.getElementById('card');
 let state = emptyState();
-let cfg = { gloss_mode: 'fade_known', font_size_px: 18, show_romanization: true, show_pronunciation: true, show_grammar_formula: true, theme: 'auto', anki: false, opacity: 0.97 };
+let cfg = { gloss_mode: 'fade_known', font_size_px: 18, show_romanization: true, show_pronunciation: true, show_grammar_formula: true, theme: 'auto', anki: false, tts: false, opacity: 0.97 };
 let pinned = false;
 let deepSide = 'source';
+
+// ───────────── reading aloud ─────────────
+
+function playable(clip) {
+  const audio = new Audio(`data:${clip.mime};base64,${clip.data}`);
+  return {
+    play: () => audio.play(),
+    pause: () => audio.pause(),
+    release: () => {
+      audio.removeAttribute('src');
+      audio.load();
+    },
+    set onended(fn) {
+      audio.onended = fn;
+    },
+    get onended() {
+      return audio.onended;
+    },
+  };
+}
+
+let wasReading = false;
+const reader = new Reader({
+  fetchClip: (text) => invoke('tts_clip', { text }),
+  createAudio: playable,
+  onChange: () => {
+    // the app keeps the panel up while it reads
+    if (reader.active !== wasReading) {
+      wasReading = reader.active;
+      invoke('tts_reading', { active: wasReading }).catch(() => {});
+    }
+    render();
+  },
+});
+
+async function readAloud(text = readableText(state)) {
+  if (!text) return;
+  try {
+    const sentences = await invoke('tts_plan', { text });
+    reader.start(sentences);
+  } catch (e) {
+    flash(String(e));
+  }
+}
+
+/** Which of the words shown are in the sentence being read now. */
+function speakingWords(side) {
+  if (!reader.active || reader.index < 0) return new Set();
+  const eojeols = state[side]?.eojeols;
+  const ranges = eojeols && sentenceRanges(eojeols, reader.sentences);
+  const range = ranges?.[reader.index];
+  const out = new Set();
+  if (range) for (let i = range[0]; i < range[1]; i++) out.add(eojeols[i].index);
+  return out;
+}
+
+function readerStrip() {
+  if (reader.status === 'idle') return null;
+  const n = reader.sentences.length;
+  const busy = reader.status === 'loading';
+  return h(
+    'div',
+    { class: `reader ${reader.status}` },
+    h('button', { class: 'icon', title: 'previous sentence', onclick: () => reader.prev(), disabled: reader.index <= 0, text: '⏮' }),
+    h('button', { class: 'icon', title: reader.status === 'paused' ? 'continue' : 'pause', onclick: () => reader.toggle(), text: reader.status === 'paused' || reader.status === 'error' ? '▶' : '⏸' }),
+    h('button', { class: 'icon', title: 'next sentence', onclick: () => reader.next(), disabled: reader.index + 1 >= n, text: '⏭' }),
+    h('button', { class: 'icon', title: 'say this sentence again', onclick: () => reader.replay(), text: '↺' }),
+    h('button', { class: 'icon', 'aria-pressed': String(reader.repeat > 1), title: reader.repeat > 1 ? `each sentence ${reader.repeat}×: click to change` : 'say each sentence more than once', onclick: () => reader.setRepeat(reader.repeat >= 3 ? 1 : reader.repeat + 1), text: reader.repeat > 1 ? `${reader.repeat}×` : '1×' }),
+    h('span', { class: 'count', text: `${reader.index + 1}/${n}` }),
+    h('span', { class: `now${busy ? ' busy' : ''}`, title: reader.text, text: reader.status === 'error' ? reader.error : busy ? `${reader.text} …` : reader.text }),
+    h('button', { class: 'icon', title: 'stop', onclick: () => reader.stop(), text: '⏹' }),
+  );
+}
 
 /** Tiny DOM helper. Text always goes through textContent: model output is untrusted. */
 function h(tag, props = {}, ...kids) {
@@ -25,15 +99,15 @@ const SOURCE_LABEL = { accessibility: 'selection', clipboard: 'copied', ocr: 'OC
 
 // ───────────── rendering ─────────────
 
-function wordColumn(e, side) {
-  if (!e.content) return h('span', { class: 'punct', text: e.surface });
+function wordColumn(e, side, speaking = new Set()) {
+  if (!e.content) return h('span', { class: `punct${speaking.has(e.index) ? ' speaking' : ''}`, text: e.surface });
   const gloss = state.glosses[side][e.index];
   const m = meaningFor(e, gloss, cfg.gloss_mode);
   const open = state.deep && state.deep.eojeol.index === e.index && deepSide === side;
   return h(
     'div',
     {
-      class: `w ${e.state ?? 'new'}${open ? ' open' : ''}`,
+      class: `w ${e.state ?? 'new'}${open ? ' open' : ''}${speaking.has(e.index) ? ' speaking' : ''}`,
       title: [e.formula, m.note].filter(Boolean).join('\n') || null,
       onclick: () => startDeep(e, side),
     },
@@ -49,7 +123,8 @@ function wordColumn(e, side) {
 function wordsBlock(side) {
   const data = state[side];
   if (!data) return null;
-  return h('div', { class: 'words' }, data.eojeols.map((e) => wordColumn(e, side)));
+  const speaking = speakingWords(side);
+  return h('div', { class: 'words' }, data.eojeols.map((e) => wordColumn(e, side, speaking)));
 }
 
 function translationBlock() {
@@ -71,6 +146,9 @@ function translationBlock() {
   );
 }
 
+/** A word as it should be said: without the punctuation stuck to it. */
+const spoken = (surface) => surface.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+
 function deepBlock() {
   const d = state.deep;
   if (!d) return null;
@@ -83,7 +161,7 @@ function deepBlock() {
   return h(
     'div',
     { class: 'deep' },
-    h('h3', {}, key, h('span', { class: 'chip', text: e.pos }), entry?.hanja && h('span', { class: 'hanja', text: entry.hanja }), (entry?.level ?? e.level) && h('span', { class: 'chip level', text: entry?.level ?? e.level }), h('button', { class: 'icon', style: 'margin-left:auto', title: 'close', onclick: () => update(closeDeep(state)), text: '✕' })),
+    h('h3', {}, key, h('span', { class: 'chip', text: e.pos }), entry?.hanja && h('span', { class: 'hanja', text: entry.hanja }), (entry?.level ?? e.level) && h('span', { class: 'chip level', text: entry?.level ?? e.level }), h('span', { class: 'speak-word' }, cfg.tts && h('button', { class: 'icon', title: 'hear this word', onclick: () => readAloud(spoken(e.surface)), text: '🔊' }), cfg.tts && spoken(e.surface) !== key && h('button', { class: 'icon', title: `hear the dictionary form, ${key}`, onclick: () => readAloud(key), text: '🔊 ' + key })), h('button', { class: 'icon', style: 'margin-left:auto', title: 'close', onclick: () => update(closeDeep(state)), text: '✕' })),
     steps.length > 1 && [
       h('h4', { text: 'How this form is built' }),
       h('div', { class: 'built' }, steps.flatMap((s, i) => [i > 0 && h('span', { class: 'plus', text: '+' }), h('div', { class: 'step' }, h('b', { text: s.form }), h('span', { text: s.label }))])),
@@ -124,10 +202,12 @@ function render() {
         s.cached && h('span', { class: 'chip', text: 'cached' }),
         s.capture?.confidence != null && s.capture.confidence < 0.8 && h('span', { class: 'chip', title: 'OCR was unsure; check the text', text: 'OCR uncertain' }),
         h('span', { class: 'grow' }),
+        cfg.tts && readableText(s) && h('button', { class: 'icon', 'aria-pressed': String(reader.active), title: reader.active ? 'stop reading' : 'read aloud', onclick: () => (reader.active ? reader.stop() : readAloud()), text: '🔊' }),
         h('button', { class: 'icon', 'aria-pressed': String(pinned), title: 'keep this open', onclick: togglePin, text: '📌' }),
         h('button', { class: 'icon', title: 'close', onclick: () => invoke('dismiss_panel'), text: '✕' }),
       ),
     );
+    kids.push(readerStrip());
     if (s.direction === 'en_to_ko') kids.push(translationBlock(), s.target && h('div', { class: 'tr' }, wordsBlock('target')));
     else kids.push(wordsBlock('source') ?? h('div', { class: 'empty', text: 'Analysing…' }), translationBlock());
     kids.push(deepBlock());
@@ -221,10 +301,26 @@ let autoDeepId = null;
 listen('maru-auto-deep', (id) => {
   autoDeepId = id;
 });
+// The hotkey that reads the selection aloud asks for it before the text has arrived.
+let autoSpeakId = null;
+listen('maru-auto-speak', (id) => {
+  autoSpeakId = id;
+});
+listen('maru-hidden', () => reader.stop());
+listen('maru-tts-control', (what) => {
+  if (what === 'stop') reader.stop();
+});
 listen('maru-event', (e) => {
   // The app resets the window to a default size for every new request; make sure the real size is reported again.
   if (e.type === 'started') lastSize = '';
   update(reduce(state, e));
+  if (autoSpeakId != null && state.id === autoSpeakId) {
+    const ready = state.direction === 'en_to_ko' ? e.type === 'translation_done' && e.variant === 'primary' : e.type === 'started';
+    if (ready) {
+      autoSpeakId = null;
+      readAloud();
+    }
+  }
   if (autoDeepId == null) return;
   const target = autoDeepTarget(state, autoDeepId);
   if (target) {
@@ -247,10 +343,23 @@ listen('maru-notice', (n) => {
   render();
 });
 
+/** A short silent WAV, so the reader can be tried in a plain browser. */
+function silentClip(seconds = 0.4) {
+  const rate = 8000, n = Math.floor(rate * seconds);
+  const buf = new Uint8Array(44 + n * 2), v = new DataView(buf.buffer);
+  const put = (o, str) => [...str].forEach((c, i) => (buf[o + i] = c.charCodeAt(0)));
+  put(0, 'RIFF'); v.setUint32(4, 36 + n * 2, true); put(8, 'WAVEfmt '); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true); put(36, 'data'); v.setUint32(40, n * 2, true);
+  return { mime: 'audio/wav', data: btoa(String.fromCharCode(...buf)), seconds, cached: false, took_ms: 5 };
+}
+
 if (!inTauri) {
   mockCommands({
-    ui_config: () => cfg,
+    ui_config: () => ({ ...cfg, tts: true }),
     deep_dive: () => 100,
+    tts_plan: ({ text }) => text.split(/(?<=[.!?])\s+/).filter(Boolean),
+    tts_clip: () => silentClip(),
+    tts_reading: () => {},
     resize_panel: () => {},
     dismiss_panel: () => {},
     set_pinned: () => {},
