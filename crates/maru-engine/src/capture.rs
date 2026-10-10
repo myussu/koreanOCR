@@ -92,6 +92,7 @@ impl Capturer {
             if self.ocr.is_none() {
                 tried.push("ocr (unavailable: run `maru setup ocr` or add the Windows Korean OCR pack)");
             } else if let Some(cursor) = cursor {
+                tracing::info!("no selection via {}; reading the text block near ({:.0}, {:.0})", tried.join(" and "), cursor.x, cursor.y);
                 return self.block_under(cursor, app).await;
             } else {
                 tried.push("ocr (cursor position unknown)");

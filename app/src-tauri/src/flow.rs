@@ -66,8 +66,14 @@ pub fn show_translation(app: &AppHandle, state: &Arc<AppState>, capture: Capture
 pub fn translate_selection(app: AppHandle, state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         match state.engine().capture_selection().await {
-            Ok(capture) => show_translation(&app, &state, capture, false),
-            Err(e) => notice(&app, &state, state.engine().platform().screen.cursor(), "info", e.to_string()),
+            Ok(capture) => {
+                tracing::info!("translate: {:?} capture, {} characters, confidence {:?}", capture.source, capture.text.chars().count(), capture.confidence);
+                show_translation(&app, &state, capture, false)
+            }
+            Err(e) => {
+                tracing::info!("translate: nothing captured: {e}");
+                notice(&app, &state, state.engine().platform().screen.cursor(), "info", e.to_string())
+            }
         }
     });
 }
@@ -75,16 +81,26 @@ pub fn translate_selection(app: AppHandle, state: Arc<AppState>) {
 pub fn translate_region(app: AppHandle, state: Arc<AppState>, rect: Rect) {
     tauri::async_runtime::spawn(async move {
         match state.engine().capture_region(rect).await {
-            Ok(capture) => show_translation(&app, &state, capture, false),
-            Err(e) => notice(&app, &state, Some(Point { x: rect.x, y: rect.y + rect.h }), "info", e.to_string()),
+            Ok(capture) => {
+                tracing::info!("region: {} characters, confidence {:?}", capture.text.chars().count(), capture.confidence);
+                show_translation(&app, &state, capture, false)
+            }
+            Err(e) => {
+                tracing::info!("region: nothing captured: {e}");
+                notice(&app, &state, Some(Point { x: rect.x, y: rect.y + rect.h }), "info", e.to_string())
+            }
         }
     });
 }
 
 pub fn hover_at(app: AppHandle, state: Arc<AppState>, at: Point) {
     tauri::async_runtime::spawn(async move {
-        if let Ok(capture) = state.engine().capture_hover(at).await {
-            show_translation(&app, &state, capture, true);
+        match state.engine().capture_hover(at).await {
+            Ok(capture) => {
+                tracing::debug!("hover: {:?} capture {:?}", capture.source, capture.text);
+                show_translation(&app, &state, capture, true);
+            }
+            Err(e) => tracing::debug!("hover: {e}"),
         }
     });
 }
