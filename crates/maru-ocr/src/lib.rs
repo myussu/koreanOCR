@@ -3,6 +3,7 @@
 //! The engine is behind [`OcrEngine`] so the rest of Maru does not care whether
 //! the text came from PP-OCR (this crate) or Windows' built-in OCR (maru-platform).
 
+pub mod align;
 mod geometry;
 #[cfg(feature = "paddle")]
 pub mod paddle;
@@ -12,7 +13,7 @@ use image::RgbImage;
 use maru_core::{Point, Rect, WordBox};
 use thiserror::Error;
 
-pub use geometry::{reading_order, resplit_words, words_from_chars};
+pub use geometry::{reading_order, regroup_words, resplit_words, words_from_chars};
 pub use prep::{Prepared, prepare};
 
 #[derive(Debug, Error)]

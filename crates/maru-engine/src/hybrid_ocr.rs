@@ -1,32 +1,33 @@
-//! Detector + reader: one engine finds the text lines (and their boxes), a second re-reads
-//! each line from a cropped image.
+//! Detector + reader: PP-OCR knows where every line of text is, a vision model reads the whole
+//! image and gets the letters right more often. Run both at once, then line them up by text.
 //!
-//! Measured on real screenshots, a vision-language reader (PaddleOCR-VL) misreads far less than
-//! PP-OCR, but handed a whole busy image it skips blocks of text and gives no positions.
-//! PP-OCR is the opposite: it finds every line, with boxes, but misreads stylised glyphs. Each
-//! covers the other's weakness, and reading one line at a time is what the VLM was built for.
+//! Measured on real Korean screenshots:
+//!
+//! * PaddleOCR-VL on the whole image: 3.5% character error, but it skips some blocks of text and
+//!   returns no positions.
+//! * PP-OCR: 15% (stylised handwriting is its weak spot), but it finds every line, with boxes.
+//! * Feeding the vision model one *crop* per line was far worse (31%): a crop of busy or slanted
+//!   text contains pieces of the neighbouring lines, and a vision model reads whatever it sees.
+//!   Whole-image reading lets it decide for itself what is text. So no crops here.
+//!
+//! The merge keeps PP-OCR's lines and boxes, and swaps in the reader's wording wherever the
+//! reader's text matches a line (see [`maru_ocr::align::better_readings`]). Lines the reader
+//! never produced keep PP-OCR's own text, so nothing it found is lost.
 
-use image::imageops::{self, FilterType};
-use image::RgbImage;
-use maru_core::Rect;
-use maru_ocr::{OcrEngine, OcrOutput, Result, words_from_chars};
 use std::sync::Arc;
 
-/// Line crops are enlarged to at least this tall: a VLM sees a few pixels of text as noise.
-const MIN_CROP_HEIGHT: u32 = 56;
-/// ...but never by more than this factor.
-const MAX_UPSCALE: f32 = 4.0;
+use image::RgbImage;
+use maru_ocr::align::better_readings;
+use maru_ocr::{OcrEngine, OcrError, OcrOutput, Result, regroup_words, words_from_chars};
 
 pub struct HybridOcr {
     detector: Arc<dyn OcrEngine>,
     reader: Arc<dyn OcrEngine>,
-    /// Crops read at the same time (match the server's slot count).
-    parallel: usize,
 }
 
 impl HybridOcr {
-    pub fn new(detector: Arc<dyn OcrEngine>, reader: Arc<dyn OcrEngine>, parallel: usize) -> Self {
-        Self { detector, reader, parallel: parallel.max(1) }
+    pub fn new(detector: Arc<dyn OcrEngine>, reader: Arc<dyn OcrEngine>) -> Self {
+        Self { detector, reader }
     }
 }
 
@@ -36,136 +37,129 @@ impl OcrEngine for HybridOcr {
     }
 
     fn recognize(&self, image: &RgbImage) -> Result<OcrOutput> {
-        let mut out = self.detector.recognize(image)?;
-        let crops: Vec<RgbImage> = out.lines.iter().map(|l| crop_line(image, l.rect)).collect();
-        let mut texts: Vec<Option<String>> = vec![None; crops.len()];
-        for (batch, slots) in crops.chunks(self.parallel).zip(texts.chunks_mut(self.parallel)) {
-            std::thread::scope(|scope| {
-                for (crop, slot) in batch.iter().zip(slots.iter_mut()) {
-                    let reader = &self.reader;
-                    scope.spawn(move || {
-                        *slot = reader.recognize(crop).ok().map(|o| o.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" "));
-                    });
-                }
-            });
-        }
-        for (line, text) in out.lines.iter_mut().zip(texts) {
-            let Some(text) = text.map(|t| t.trim().to_string()) else { continue };
-            if plausible(&line.text, &text) {
-                line.words = words_from_chars(&text, line.rect, &[]);
-                line.text = text;
+        // Different hardware (CPU and GPU), so running them together costs the slower one only.
+        let (detected, read) = std::thread::scope(|scope| {
+            let detector = scope.spawn(|| self.detector.recognize(image));
+            let read = self.reader.recognize(image);
+            let detected = detector.join().unwrap_or_else(|_| Err(OcrError::Run("the detector thread panicked".into())));
+            (detected, read)
+        });
+        match (detected, read) {
+            (Ok(mut out), Ok(read)) => {
+                merge(&mut out, &read);
+                Ok(out)
             }
+            (Ok(out), Err(e)) => {
+                tracing::warn!("the reading model failed ({e}); using the detector's text");
+                Ok(out)
+            }
+            // No geometry, but the text is the better half.
+            (Err(e), Ok(read)) => {
+                tracing::warn!("the detector failed ({e}); using the reading model's text without positions");
+                Ok(read)
+            }
+            (Err(e), Err(_)) => Err(e),
         }
-        Ok(out)
     }
 }
 
-/// The line with some margin (glyph tops and tails stick out of tight boxes), enlarged if tiny.
-fn crop_line(image: &RgbImage, rect: Rect) -> RgbImage {
-    let (pad_x, pad_y) = (rect.h * 0.4, rect.h * 0.25);
-    let x0 = (rect.x - pad_x).max(0.0).floor() as u32;
-    let y0 = (rect.y - pad_y).max(0.0).floor() as u32;
-    let x1 = ((rect.right() + pad_x).ceil() as u32).min(image.width());
-    let y1 = ((rect.bottom() + pad_y).ceil() as u32).min(image.height());
-    let (w, h) = (x1.saturating_sub(x0).max(1), y1.saturating_sub(y0).max(1));
-    let crop = imageops::crop_imm(image, x0.min(image.width().saturating_sub(1)), y0.min(image.height().saturating_sub(1)), w, h).to_image();
-    if crop.height() >= MIN_CROP_HEIGHT {
-        return crop;
+fn merge(out: &mut OcrOutput, read: &OcrOutput) {
+    let reference = read.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
+    if reference.trim().is_empty() {
+        return;
     }
-    let scale = (MIN_CROP_HEIGHT as f32 / crop.height() as f32).min(MAX_UPSCALE);
-    imageops::resize(&crop, (crop.width() as f32 * scale).round() as u32, (crop.height() as f32 * scale).round() as u32, FilterType::CatmullRom)
-}
-
-/// Is the reader's text a believable re-reading of the detector's? A reader that returns nothing,
-/// or a wall of text for a short line, has failed on this crop; keep the detector's text then.
-fn plausible(old: &str, new: &str) -> bool {
-    let count = |s: &str| s.chars().filter(|c| !c.is_whitespace()).count();
-    let (old, new) = (count(old), count(new));
-    new > 0 && new * 2 >= old && new <= old * 2 + 2
+    let texts: Vec<&str> = out.lines.iter().map(|l| l.text.as_str()).collect();
+    let better = better_readings(&texts, &reference);
+    let mut kept = Vec::with_capacity(out.lines.len());
+    for (mut line, better) in std::mem::take(&mut out.lines).into_iter().zip(better) {
+        match better {
+            Some(text) => {
+                // Same number of letters: the old per-character positions still apply.
+                line.words = regroup_words(&line.words, &text).unwrap_or_else(|| words_from_chars(&text, line.rect, &[]));
+                line.text = text;
+                kept.push(line);
+            }
+            // Unmatched single marks next to a successful reading are noise (a stray `'`, `|`).
+            None if line.text.chars().filter(|c| !c.is_whitespace()).count() <= 1 => {}
+            None => kept.push(line),
+        }
+    }
+    out.lines = kept;
 }
 
 #[cfg(test)]
 mod tests {
-    use maru_core::WordBox;
-    use maru_ocr::{OcrError, OcrLine};
+    use maru_core::{Rect, WordBox};
+    use maru_ocr::OcrLine;
 
     use super::*;
 
-    struct Fixed(OcrOutput);
+    struct Fixed(Result<OcrOutput>);
     impl OcrEngine for Fixed {
         fn name(&self) -> &'static str {
             "fixed"
         }
         fn recognize(&self, _: &RgbImage) -> Result<OcrOutput> {
-            Ok(self.0.clone())
-        }
-    }
-
-    /// Answers by crop width, which identifies the line even when crops are read in parallel.
-    struct ByWidth(Vec<(u32, Result<&'static str, ()>)>);
-    impl OcrEngine for ByWidth {
-        fn name(&self) -> &'static str {
-            "by-width"
-        }
-        fn recognize(&self, img: &RgbImage) -> Result<OcrOutput> {
-            let (_, answer) = self.0.iter().find(|(w, _)| img.width() < *w).expect("a matching width");
-            match answer {
-                Ok(t) => Ok(OcrOutput { lines: vec![OcrLine { text: (*t).into(), rect: Rect::new(0.0, 0.0, 1.0, 1.0), words: vec![], confidence: 1.0 }] }),
-                Err(()) => Err(OcrError::Run("no".into())),
+            match &self.0 {
+                Ok(o) => Ok(o.clone()),
+                Err(e) => Err(OcrError::Run(e.to_string())),
             }
         }
     }
 
-    fn line(text: &str, x: f32, y: f32, w: f32) -> OcrLine {
-        let rect = Rect::new(x, y, w, 60.0);
-        OcrLine { text: text.into(), rect, words: vec![WordBox { text: text.into(), rect }], confidence: 0.9 }
+    fn line(text: &str, y: f32) -> OcrLine {
+        let rect = Rect::new(10.0, y, 300.0, 20.0);
+        let words = text
+            .split_whitespace()
+            .enumerate()
+            .map(|(i, t)| WordBox { text: t.into(), rect: Rect::new(10.0 + i as f32 * 100.0, y, 90.0, 20.0) })
+            .collect();
+        OcrLine { text: text.into(), rect, words, confidence: 0.9 }
     }
 
-    fn run(lines: Vec<OcrLine>, reader: ByWidth) -> Vec<OcrLine> {
-        let h = HybridOcr::new(Arc::new(Fixed(OcrOutput { lines })), Arc::new(reader), 2);
-        h.recognize(&RgbImage::new(1000, 400)).unwrap().lines
+    fn run(detector: Result<OcrOutput>, reader: Result<OcrOutput>) -> Result<OcrOutput> {
+        HybridOcr::new(Arc::new(Fixed(detector)), Arc::new(Fixed(reader))).recognize(&RgbImage::new(1, 1))
     }
 
-    #[test]
-    fn each_line_is_re_read_from_its_own_crop_and_keeps_its_box() {
-        // crop widths: 100 + 48 = 148 and 300 + 48 = 348
-        let lines = run(
-            vec![line("전금도", 20.0, 20.0, 100.0), line("충분히 잘하고 있어요", 20.0, 150.0, 300.0)],
-            ByWidth(vec![(200, Ok("지금도")), (400, Ok("충분히 잘하고 있어요"))]),
-        );
-        assert_eq!(lines[0].text, "지금도");
-        assert_eq!(lines[0].rect, Rect::new(20.0, 20.0, 100.0, 60.0), "geometry comes from the detector");
-        assert_eq!(lines[0].words.len(), 1);
-        assert_eq!(lines[1].words.len(), 3, "word boxes follow the reader's spacing");
+    fn texts(o: &OcrOutput) -> Vec<&str> {
+        o.lines.iter().map(|l| l.text.as_str()).collect()
     }
 
     #[test]
-    fn a_failed_or_implausible_reading_keeps_the_detectors_text() {
-        let lines = run(
-            vec![line("승차권", 20.0, 20.0, 100.0), line("서울", 20.0, 150.0, 300.0)],
-            ByWidth(vec![(200, Err(())), (400, Ok("이것은 서울과 전혀 관계가 없는 아주 긴 환각 문장입니다"))]),
-        );
-        assert_eq!(lines[0].text, "승차권");
-        assert_eq!(lines[1].text, "서울");
+    fn the_readers_wording_replaces_the_detectors_and_the_boxes_stay() {
+        let detector = OcrOutput { lines: vec![line("전금도", 10.0), line("충분히 '잘하고 있어요", 40.0), line("'", 70.0), line("승차권", 100.0)] };
+        let reader = OcrOutput { lines: vec![line("지금도", 0.0), line("충분히 잘하고 있어요.", 0.0)] };
+        let out = run(Ok(detector.clone()), Ok(reader)).unwrap();
+        // 승차권 was never read by the model: it stays. The lone `'` is dropped.
+        assert_eq!(texts(&out), ["지금도", "충분히 잘하고 있어요.", "승차권"]);
+        assert_eq!(out.lines[0].rect, detector.lines[0].rect, "positions always come from the detector");
+        assert_eq!(out.lines[0].words.len(), 1);
+        assert_eq!(out.lines[1].words.len(), 3, "word boxes follow the reader's spacing");
     }
 
     #[test]
-    fn plausibility_bounds() {
-        assert!(plausible("전금도", "지금도"));
-        assert!(plausible("호감 집", "호감집"));
-        assert!(!plausible("승차권", ""));
-        assert!(!plausible("서울", "아주 긴 환각 문장입니다"));
-        assert!(!plausible("", ""));
+    fn letters_fixed_in_place_keep_the_detectors_word_boxes() {
+        let detector = OcrOutput { lines: vec![line("전금도 충분히", 10.0)] };
+        let reader = OcrOutput { lines: vec![line("지금도 충분히", 0.0)] };
+        let out = run(Ok(detector.clone()), Ok(reader)).unwrap();
+        assert_eq!(out.lines[0].words.iter().map(|w| w.rect).collect::<Vec<_>>(), detector.lines[0].words.iter().map(|w| w.rect).collect::<Vec<_>>());
     }
 
     #[test]
-    fn small_crops_are_enlarged_but_never_beyond_the_image_or_the_cap() {
-        let img = RgbImage::new(500, 300);
-        let tiny = crop_line(&img, Rect::new(10.0, 10.0, 100.0, 12.0)); // padded height 18
-        assert!(tiny.height() >= MIN_CROP_HEIGHT - 1 && tiny.height() <= 18 * 4 + 1);
-        let tall = crop_line(&img, Rect::new(10.0, 10.0, 100.0, 80.0));
-        assert!(tall.height() >= MIN_CROP_HEIGHT);
-        let edge = crop_line(&img, Rect::new(480.0, 280.0, 60.0, 30.0)); // box hangs off the image
-        assert!(edge.width() >= 1 && edge.height() >= 1);
+    fn if_one_engine_fails_the_other_still_answers() {
+        let detector = OcrOutput { lines: vec![line("승차권", 10.0)] };
+        let reader = OcrOutput { lines: vec![line("지금도", 0.0)] };
+        let only_detector = run(Ok(detector.clone()), Err(OcrError::Run("server down".into()))).unwrap();
+        assert_eq!(texts(&only_detector), ["승차권"]);
+        let only_reader = run(Err(OcrError::Run("model missing".into())), Ok(reader)).unwrap();
+        assert_eq!(texts(&only_reader), ["지금도"]);
+        assert!(run(Err(OcrError::Run("a".into())), Err(OcrError::Run("b".into()))).is_err());
+    }
+
+    #[test]
+    fn an_empty_reading_changes_nothing() {
+        let detector = OcrOutput { lines: vec![line("승차권", 10.0), line("'", 40.0)] };
+        let out = run(Ok(detector), Ok(OcrOutput::default())).unwrap();
+        assert_eq!(texts(&out), ["승차권", "'"], "no reading to judge noise against");
     }
 }

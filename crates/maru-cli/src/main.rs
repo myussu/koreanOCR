@@ -198,7 +198,7 @@ enum EngineArg {
     Windows,
     /// PaddleOCR-VL-1.5 through its own llama-server.
     PaddleVl,
-    /// PP-OCR finds the lines, PaddleOCR-VL re-reads each one (needs both).
+    /// PP-OCR finds the lines, PaddleOCR-VL reads the whole image, and the two are matched by text (needs both).
     Hybrid,
     /// A general vision model (Gemma 4) through its own llama-server.
     Gemma,
@@ -263,9 +263,8 @@ async fn paddle_vl_attempts(paths: &Paths, base: &maru_core::config::LlmConfig, 
     };
     let mut base = base.clone();
     base.model_path = Some(model);
-    // The hybrid engine reads several line crops at once; a 0.9B model has room for it.
-    base.parallel = 4;
-    base.ctx_size = 4096;
+    base.parallel = 1;
+    base.ctx_size = 8192;
     let common = ["--mmproj".to_string(), mmproj.display().to_string(), "--temp".into(), "0".into()];
     let mut with_template = with_args(&base, &common, extra);
     with_template.extra_args.extend(["--jinja".to_string(), "--chat-template-file".into(), template.display().to_string()]);
@@ -453,7 +452,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         match start_vision_server("PaddleOCR-VL-1.5", attempts, &paths, SERVER_READY).await {
                             Some((server, cfg)) => {
                                 let reader: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, PADDLE_VL_PROMPT));
-                                let hybrid = maru_engine::hybrid_ocr::HybridOcr::new(detector, reader, cfg.parallel as usize);
+                                let hybrid = maru_engine::hybrid_ocr::HybridOcr::new(detector, reader);
                                 ("PP-OCR + PaddleOCR-VL (hybrid)".to_string(), Arc::new(hybrid) as Arc<dyn maru_ocr::OcrEngine>, Some(server))
                             }
                             None => {
@@ -633,7 +632,7 @@ mod vision_launch_tests {
         assert!(flag(&first, "-m").unwrap().ends_with("PaddleOCR-VL-1.5.gguf"), "{first:?}");
         assert!(flag(&first, "--mmproj").unwrap().ends_with("PaddleOCR-VL-1.5-mmproj.gguf"));
         assert_eq!(flag(&first, "--temp"), Some("0"));
-        assert_eq!(flag(&first, "-np"), Some("4"), "the hybrid engine reads four line crops at once");
+        assert_eq!(flag(&first, "-np"), Some("1"));
         assert!(first.contains(&"--no-warmup".to_string()), "user arguments are kept");
         assert!(!first.contains(&"--chat-template-file".to_string()));
 

@@ -126,6 +126,29 @@ pub fn resplit_words(words: &[WordBox], respaced: &str, accept: &dyn Fn(&str) ->
     (next == tokens.len()).then_some(out)
 }
 
+/// New wording for the same line, keeping the old boxes: `new_text` must have exactly as many
+/// non-space characters as the words had (a re-reading that fixed letters but did not add or lose
+/// any). Each character keeps the slot it had, so words follow the new spacing without losing the
+/// engine's own positions. `None` when the lengths differ.
+pub fn regroup_words(old: &[WordBox], new_text: &str) -> Option<Vec<WordBox>> {
+    let slots: Vec<Rect> = old
+        .iter()
+        .flat_map(|w| {
+            let chars: Vec<char> = w.text.chars().collect();
+            proportional(&chars, w.rect).into_iter().flatten().collect::<Vec<_>>()
+        })
+        .collect();
+    let mut at = 0;
+    let mut out = Vec::new();
+    for word in new_text.split_whitespace() {
+        let n = word.chars().count();
+        let rect = slots.get(at..at + n)?.iter().copied().reduce(|a, b| a.union(&b))?;
+        out.push(WordBox { text: word.to_string(), rect });
+        at += n;
+    }
+    (at == slots.len()).then_some(out)
+}
+
 fn proportional(chars: &[char], line: Rect) -> Vec<Option<Rect>> {
     let total: f32 = chars.iter().map(|&c| char_weight(c)).sum();
     if total <= 0.0 {
@@ -234,6 +257,18 @@ mod tests {
         let out = resplit_words(&words, "d 한 민 국", &|left: &str| left == "d").unwrap();
         assert_eq!(out.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(), ["d", "한민국"]);
         assert_eq!(resplit_words(&words, "d 한 민 국", &|_: &str| false).unwrap(), words);
+    }
+
+    #[test]
+    fn regrouping_keeps_the_old_positions_when_only_letters_and_spacing_change() {
+        let w = |t: &str, x: f32, width: f32| WordBox { text: t.into(), rect: Rect::new(x, 0.0, width, 20.0) };
+        let old = vec![w("전금도", 0.0, 60.0), w("충분히", 100.0, 60.0)];
+        let new = regroup_words(&old, "지 금도 충분히").unwrap();
+        assert_eq!(new.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(), ["지", "금도", "충분히"]);
+        assert!((new[0].rect.w - 20.0).abs() < 0.01 && (new[1].rect.x - 20.0).abs() < 0.01 && (new[1].rect.w - 40.0).abs() < 0.01);
+        assert_eq!(new[2].rect, old[1].rect, "an untouched word keeps its box exactly");
+        assert!(regroup_words(&old, "지금도 충분").is_none(), "a different number of characters cannot be mapped");
+        assert!(regroup_words(&old, "지금도 충분히 요").is_none());
     }
 
     #[test]
