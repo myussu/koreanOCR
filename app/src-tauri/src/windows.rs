@@ -58,6 +58,12 @@ pub fn show_scan(app: &AppHandle, monitor: Rect) {
     let _ = win.set_position(PhysicalPosition::new(monitor.x as i32, monitor.y as i32));
     let _ = win.set_size(PhysicalSize::new(monitor.w as u32, monitor.h as u32));
     let _ = win.show();
+    // Labels sit behind an open panel, not over it.
+    if let Some(panel) = app.get_webview_window(PANEL)
+        && panel.is_visible().unwrap_or(false)
+    {
+        let _ = panel.set_always_on_top(true);
+    }
 }
 
 /// Remove every scan label and hide the layer.
@@ -102,6 +108,9 @@ pub fn place_and_show(app: &AppHandle, state: &AppState, placement: Placement) {
         let _ = win.show();
         state.panel().visible = true;
     }
+    // Two always-on-top windows: whichever was raised last is in front, so the panel claims it
+    // back every time it is placed (the scan layer may have been shown after it).
+    let _ = win.set_always_on_top(true);
 }
 
 pub fn hide_panel(app: &AppHandle, state: &AppState) {

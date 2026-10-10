@@ -222,6 +222,8 @@ listen('maru-auto-deep', (id) => {
   autoDeepId = id;
 });
 listen('maru-event', (e) => {
+  // The app resets the window to a default size for every new request; make sure the real size is reported again.
+  if (e.type === 'started') lastSize = '';
   update(reduce(state, e));
   if (autoDeepId == null) return;
   const target = autoDeepTarget(state, autoDeepId);
@@ -233,6 +235,7 @@ listen('maru-event', (e) => {
   }
 });
 listen('maru-notice', (n) => {
+  lastSize = '';
   state = { ...emptyState(), notice: n };
   render();
 });

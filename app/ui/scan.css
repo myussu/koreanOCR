@@ -85,5 +85,5 @@ html, body {
 #toast.show { opacity: 1; }
 
 /* ───── browser-only demo: a pretend game behind the labels, for layout screenshots ───── */
-#fake { position: fixed; inset: 0; background: linear-gradient(135deg, #243449, #3b2a4a 55%, #1d3a34); pointer-events: none; }
-#fake .g { position: absolute; box-sizing: border-box; color: #f3ead2; font-family: "Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic", sans-serif; overflow: hidden; white-space: nowrap; background: rgba(255, 255, 255, 0.07); outline: 1px dashed rgba(255, 220, 120, 0.55); }
+body.demo #fake { position: fixed; inset: 0; background: linear-gradient(135deg, #243449, #3b2a4a 55%, #1d3a34); pointer-events: none; }
+body.demo #fake .g { position: absolute; box-sizing: border-box; color: #f3ead2; font-family: "Noto Sans CJK KR", "Noto Sans KR", "Malgun Gothic", sans-serif; overflow: hidden; white-space: nowrap; background: rgba(255, 255, 255, 0.07); outline: 1px dashed rgba(255, 220, 120, 0.55); }

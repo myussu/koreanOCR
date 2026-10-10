@@ -75,8 +75,13 @@ pub fn spawn_scan_hits(app: AppHandle, state: Arc<AppState>) {
                 continue;
             }
             let Some(cursor) = screen.cursor() else { continue };
-            let over = crate::logic::over_label(Point { x: cursor.x, y: cursor.y }, origin, dpr, &state.scan().rects);
+            let at = Point { x: cursor.x, y: cursor.y };
+            // The panel opens over the label that was clicked; where the two overlap the panel wins,
+            // so its words and buttons stay clickable.
+            let on_panel = state.panel().visible && windows::panel_rect(&app).is_some_and(|r| r.contains(at));
+            let over = !on_panel && crate::logic::over_label(at, origin, dpr, &state.scan().rects);
             if over != interactive {
+                tracing::debug!("scan overlay {} the pointer", if over { "takes" } else { "releases" });
                 if let Some(win) = tauri::Manager::get_webview_window(&app, windows::SCAN) {
                     let _ = win.set_ignore_cursor_events(!over);
                 }

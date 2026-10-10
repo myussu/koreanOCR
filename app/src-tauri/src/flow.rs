@@ -115,6 +115,7 @@ pub fn scan_screen(app: AppHandle, state: Arc<AppState>) {
 
 /// A scan label was clicked: explain its text in the panel. One word goes straight to its deep dive.
 pub fn open_scan_item(app: AppHandle, state: Arc<AppState>, text: String, rect: Rect) {
+    tracing::info!("scan label clicked: {text:?}");
     tauri::async_runtime::spawn(async move {
         let eojeols = state.engine().analyze(&text);
         let single = eojeols.iter().filter(|e| e.content).count() == 1 && eojeols.len() <= 2;

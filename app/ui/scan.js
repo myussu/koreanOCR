@@ -174,7 +174,12 @@ addEventListener('resize', schedule);
 // ───────────── browser-only demo (layout screenshots; never runs inside the app) ─────────────
 
 function demo(name) {
-  const fake = document.getElementById('fake');
+  // The pretend game exists only here: in the app the page must stay fully transparent.
+  document.body.classList.add('demo');
+  const fake = document.createElement('div');
+  fake.id = 'fake';
+  fake.setAttribute('aria-hidden', 'true');
+  document.body.prepend(fake);
   const list = [];
   const put = (text, x, y, w, h, label, source = 'model', known = false) => list.push({ text, rect: { x, y, w, h }, label, source, known });
 

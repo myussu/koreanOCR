@@ -51,6 +51,7 @@ pub fn ui_config(state: S) -> UiConfig {
 /// Start a deep dive; its events arrive on the usual channel tagged with the returned id.
 #[tauri::command]
 pub fn deep_dive(app: AppHandle, state: S, request: DeepDiveRequest) -> u64 {
+    tracing::info!("deep dive: {:?}", request.eojeol.surface);
     let (id, rx) = state.engine().deep_dive(request);
     flow::pump(app, rx);
     id
