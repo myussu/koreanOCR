@@ -6,7 +6,7 @@ pub mod store;
 
 use thiserror::Error;
 
-pub use anki::{AnkiClient, build_card, export_tsv};
+pub use anki::{AddRequest, Added, AnkiClient, CardState, DueCounts, ExistingNote, Media, build_card, export_tsv, tag_of};
 pub use fsrs::Rating;
 pub use store::{Context, LookupInfo, ReviewOutcome, SrsConfig, Vocab, VocabStats, WordRecord, now_secs};
 

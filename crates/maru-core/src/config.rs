@@ -257,14 +257,46 @@ pub enum GlossMode {
     HideKnown,
 }
 
+/// Where the reverse (English → Korean) card of a word goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReverseMode {
+    /// A `Reverse` subdeck of the word's deck: study the deck for both, or each subdeck on its own.
+    #[default]
+    Subdeck,
+    /// Both cards in the same deck.
+    SameDeck,
+    /// Only the Korean → English card.
+    Off,
+}
+
+/// Anki is where words are reviewed: Maru adds them (with a deck, tags and audio), reads back how
+/// well you know them, and asks Anki to sync with AnkiWeb. Your AnkiWeb login stays in Anki.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AnkiConfig {
     pub enabled: bool,
-    /// AnkiConnect endpoint.
+    /// AnkiConnect endpoint (Anki must be open, with the add-on installed).
     pub url: String,
+    /// AnkiConnect's API key, if you set one in its configuration.
+    pub api_key: Option<String>,
+    /// The deck new words go to unless you choose another; other decks are suggested below it.
     pub deck: String,
+    /// The note type Maru creates in Anki and keeps up to date.
     pub note_type: String,
+    pub reverse: ReverseMode,
+    /// Name of the reverse subdeck.
+    pub reverse_subdeck: String,
+    /// Attach the spoken word and sentence (needs speech set up).
+    pub audio: bool,
+    /// Ask Anki to sync with AnkiWeb after adding words.
+    pub sync_after_add: bool,
+    /// Tags every card gets.
+    pub tags: Vec<String>,
+    /// Also tag with level, part of speech, the program it came from and the month.
+    pub auto_tags: bool,
+    /// How often to read your progress back from Anki (minutes; 0 = only at start-up).
+    pub refresh_minutes: u32,
 }
 
 impl Default for AnkiConfig {
@@ -272,8 +304,16 @@ impl Default for AnkiConfig {
         Self {
             enabled: false,
             url: "http://127.0.0.1:8765".into(),
-            deck: "Maru".into(),
-            note_type: "Basic".into(),
+            api_key: None,
+            deck: "Korean".into(),
+            note_type: "Maru Korean".into(),
+            reverse: ReverseMode::Subdeck,
+            reverse_subdeck: "Reverse".into(),
+            audio: true,
+            sync_after_add: true,
+            tags: vec!["maru".into()],
+            auto_tags: true,
+            refresh_minutes: 30,
         }
     }
 }
@@ -487,6 +527,10 @@ pub struct AppProfile {
     /// Fixed translations for names/terms: `{"이도현" = "Lee Do-hyun"}`.
     pub glossary: BTreeMap<String, String>,
     pub gloss_mode: Option<GlossMode>,
+    /// Anki deck for words met in this program (suggested first when you add one).
+    pub anki_deck: Option<String>,
+    /// Extra Anki tags for words met in this program.
+    pub anki_tags: Vec<String>,
 }
 
 #[cfg(test)]

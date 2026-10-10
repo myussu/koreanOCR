@@ -78,6 +78,8 @@ pub struct WordRecord {
     pub due: Option<i64>,
     pub reps: u32,
     pub lapses: u32,
+    /// How long Anki says you hold this word (its card interval, in days), once Maru has read it back.
+    pub anki_interval: Option<f32>,
     pub state: WordState,
 }
 
@@ -112,7 +114,7 @@ pub struct Vocab {
     cfg: SrsConfig,
 }
 
-const COLS: &str = "key, surface, pos, meaning, level, lookups, saved, known_override, stability, difficulty, due, reps, lapses";
+const COLS: &str = "key, surface, pos, meaning, level, lookups, saved, known_override, stability, difficulty, due, reps, lapses, anki_interval";
 
 impl Vocab {
     pub fn open(path: &Path, cfg: SrsConfig) -> Result<Self> {
@@ -163,6 +165,16 @@ impl Vocab {
                 UNIQUE (key, sentence)
             );
 
+            CREATE TABLE IF NOT EXISTS anki_decks (
+                deck      TEXT PRIMARY KEY,
+                last_used INTEGER NOT NULL,
+                uses      INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS anki_app_deck (
+                app  TEXT PRIMARY KEY,
+                deck TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS reviews (
                 id         INTEGER PRIMARY KEY,
                 key        TEXT NOT NULL,
@@ -174,6 +186,11 @@ impl Vocab {
             );
             ",
         )?;
+        // Added after the first release: older databases get the column on opening.
+        let has_interval = conn.prepare("SELECT 1 FROM pragma_table_info('words') WHERE name = 'anki_interval'")?.exists([])?;
+        if !has_interval {
+            conn.execute("ALTER TABLE words ADD COLUMN anki_interval REAL", [])?;
+        }
         Ok(Self { conn: Mutex::new(conn), cfg })
     }
 
@@ -181,8 +198,9 @@ impl Vocab {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
 
-    fn state_of(&self, known_override: bool, saved: bool, lookups: u32, stability: Option<f32>) -> WordState {
-        if known_override || stability.is_some_and(|s| s >= self.cfg.known_stability_days) {
+    fn state_of(&self, known_override: bool, saved: bool, lookups: u32, stability: Option<f32>, anki_interval: Option<f32>) -> WordState {
+        let holds = |d: Option<f32>| d.is_some_and(|d| d >= self.cfg.known_stability_days);
+        if known_override || holds(stability) || holds(anki_interval) {
             WordState::Known
         } else if saved || lookups > 0 {
             WordState::Learning
@@ -196,6 +214,7 @@ impl Vocab {
         let saved = r.get::<_, i64>(6)? != 0;
         let known = r.get::<_, i64>(7)? != 0;
         let stability: Option<f32> = r.get(8)?;
+        let anki_interval: Option<f32> = r.get(13)?;
         Ok(WordRecord {
             key: r.get(0)?,
             surface: r.get(1)?,
@@ -210,7 +229,8 @@ impl Vocab {
             due: r.get(10)?,
             reps: r.get(11)?,
             lapses: r.get(12)?,
-            state: self.state_of(known, saved, lookups, stability),
+            anki_interval,
+            state: self.state_of(known, saved, lookups, stability, anki_interval),
         })
     }
 
@@ -327,6 +347,52 @@ impl Vocab {
         Ok(n)
     }
 
+    /// What Anki reports for a word's card: `Some(days)` once the word is in Anki (0 while it is still
+    /// being learned), `None` if it is not there. A word in Anki is saved; one held for long enough
+    /// counts as known and its glosses fade.
+    pub fn set_anki_state(&self, key: &str, interval_days: Option<f32>, now: i64) -> Result<()> {
+        self.ensure_row(key, now)?;
+        self.conn().execute(
+            "UPDATE words SET anki_interval = ?2, saved = CASE WHEN ?2 IS NULL THEN saved ELSE 1 END WHERE key = ?1",
+            params![key, interval_days],
+        )?;
+        Ok(())
+    }
+
+    /// Remember where a word went: the deck becomes a recent choice, and the program it was met in
+    /// will suggest that deck next time.
+    pub fn remember_deck(&self, deck: &str, app: Option<&str>, now: i64) -> Result<()> {
+        let conn = self.conn();
+        conn.execute(
+            "INSERT INTO anki_decks (deck, last_used, uses) VALUES (?1, ?2, 1)
+             ON CONFLICT(deck) DO UPDATE SET last_used = ?2, uses = uses + 1",
+            params![deck, now],
+        )?;
+        if let Some(app) = app.map(str::trim).filter(|a| !a.is_empty()) {
+            conn.execute(
+                "INSERT INTO anki_app_deck (app, deck) VALUES (?1, ?2) ON CONFLICT(app) DO UPDATE SET deck = ?2",
+                params![app.to_ascii_lowercase(), deck],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Decks used lately, newest first.
+    pub fn recent_decks(&self, limit: u32) -> Result<Vec<String>> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare_cached("SELECT deck FROM anki_decks ORDER BY last_used DESC LIMIT ?1")?;
+        let rows = stmt.query_map(params![limit], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    /// The deck last used for words from this program.
+    pub fn deck_for_app(&self, app: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn()
+            .query_row("SELECT deck FROM anki_app_deck WHERE app = ?1", params![app.trim().to_ascii_lowercase()], |r| r.get(0))
+            .optional()?)
+    }
+
     /// Record a review and schedule the next one.
     pub fn review(&self, key: &str, rating: Rating, now: i64) -> Result<ReviewOutcome> {
         let rec = self.get(key)?.ok_or_else(|| SrsError::Other(format!("unknown word: {key}")))?;
@@ -363,7 +429,7 @@ impl Vocab {
             interval_days: if rating == Rating::Again { 0.0 } else { interval_days },
             stability: new.stability,
             difficulty: new.difficulty,
-            state: self.state_of(rec.marked_known, true, rec.lookups, Some(new.stability)),
+            state: self.state_of(rec.marked_known, true, rec.lookups, Some(new.stability), rec.anki_interval),
         })
     }
 
@@ -411,7 +477,7 @@ impl Vocab {
             total: count("SELECT COUNT(*) FROM words", &[])?,
             saved: count("SELECT COUNT(*) FROM words WHERE saved = 1", &[])?,
             known: count(
-                "SELECT COUNT(*) FROM words WHERE known_override = 1 OR COALESCE(stability, 0) >= ?1",
+                "SELECT COUNT(*) FROM words WHERE known_override = 1 OR COALESCE(stability, 0) >= ?1 OR COALESCE(anki_interval, 0) >= ?1",
                 &[&self.cfg.known_stability_days],
             )?,
             due_now: count("SELECT COUNT(*) FROM words WHERE saved = 1 AND (due IS NULL OR due <= ?1)", &[&now])?,
@@ -535,5 +601,53 @@ mod tests {
     #[test]
     fn reviewing_an_unknown_word_is_an_error() {
         assert!(vocab().review("없음", Rating::Good, 0).is_err());
+    }
+
+    #[test]
+    fn a_word_anki_holds_for_long_enough_counts_as_known() {
+        let v = vocab();
+        v.set_anki_state("공부하다", Some(3.0), 100).unwrap();
+        let w = v.get("공부하다").unwrap().unwrap();
+        assert!(w.saved, "a word in Anki is saved");
+        assert_eq!((w.anki_interval, w.state), (Some(3.0), WordState::Learning));
+        v.set_anki_state("공부하다", Some(45.0), 200).unwrap();
+        assert_eq!(v.get("공부하다").unwrap().unwrap().state, WordState::Known, "held for weeks");
+        assert_eq!(v.stats(300).unwrap().known, 1);
+        v.set_anki_state("공부하다", Some(0.0), 300).unwrap();
+        assert_eq!(v.get("공부하다").unwrap().unwrap().state, WordState::Learning, "a lapse un-knows it again");
+        v.set_anki_state("공부하다", None, 400).unwrap();
+        let gone = v.get("공부하다").unwrap().unwrap();
+        assert_eq!(gone.anki_interval, None);
+        assert!(gone.saved, "it stays saved in Maru");
+    }
+
+    #[test]
+    fn decks_are_remembered_per_program_and_by_recency() {
+        let v = vocab();
+        v.remember_deck("Korean::Games", Some("EldenRing.exe"), 10).unwrap();
+        v.remember_deck("Korean::YouTube", Some("chrome.exe"), 20).unwrap();
+        v.remember_deck("Korean::Games", Some("eldenring.exe"), 30).unwrap();
+        assert_eq!(v.recent_decks(5).unwrap(), ["Korean::Games", "Korean::YouTube"]);
+        assert_eq!(v.deck_for_app("ELDENRING.EXE").unwrap().as_deref(), Some("Korean::Games"));
+        assert_eq!(v.deck_for_app("notepad.exe").unwrap(), None);
+        v.remember_deck("Korean::Book", None, 40).unwrap();
+        assert_eq!(v.recent_decks(1).unwrap(), ["Korean::Book"]);
+    }
+
+    #[test]
+    fn an_old_database_gets_the_new_column() {
+        let dir = std::env::temp_dir().join(format!("maru-old-db-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("vocab.db");
+        {
+            let conn = Connection::open(&path).unwrap();
+            conn.execute_batch("CREATE TABLE words (key TEXT PRIMARY KEY, surface TEXT NOT NULL, pos TEXT NOT NULL DEFAULT '', meaning TEXT, level TEXT, lookups INTEGER NOT NULL DEFAULT 0, first_seen INTEGER NOT NULL, last_seen INTEGER NOT NULL, saved INTEGER NOT NULL DEFAULT 0, known_override INTEGER NOT NULL DEFAULT 0, stability REAL, difficulty REAL, due INTEGER, last_review INTEGER, reps INTEGER NOT NULL DEFAULT 0, lapses INTEGER NOT NULL DEFAULT 0); INSERT INTO words (key, surface, first_seen, last_seen) VALUES ('옛', '옛', 1, 1);").unwrap();
+        }
+        let v = Vocab::open(&path, SrsConfig::default()).unwrap();
+        assert_eq!(v.get("옛").unwrap().unwrap().anki_interval, None);
+        v.set_anki_state("옛", Some(5.0), 2).unwrap();
+        drop(v);
+        assert_eq!(Vocab::open(&path, SrsConfig::default()).unwrap().get("옛").unwrap().unwrap().anki_interval, Some(5.0), "opening twice is fine");
+        std::fs::remove_dir_all(dir).ok();
     }
 }
