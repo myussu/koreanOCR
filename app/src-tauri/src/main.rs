@@ -72,6 +72,8 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
 }
 
 fn main() {
+    // Start-up self-test of the Kiwi library runs in a child process of this very program.
+    maru_engine::bootstrap::run_probe_if_requested();
     init_logging();
 
     let app = tauri::Builder::default()

@@ -104,15 +104,27 @@ fn kiwi_library_asset(version: &str) -> Result<String> {
 /// A Kiwi release that has everything we need: `(version, library url, model url)`.
 pub type KiwiRelease = (String, String, String);
 
-/// Newest release (in the order given) that carries both the library and the model for this platform.
-/// `wanted` pins one tag (`v0.22.2` or `0.22.2`).
-pub fn pick_kiwi_release(releases: &serde_json::Value, wanted: Option<&str>, library_asset: &dyn Fn(&str) -> Result<String>) -> Result<KiwiRelease> {
+/// The `kiwi-rs` bindings match Kiwi's C ABI from 0.23.0 on; older libraries crash.
+pub const KIWI_MIN_VERSION: (u32, u32, u32) = (0, 23, 0);
+
+fn parse_version(v: &str) -> Option<(u32, u32, u32)> {
+    let mut it = v.trim_start_matches('v').split('.').map(|p| p.split(['-', '+']).next().unwrap_or("").parse::<u32>());
+    Some((it.next()?.ok()?, it.next()?.ok()?, it.next().unwrap_or(Ok(0)).ok()?))
+}
+
+/// Every release (in the order given) that has both the library and the model for this
+/// platform and is new enough for the bindings. `wanted` pins one tag (`v0.23.1` or `0.23.1`).
+pub fn kiwi_candidates(releases: &serde_json::Value, wanted: Option<&str>, library_asset: &dyn Fn(&str) -> Result<String>) -> Result<Vec<KiwiRelease>> {
     let wanted = wanted.map(|w| w.trim_start_matches('v'));
-    let mut seen = Vec::new();
+    let (mut found, mut skipped) = (Vec::new(), Vec::new());
     for r in releases.as_array().into_iter().flatten() {
         let tag = r["tag_name"].as_str().unwrap_or_default();
         let version = tag.trim_start_matches('v');
         if version.is_empty() || wanted.is_some_and(|w| w != version) {
+            continue;
+        }
+        if wanted.is_none() && parse_version(version).is_none_or(|v| v < KIWI_MIN_VERSION) {
+            skipped.push(format!("{tag} (too old for the bindings)"));
             continue;
         }
         let url_of = |name: &str| -> Option<String> {
@@ -120,16 +132,18 @@ pub fn pick_kiwi_release(releases: &serde_json::Value, wanted: Option<&str>, lib
         };
         let (lib_name, model_name) = (library_asset(version)?, format!("kiwi_model_v{version}_base.tgz"));
         match (url_of(&lib_name), url_of(&model_name)) {
-            (Some(lib), Some(model)) => return Ok((version.to_string(), lib, model)),
-            _ => seen.push(tag.to_string()),
+            (Some(lib), Some(model)) => found.push((version.to_string(), lib, model)),
+            _ => skipped.push(format!("{tag} (no files for this platform)")),
         }
     }
-    bail!(
-        "no Kiwi release has both the library and the model for this platform{} (looked at: {}). \
-         See https://github.com/bab2min/Kiwi/releases and install it by hand, then set KIWI_LIBRARY_PATH and KIWI_MODEL_PATH.",
-        wanted.map(|w| format!(" (wanted {w})")).unwrap_or_default(),
-        if seen.is_empty() { "nothing".to_string() } else { seen.join(", ") }
-    )
+    if found.is_empty() {
+        bail!(
+            "no usable Kiwi release{} (looked at: {}). See https://github.com/bab2min/Kiwi/releases and install it by hand, then set KIWI_LIBRARY_PATH and KIWI_MODEL_PATH.",
+            wanted.map(|w| format!(" (wanted {w})")).unwrap_or_default(),
+            if skipped.is_empty() { "nothing".to_string() } else { skipped.join(", ") }
+        );
+    }
+    Ok(found)
 }
 
 fn kiwi_library_filename() -> &'static str {
@@ -212,7 +226,8 @@ pub fn install_kiwi_archives(cache_dir: &Path, lib_archive: &Path, model_archive
     Ok((lib_dest.join(kiwi_library_filename()), model_dest))
 }
 
-/// Download Kiwi (library + model) into Maru's own folder and prove it loads.
+/// Download Kiwi (library + model) into Maru's own folder, trying compatible releases newest
+/// first, and keep the first one that passes the crash-proof self-test.
 ///
 /// This replaces the downloader inside the `kiwi-rs` crate, which cannot read GitHub's real
 /// release JSON (it looks for the download link before the asset's `uploader` block ends).
@@ -228,24 +243,45 @@ pub async fn kiwi(paths: &Paths, release: Option<String>) -> Result<()> {
         .error_for_status()?
         .json()
         .await?;
-    let (version, lib_url, model_url) = pick_kiwi_release(&releases, release.as_deref(), &kiwi_library_asset)?;
-    eprintln!("Using Kiwi v{version}");
+    let candidates = kiwi_candidates(&releases, release.as_deref(), &kiwi_library_asset)?;
 
-    let cache_dir = root.join(&version);
-    let downloads = cache_dir.join("downloads");
-    std::fs::create_dir_all(&downloads)?;
-    let lib_archive = downloads.join(lib_url.rsplit('/').next().unwrap_or("kiwi-lib"));
-    let model_archive = downloads.join(model_url.rsplit('/').next().unwrap_or("kiwi-model.tgz"));
-    download(&lib_url, &lib_archive, "Kiwi library").await?;
-    download(&model_url, &model_archive, "Kiwi model").await?;
-    let (library, model) = install_kiwi_archives(&cache_dir, &lib_archive, &model_archive)?;
-    println!("Installed Kiwi v{version}: {}", library.display());
+    let mut failures = Vec::new();
+    for (version, lib_url, model_url) in candidates {
+        eprintln!("Trying Kiwi v{version} …");
+        let cache_dir = root.join(&version);
+        let downloads = cache_dir.join("downloads");
+        std::fs::create_dir_all(&downloads)?;
+        let _ = std::fs::remove_file(cache_dir.join(maru_engine::bootstrap::PROBE_MARKER));
+        let lib_archive = downloads.join(lib_url.rsplit('/').next().unwrap_or("kiwi-lib"));
+        let model_archive = downloads.join(model_url.rsplit('/').next().unwrap_or("kiwi-model.tgz"));
+        download(&lib_url, &lib_archive, "Kiwi library").await?;
+        download(&model_url, &model_archive, "Kiwi model").await?;
+        let (library, model) = install_kiwi_archives(&cache_dir, &lib_archive, &model_archive)?;
 
-    let analyzer = tokio::task::spawn_blocking(move || maru_lang::kiwi::KiwiAnalyzer::spawn_from_paths(library, model)).await?.map_err(|e| anyhow::anyhow!("Kiwi was installed but would not load: {e}"))?;
-    use maru_lang::Morphology;
-    let tokens = analyzer.tokenize("안녕하세요, 한국어를 공부해요.").map_err(|e| anyhow::anyhow!("{e}"))?;
-    println!("It works: {}", tokens.iter().map(|t| format!("{}/{}", t.form, t.tag)).collect::<Vec<_>>().join(" "));
-    Ok(())
+        // Load it in a child process: a mismatched native library crashes the whole process.
+        eprintln!("  testing it in a separate process …");
+        let (lib2, model2) = (library.clone(), model.clone());
+        match tokio::task::spawn_blocking(move || maru_engine::bootstrap::probe_kiwi(&lib2, &model2)).await? {
+            Ok(()) => {
+                std::fs::write(cache_dir.join(maru_engine::bootstrap::PROBE_MARKER), b"ok")?;
+                let _ = std::fs::remove_dir_all(&downloads);
+                println!("Kiwi v{version} installed and verified: {}", library.display());
+                let analyzer = tokio::task::spawn_blocking(move || maru_lang::kiwi::KiwiAnalyzer::spawn_from_paths(library, model)).await?.map_err(|e| anyhow::anyhow!("{e}"))?;
+                use maru_lang::Morphology;
+                let tokens = analyzer.tokenize("안녕하세요, 한국어를 공부해요.").map_err(|e| anyhow::anyhow!("{e}"))?;
+                println!("It works: {}", tokens.iter().map(|t| format!("{}/{}", t.form, t.tag)).collect::<Vec<_>>().join(" "));
+                return Ok(());
+            }
+            Err(why) => {
+                eprintln!("  v{version} is not usable here: {why}");
+                failures.push(format!("v{version}: {why}"));
+            }
+        }
+    }
+    bail!(
+        "no Kiwi release passed the self-test:\n  {}\nIf every attempt says the library would not load, install the Microsoft Visual C++ runtime (https://aka.ms/vs/17/release/vc_redist.x64.exe). Maru works without Kiwi, with a simpler word breakdown.",
+        failures.join("\n  ")
+    )
 }
 
 // ───────────────────────────── OCR models ─────────────────────────────
@@ -572,21 +608,22 @@ mod tests {
     }
 
     #[test]
-    fn kiwi_release_is_found_in_realistic_github_json() {
+    fn kiwi_candidates_come_from_realistic_github_json_newest_first_and_skip_what_cannot_work() {
         let lib = |v: &str| Ok(format!("kiwi_win_x64_v{v}.zip"));
         let releases = serde_json::json!([
-            github_release("v0.24.0", &["readme.txt"]),
-            github_release("v0.22.2", &["kiwi_win_x64_v0.22.2.zip", "kiwi_model_v0.22.2_base.tgz", "kiwi_lnx_x86_64_v0.22.2.tgz"]),
-            github_release("v0.21.0", &["kiwi_win_x64_v0.21.0.zip", "kiwi_model_v0.21.0_base.tgz"]),
+            github_release("v0.25.0", &["readme.txt"]),
+            github_release("v0.24.0", &["kiwi_win_x64_v0.24.0.zip", "kiwi_model_v0.24.0_base.tgz", "kiwi_lnx_x86_64_v0.24.0.tgz"]),
+            github_release("v0.23.1", &["kiwi_win_x64_v0.23.1.zip", "kiwi_model_v0.23.1_base.tgz"]),
+            github_release("v0.22.2", &["kiwi_win_x64_v0.22.2.zip", "kiwi_model_v0.22.2_base.tgz"]),
         ]);
-        let (v, lib_url, model_url) = pick_kiwi_release(&releases, None, &lib).unwrap();
-        assert_eq!(v, "0.22.2", "the newest release is skipped because it has no files for this platform");
-        assert!(lib_url.ends_with("/v0.22.2/kiwi_win_x64_v0.22.2.zip") && model_url.ends_with("kiwi_model_v0.22.2_base.tgz"));
+        let found = kiwi_candidates(&releases, None, &lib).unwrap();
+        assert_eq!(found.iter().map(|c| c.0.as_str()).collect::<Vec<_>>(), ["0.24.0", "0.23.1"],
+            "v0.25.0 has no platform files and v0.22.2 is too old for the bindings (it crashes)");
+        assert!(found[0].1.ends_with("/v0.24.0/kiwi_win_x64_v0.24.0.zip") && found[0].2.ends_with("kiwi_model_v0.24.0_base.tgz"));
 
-        // pinning a version
-        assert_eq!(pick_kiwi_release(&releases, Some("v0.21.0"), &lib).unwrap().0, "0.21.0");
-        assert_eq!(pick_kiwi_release(&releases, Some("0.21.0"), &lib).unwrap().0, "0.21.0");
-        let err = pick_kiwi_release(&releases, Some("v9.9.9"), &lib).unwrap_err().to_string();
+        // pinning a version bypasses the age filter: the user knows what they asked for
+        assert_eq!(kiwi_candidates(&releases, Some("v0.22.2"), &lib).unwrap()[0].0, "0.22.2");
+        let err = kiwi_candidates(&releases, Some("v9.9.9"), &lib).unwrap_err().to_string();
         assert!(err.contains("9.9.9"), "{err}");
     }
 
@@ -594,8 +631,16 @@ mod tests {
     fn a_release_missing_the_model_is_not_good_enough() {
         let lib = |v: &str| Ok(format!("kiwi_win_x64_v{v}.zip"));
         let releases = serde_json::json!([github_release("v0.30.0", &["kiwi_win_x64_v0.30.0.zip"])]);
-        let err = pick_kiwi_release(&releases, None, &lib).unwrap_err().to_string();
+        let err = kiwi_candidates(&releases, None, &lib).unwrap_err().to_string();
         assert!(err.contains("v0.30.0") && err.contains("KIWI_LIBRARY_PATH"), "{err}");
+    }
+
+    #[test]
+    fn versions_parse_and_compare() {
+        assert!(parse_version("0.22.2").unwrap() < KIWI_MIN_VERSION);
+        assert!(parse_version("v0.23.0").unwrap() >= KIWI_MIN_VERSION);
+        assert!(parse_version("0.24").unwrap() >= KIWI_MIN_VERSION);
+        assert_eq!(parse_version("nightly"), None);
     }
 
     fn write_tgz(path: &Path, files: &[(&str, &[u8])]) {
@@ -643,6 +688,8 @@ mod tests {
         let paths = maru_core::Paths::under(&dir.join("home"));
         let target = maru_engine::bootstrap::kiwi_cache_dir(&paths).join("kiwi-rs").join("0.22.2");
         copy_dir(&cache, &target).unwrap();
+        assert!(maru_engine::bootstrap::find_kiwi(&paths).is_none(), "not usable until the self-test has passed");
+        std::fs::write(target.join(maru_engine::bootstrap::PROBE_MARKER), b"ok").unwrap();
         assert!(maru_engine::bootstrap::find_kiwi(&paths).is_some());
         std::fs::remove_dir_all(dir).ok();
     }

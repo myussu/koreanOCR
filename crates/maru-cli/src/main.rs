@@ -223,6 +223,7 @@ async fn run_events(mut rx: maru_engine::EventRx, json: bool) -> usize {
 }
 
 fn main() -> Result<()> {
+    maru_engine::bootstrap::run_probe_if_requested();
     let cli = Cli::parse();
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::try_from_default_env().unwrap_or_else(|_| if cli.verbose { "info,maru_engine=debug".into() } else { "warn".into() }))

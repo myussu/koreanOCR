@@ -72,7 +72,83 @@ pub fn kiwi_cache_dir(paths: &Paths) -> PathBuf {
     paths.bin_dir.join("kiwi")
 }
 
-/// Newest installed Kiwi under our cache: `(library, model_dir)`.
+/// Marker written next to a Kiwi install once it has loaded and tokenized in a child process.
+/// Kiwi is a native library bound through a C ABI; a mismatched build crashes the process
+/// (an access violation), so only installs that passed the check are ever loaded in-process.
+pub const PROBE_MARKER: &str = "probe.ok";
+/// Hidden command-line flag: run the Kiwi self-test and exit (see [`run_probe_if_requested`]).
+pub const PROBE_FLAG: &str = "--maru-probe-kiwi";
+
+/// Call first thing in `main` of every Maru program: if this process was started as the Kiwi
+/// self-test, run it and exit; otherwise return immediately.
+pub fn run_probe_if_requested() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) != Some(PROBE_FLAG) || args.len() < 4 {
+        return;
+    }
+    let code = match maru_lang::kiwi::KiwiAnalyzer::spawn_from_paths(PathBuf::from(&args[2]), PathBuf::from(&args[3])) {
+        Ok(analyzer) => {
+            use maru_lang::Morphology;
+            let samples = ["안녕하세요, 한국어를 공부해요.", "저는 학교에서 친구랑 같이 영화를 봤어요!", "열심히 노력하면 꼭 성공할 수 있을 거예요", "Hello 2024 한국어"];
+            match samples.iter().map(|t| analyzer.tokenize(t)).collect::<Result<Vec<_>, _>>() {
+                Ok(all) if all.iter().all(|t| !t.is_empty()) => {
+                    println!("OK");
+                    0
+                }
+                Ok(_) => {
+                    eprintln!("Kiwi returned no tokens");
+                    3
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    4
+                }
+            }
+        }
+        Err(e) => {
+            eprintln!("{e}");
+            2
+        }
+    };
+    std::process::exit(code);
+}
+
+/// Run the Kiwi self-test in a separate process so a crash cannot take this one down.
+pub fn probe_kiwi(library: &Path, model: &Path) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut child = std::process::Command::new(exe)
+        .arg(PROBE_FLAG)
+        .arg(library)
+        .arg(model)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("could not start the Kiwi self-test: {e}"))?;
+    let deadline = std::time::Instant::now() + Duration::from_secs(60);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(Duration::from_millis(50)),
+            Ok(None) => {
+                let _ = child.kill();
+                return Err("the Kiwi self-test did not finish within 60 seconds".into());
+            }
+            Err(e) => return Err(e.to_string()),
+        }
+    };
+    if status.success() {
+        return Ok(());
+    }
+    let mut stderr = String::new();
+    if let Some(mut e) = child.stderr.take() {
+        let _ = std::io::Read::read_to_string(&mut e, &mut stderr);
+    }
+    let code = status.code().map(|c| format!("exit code {c} (0x{:08X})", c as u32)).unwrap_or_else(|| "killed by a signal".into());
+    Err(format!("the Kiwi self-test crashed or failed: {code} {}", stderr.trim()))
+}
+
+/// Newest installed Kiwi under our cache that passed the self-test: `(library, model_dir)`.
 pub fn find_kiwi(paths: &Paths) -> Option<(PathBuf, PathBuf)> {
     let root = kiwi_cache_dir(paths).join("kiwi-rs");
     let mut versions: Vec<PathBuf> = std::fs::read_dir(root).ok()?.filter_map(|e| e.ok()).map(|e| e.path()).filter(|p| p.is_dir()).collect();
@@ -80,24 +156,23 @@ pub fn find_kiwi(paths: &Paths) -> Option<(PathBuf, PathBuf)> {
     versions.into_iter().rev().find_map(|v| {
         let lib = v.join("lib").join(kiwi_library_name());
         let model = v.join("models").join("cong").join("base");
-        (lib.exists() && model.exists()).then_some((lib, model))
+        (lib.exists() && model.exists() && v.join(PROBE_MARKER).exists()).then_some((lib, model))
     })
 }
 
 fn load_analyzer(paths: &Paths, notes: &mut Vec<String>) -> Analyzer {
     use maru_lang::kiwi::KiwiAnalyzer;
-    let attempt = match find_kiwi(paths) {
-        Some((lib, model)) => KiwiAnalyzer::spawn_from_paths(lib, model),
-        None => KiwiAnalyzer::spawn_discovered(),
+    let Some((lib, model)) = find_kiwi(paths) else {
+        notes.push("Korean analyser: simplified rules (word breakdown is approximate). Run `maru setup kiwi` for accurate grammar analysis.".into());
+        return Analyzer::heuristic();
     };
-    match attempt {
+    match KiwiAnalyzer::spawn_from_paths(lib, model) {
         Ok(k) => {
             notes.push("Korean analyser: Kiwi".into());
             Analyzer::new(Arc::new(k))
         }
         Err(e) => {
-            tracing::debug!("Kiwi not available: {e}");
-            notes.push("Korean analyser: simplified rules (word breakdown is approximate). Run `maru setup kiwi` for accurate grammar analysis.".into());
+            notes.push(format!("Korean analyser: Kiwi failed to load ({e}); using simplified rules. Run `maru setup kiwi` again."));
             Analyzer::heuristic()
         }
     }
@@ -316,6 +391,10 @@ mod tests {
             std::fs::create_dir_all(base.join("lib")).unwrap();
             std::fs::create_dir_all(base.join("models/cong/base")).unwrap();
             std::fs::write(base.join("lib").join(kiwi_library_name()), b"x").unwrap();
+        }
+        assert!(find_kiwi(&paths).is_none(), "an install that never passed the self-test is not used");
+        for v in ["v0.21.0", "v0.22.2"] {
+            std::fs::write(kiwi_cache_dir(&paths).join("kiwi-rs").join(v).join(PROBE_MARKER), b"ok").unwrap();
         }
         let (lib, model) = find_kiwi(&paths).unwrap();
         assert!(lib.to_string_lossy().contains("v0.22.2") && model.ends_with("models/cong/base"));

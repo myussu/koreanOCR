@@ -25,7 +25,7 @@ second lookup, can be sent to **Anki**, and words you know **fade** from the pan
 cargo install --path crates/maru-cli       # builds it and puts `maru.exe` in %USERPROFILE%\.cargo\bin (already on your PATH)
 maru config init      # writes the config file (with the model below); `maru config path` shows where it is
 maru setup llm        # installs llama-server and downloads the model
-maru setup kiwi       # accurate Korean grammar analysis (tries older Kiwi releases if the newest has no Windows build)
+maru setup kiwi       # accurate Korean grammar analysis; each candidate (Kiwi >= 0.23) is self-tested in a child process before it is trusted
 maru setup ocr        # OCR models for images/video/games
 maru dict download    # offline dictionary (Wiktionary)
 maru doctor --deep    # checks everything, runs a real translation
