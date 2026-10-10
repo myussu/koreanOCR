@@ -78,9 +78,13 @@ pub fn words_from_chars(text: &str, line: Rect, char_boxes: &[Rect]) -> Vec<Word
 /// Re-divide recognised words to follow `respaced`, a copy of the same text with spaces
 /// *inserted* (Kiwi's spacing restoration). Each split word's box is shared out by glyph width.
 ///
+/// A new break is kept only if `accept(left)` says the text before it can stand as a finished
+/// word; otherwise the pieces on both sides stay joined. (Kiwi will also split compound nouns
+/// like 정기회의 and even single syllables, which is not what we want from OCR repair.)
+///
 /// Returns `None` unless `respaced` is exactly the words with extra breaks, so a spacer that
 /// also deleted, merged or rewrote anything can never corrupt the boxes.
-pub fn resplit_words(words: &[WordBox], respaced: &str) -> Option<Vec<WordBox>> {
+pub fn resplit_words(words: &[WordBox], respaced: &str, accept: &dyn Fn(&str) -> bool) -> Option<Vec<WordBox>> {
     let tokens: Vec<&str> = respaced.split_whitespace().collect();
     let mut next = 0;
     let mut out = Vec::with_capacity(words.len());
@@ -96,17 +100,26 @@ pub fn resplit_words(words: &[WordBox], respaced: &str) -> Option<Vec<WordBox>> 
         if joined != word.text {
             return None;
         }
-        if pieces.len() == 1 {
+        // Merge pieces back together wherever the break would not be a word boundary.
+        let mut groups: Vec<String> = Vec::new();
+        let mut current = String::new();
+        for (i, piece) in pieces.iter().enumerate() {
+            current.push_str(piece);
+            if i + 1 == pieces.len() || accept(&current) {
+                groups.push(std::mem::take(&mut current));
+            }
+        }
+        if groups.len() == 1 {
             out.push(word.clone());
             continue;
         }
         let chars: Vec<char> = word.text.chars().collect();
         let boxes = proportional(&chars, word.rect);
         let mut at = 0;
-        for piece in pieces {
-            let n = piece.chars().count();
+        for group in groups {
+            let n = group.chars().count();
             let rect = boxes[at..at + n].iter().flatten().copied().reduce(|a, b| a.union(&b))?;
-            out.push(WordBox { text: piece.to_string(), rect });
+            out.push(WordBox { text: group, rect });
             at += n;
         }
     }
@@ -200,17 +213,27 @@ mod tests {
     fn respacing_splits_a_word_box_and_rejects_anything_but_insertions() {
         let w = |t: &str, x: f32, width: f32| WordBox { text: t.into(), rect: Rect::new(x, 0.0, width, 20.0) };
         let words = vec![w("천까지승차해", 0.0, 120.0), w("주시기", 130.0, 60.0)];
-        let out = resplit_words(&words, "천까지 승차해 주시기").unwrap();
+        let any = |_: &str| true;
+        let out = resplit_words(&words, "천까지 승차해 주시기", &any).unwrap();
         assert_eq!(out.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(), ["천까지", "승차해", "주시기"]);
         // the pieces tile the original box, in order
         assert!((out[0].rect.x - 0.0).abs() < 0.01 && (out[1].rect.right() - 120.0).abs() < 0.01);
         assert!(out[0].rect.right() <= out[1].rect.x + 0.01);
         assert_eq!(out[2].rect, words[1].rect);
         // unchanged text is accepted as is; anything that deletes, merges or rewrites is not
-        assert_eq!(resplit_words(&words, "천까지승차해 주시기").unwrap(), words);
-        assert!(resplit_words(&words, "천까지승차해주시기").is_none());
-        assert!(resplit_words(&words, "전까지 승차해 주시기").is_none());
-        assert!(resplit_words(&words, "천까지 승차해").is_none());
+        assert_eq!(resplit_words(&words, "천까지승차해 주시기", &any).unwrap(), words);
+        assert!(resplit_words(&words, "천까지승차해주시기", &any).is_none());
+        assert!(resplit_words(&words, "전까지 승차해 주시기", &any).is_none());
+        assert!(resplit_words(&words, "천까지 승차해", &any).is_none());
+    }
+
+    #[test]
+    fn breaks_the_caller_rejects_are_merged_back() {
+        let words = vec![WordBox { text: "d한민국".into(), rect: Rect::new(0.0, 0.0, 80.0, 20.0) }];
+        // only "…까지"-style endings count as a word end here
+        let out = resplit_words(&words, "d 한 민 국", &|left: &str| left == "d").unwrap();
+        assert_eq!(out.iter().map(|b| b.text.as_str()).collect::<Vec<_>>(), ["d", "한민국"]);
+        assert_eq!(resplit_words(&words, "d 한 민 국", &|_: &str| false).unwrap(), words);
     }
 
     #[test]

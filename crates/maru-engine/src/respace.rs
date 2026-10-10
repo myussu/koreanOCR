@@ -30,7 +30,7 @@ impl RespacingOcr {
         }
         let words: Vec<String> = line.words.iter().map(|w| w.text.clone()).collect();
         let Some(spaced) = self.analyzer.respace(&words.join(" ")) else { return };
-        if let Some(words) = resplit_words(&line.words, &spaced) {
+        if let Some(words) = resplit_words(&line.words, &spaced, &|left| self.analyzer.ends_a_word(left)) {
             line.text = words.iter().map(|w| w.text.as_str()).collect::<Vec<_>>().join(" ");
             line.words = words;
         }
@@ -56,17 +56,19 @@ mod tests {
 
     use super::*;
 
-    /// Inserts a space after "까지" — enough to exercise the wrapper without Kiwi.
+    /// A spacer that is right about "까지 승차해" and wrong about the compound "정기 회의",
+    /// with just enough tagging to tell the two apart (…까지 is a particle, 정기 is a noun).
     struct Spacer;
     impl Morphology for Spacer {
         fn name(&self) -> &'static str {
             "spacer"
         }
-        fn tokenize(&self, _: &str) -> std::result::Result<Vec<RawToken>, MorphError> {
-            Ok(vec![])
+        fn tokenize(&self, text: &str) -> std::result::Result<Vec<RawToken>, MorphError> {
+            let tag = if text.ends_with("까지") { "JX" } else { "NNG" };
+            Ok(vec![RawToken::new(text, tag, 0, text.chars().count())])
         }
         fn respace(&self, text: &str) -> Option<String> {
-            Some(text.replace("까지승", "까지 승"))
+            Some(text.replace("까지승", "까지 승").replace("정기회의", "정기 회의"))
         }
     }
 
@@ -98,6 +100,15 @@ mod tests {
         assert_eq!(out.lines[0].words.len(), 5);
         assert!(out.lines[0].words[2].rect.right() <= out.lines[0].words[3].rect.x + 0.01);
         assert_eq!(out.lines[1].text, "KTX 125"); // no Hangul: untouched
+    }
+
+    #[test]
+    fn compound_nouns_are_not_split_even_if_the_spacer_wants_to() {
+        let analyzer = Analyzer::new(Arc::new(Spacer));
+        let inner: Arc<dyn OcrEngine> = Arc::new(Fixed(OcrOutput { lines: vec![line("정기회의 회기는")] }));
+        let out = RespacingOcr::wrap(inner, &analyzer).recognize(&RgbImage::new(1, 1)).unwrap();
+        assert_eq!(out.lines[0].text, "정기회의 회기는");
+        assert_eq!(out.lines[0].words.len(), 2);
     }
 
     #[test]

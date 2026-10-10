@@ -198,10 +198,28 @@ enum EngineArg {
     Windows,
     /// PaddleOCR-VL-1.5 through its own llama-server.
     PaddleVl,
+    /// PP-OCR finds the lines, PaddleOCR-VL re-reads each one (needs both).
+    Hybrid,
     /// A general vision model (Gemma 4) through its own llama-server.
     Gemma,
     /// A vision model you already run; needs --vlm-endpoint.
     Endpoint,
+}
+
+/// PP-OCR with the spacing repair the overlay applies, so scores reflect real use.
+fn load_pp_ocr(s: &Services, paths: &Paths) -> Option<(String, Arc<dyn maru_ocr::OcrEngine>)> {
+    let pc = maru_ocr::paddle::PaddleConfig::resolve(&s.engine.config().ocr, paths);
+    match maru_ocr::paddle::PaddleOcr::load(&pc) {
+        Ok(o) => {
+            let o: Arc<dyn maru_ocr::OcrEngine> = Arc::new(o);
+            let o = maru_engine::respace::RespacingOcr::wrap(o, &s.engine.analyzer());
+            Some((format!("PP-OCR ({})", pc.device), o))
+        }
+        Err(err) => {
+            eprintln!("(PP-OCR unavailable: {err}; skipping)\n");
+            None
+        }
+    }
 }
 
 const PADDLE_VL_REPO: &str = "PaddlePaddle/PaddleOCR-VL-1.5-GGUF";
@@ -245,6 +263,9 @@ async fn paddle_vl_attempts(paths: &Paths, base: &maru_core::config::LlmConfig, 
     };
     let mut base = base.clone();
     base.model_path = Some(model);
+    // The hybrid engine reads several line crops at once; a 0.9B model has room for it.
+    base.parallel = 4;
+    base.ctx_size = 4096;
     let common = ["--mmproj".to_string(), mmproj.display().to_string(), "--temp".into(), "0".into()];
     let mut with_template = with_args(&base, &common, extra);
     with_template.extra_args.extend(["--jinja".to_string(), "--chat-template-file".into(), template.display().to_string()]);
@@ -421,17 +442,22 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                             continue;
                         }
                     },
-                    EngineArg::Paddle => {
-                        let pc = maru_ocr::paddle::PaddleConfig::resolve(&s.engine.config().ocr, &paths);
-                        match maru_ocr::paddle::PaddleOcr::load(&pc) {
-                            Ok(o) => {
-                                let o: Arc<dyn maru_ocr::OcrEngine> = Arc::new(o);
-                                // Same spacing repair the overlay applies, so the score reflects real use.
-                                let o = maru_engine::respace::RespacingOcr::wrap(o, &s.engine.analyzer());
-                                (format!("PP-OCR ({})", pc.device), o, None)
+                    EngineArg::Paddle => match load_pp_ocr(&s, &paths) {
+                        Some(pair) => (pair.0, pair.1, None),
+                        None => continue,
+                    },
+                    EngineArg::Hybrid => {
+                        let Some((_, detector)) = load_pp_ocr(&s, &paths) else { continue };
+                        println!("Preparing PaddleOCR-VL-1.5 for the hybrid engine (the first run downloads the model) …");
+                        let attempts = paddle_vl_attempts(&paths, &vlm_cfg, &extra).await;
+                        match start_vision_server("PaddleOCR-VL-1.5", attempts, &paths, SERVER_READY).await {
+                            Some((server, cfg)) => {
+                                let reader: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, PADDLE_VL_PROMPT));
+                                let hybrid = maru_engine::hybrid_ocr::HybridOcr::new(detector, reader, cfg.parallel as usize);
+                                ("PP-OCR + PaddleOCR-VL (hybrid)".to_string(), Arc::new(hybrid) as Arc<dyn maru_ocr::OcrEngine>, Some(server))
                             }
-                            Err(err) => {
-                                eprintln!("(PP-OCR unavailable: {err}; skipping)\n");
+                            None => {
+                                eprintln!("(PaddleOCR-VL could not start; skipping the hybrid engine)\n");
                                 continue;
                             }
                         }
@@ -607,6 +633,7 @@ mod vision_launch_tests {
         assert!(flag(&first, "-m").unwrap().ends_with("PaddleOCR-VL-1.5.gguf"), "{first:?}");
         assert!(flag(&first, "--mmproj").unwrap().ends_with("PaddleOCR-VL-1.5-mmproj.gguf"));
         assert_eq!(flag(&first, "--temp"), Some("0"));
+        assert_eq!(flag(&first, "-np"), Some("4"), "the hybrid engine reads four line crops at once");
         assert!(first.contains(&"--no-warmup".to_string()), "user arguments are kept");
         assert!(!first.contains(&"--chat-template-file".to_string()));
 

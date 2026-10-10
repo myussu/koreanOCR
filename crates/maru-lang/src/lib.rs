@@ -70,6 +70,13 @@ impl Analyzer {
         self.primary.respace(text)
     }
 
+    /// Could `text` stand as a finished word? True when its last morpheme is a particle, an
+    /// ending, a number, a foreign word, a symbol or a free-standing adverb. False for a noun
+    /// compound's first half, and when the analyser cannot tell.
+    pub fn ends_a_word(&self, text: &str) -> bool {
+        self.primary.tokenize(text).ok().and_then(|t| t.last().map(|t| tags::can_end_word(&t.tag))).unwrap_or(false)
+    }
+
     /// Never fails: if the primary analyser errors, the heuristic one answers.
     pub fn analyze(&self, text: &str) -> Analysis {
         let (tokens, analyzer) = match self.primary.tokenize(text) {

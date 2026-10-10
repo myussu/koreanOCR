@@ -16,6 +16,7 @@ pub mod engine;
 pub mod memory;
 mod pipeline;
 pub mod respace;
+pub mod hybrid_ocr;
 pub mod vlm_ocr;
 
 pub use bootstrap::{BootOptions, Services, boot, load_config};

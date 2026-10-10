@@ -35,6 +35,19 @@ pub fn pos_of(tag: &str) -> Pos {
     }
 }
 
+/// Can a word (어절) end with a morpheme of this tag? Particles, endings, numbers, foreign
+/// words, symbols and free-standing adverbs/determiners/interjections can; a noun, verb stem
+/// or suffix cannot, which is what keeps compound nouns from being split.
+pub fn can_end_word(tag: &str) -> bool {
+    matches!(
+        base_tag(tag),
+        "JKS" | "JKC" | "JKG" | "JKO" | "JKB" | "JKV" | "JKQ" | "JX" | "JC"
+            | "EP" | "EF" | "EC" | "ETN" | "ETM"
+            | "SN" | "SL" | "SH" | "SF" | "SP" | "SS" | "SSO" | "SSC" | "SE" | "SO" | "SW"
+            | "MAG" | "MAJ" | "MM" | "IC"
+    )
+}
+
 /// Short English description of a morpheme, refined by its surface form where
 /// the tag alone is too coarse (은/는 vs 도 vs 만 are all `JX`).
 pub fn describe(form: &str, tag: &str) -> String {
@@ -226,6 +239,17 @@ mod tests {
         assert_eq!(role_of("SN"), Role::Other);
         assert_eq!(pos_of("VV-I"), Pos::Verb);
         assert_eq!(pos_of("MAG"), Pos::Adverb);
+    }
+
+    #[test]
+    fn only_function_morphemes_and_free_words_can_end_a_word() {
+        for t in ["JX", "JKB", "EC", "EF", "ETM", "SN", "SL", "MAG", "SF"] {
+            assert!(can_end_word(t), "{t}");
+        }
+        for t in ["NNG", "NNP", "NNB", "VV", "VA", "XSN", "XPN", "XR", "NR"] {
+            assert!(!can_end_word(t), "{t}");
+        }
+        assert!(can_end_word("EC-I"));
     }
 
     #[test]
