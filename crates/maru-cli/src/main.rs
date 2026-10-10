@@ -70,9 +70,6 @@ enum Command {
         /// Engines to compare.
         #[arg(long, value_enum, num_args = 1.., default_values_t = [EngineArg::Paddle, EngineArg::Windows])]
         engine: Vec<EngineArg>,
-        /// Hugging Face repo for `paddle-vl` (llama-server `-hf` syntax, e.g. `repo:Q8_0`).
-        #[arg(long, default_value = "PaddlePaddle/PaddleOCR-VL-1.5-GGUF")]
-        paddle_vl_repo: String,
         /// Hugging Face repo for `gemma` (default: the model set in your config, else the recommended one).
         #[arg(long)]
         gemma_repo: Option<String>,
@@ -207,6 +204,91 @@ enum EngineArg {
     Endpoint,
 }
 
+const PADDLE_VL_REPO: &str = "PaddlePaddle/PaddleOCR-VL-1.5-GGUF";
+
+/// Download `file` from a Hugging Face repo into `dir` unless it is already there.
+async fn fetch_hf(repo: &str, file: &str, dir: &std::path::Path) -> Result<PathBuf> {
+    let dest = dir.join(file);
+    if dest.metadata().is_ok_and(|m| m.len() > 0) {
+        return Ok(dest);
+    }
+    std::fs::create_dir_all(dir)?;
+    setup::download(&format!("https://huggingface.co/{repo}/resolve/main/{file}"), &dest, file).await?;
+    Ok(dest)
+}
+
+fn with_args(base: &maru_core::config::LlmConfig, args: &[String], extra: &[String]) -> maru_core::config::LlmConfig {
+    let mut c = base.clone();
+    c.extra_args = args.iter().chain(extra).cloned().collect();
+    c
+}
+
+/// How to launch PaddleOCR-VL, most likely to work first.
+///
+/// The repo's files carry no quantisation label, so llama.cpp's `-hf` lookup cannot be trusted
+/// to pick them; the model card itself starts the server with explicit `-m … --mmproj … --temp 0`.
+/// The second plan adds the chat template shipped in the repo (older llama.cpp builds crashed without it).
+async fn paddle_vl_attempts(paths: &Paths, base: &maru_core::config::LlmConfig, extra: &[String]) -> Vec<maru_core::config::LlmConfig> {
+    let dir = paths.models_dir.join("vlm").join("paddleocr-vl-1.5");
+    let files = async {
+        let model = fetch_hf(PADDLE_VL_REPO, "PaddleOCR-VL-1.5.gguf", &dir).await?;
+        let mmproj = fetch_hf(PADDLE_VL_REPO, "PaddleOCR-VL-1.5-mmproj.gguf", &dir).await?;
+        let template = fetch_hf(PADDLE_VL_REPO, "chat_template.jinja", &dir).await?;
+        Ok::<_, anyhow::Error>((model, mmproj, template))
+    };
+    let (model, mmproj, template) = match files.await {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("(could not download PaddleOCR-VL: {e:#})");
+            return Vec::new();
+        }
+    };
+    let mut base = base.clone();
+    base.model_path = Some(model);
+    let common = ["--mmproj".to_string(), mmproj.display().to_string(), "--temp".into(), "0".into()];
+    let mut with_template = with_args(&base, &common, extra);
+    with_template.extra_args.extend(["--jinja".to_string(), "--chat-template-file".into(), template.display().to_string()]);
+    with_template.flash_attn = false;
+    vec![with_args(&base, &common, extra), with_template]
+}
+
+/// How to launch the general vision model (Gemma 4 by default).
+///
+/// The F16 projector is pinned explicitly: a llama.cpp discussion reports the BF16 one failing on
+/// some GPUs. If the repo has no such file, llama.cpp is left to choose its own projector.
+async fn gemma_attempts(paths: &Paths, repo: &str, base: &maru_core::config::LlmConfig, extra: &[String]) -> Vec<maru_core::config::LlmConfig> {
+    let bare = repo.split(':').next().unwrap_or(repo);
+    let dir = paths.models_dir.join("vlm").join("gemma");
+    let mut base = base.clone();
+    base.hf_repo = Some(repo.to_string());
+    let auto = with_args(&base, &[], extra);
+    match fetch_hf(bare, "mmproj-F16.gguf", &dir).await {
+        Ok(mmproj) => vec![with_args(&base, &["--mmproj".to_string(), mmproj.display().to_string()], extra), auto],
+        Err(e) => {
+            eprintln!("(no explicit F16 projector for {bare}: {e:#}; letting llama.cpp choose)");
+            vec![auto]
+        }
+    }
+}
+
+/// Try each launch plan in turn; the first server that becomes ready wins.
+async fn start_vision_server(
+    label: &str,
+    attempts: Vec<maru_core::config::LlmConfig>,
+    paths: &Paths,
+    timeout: std::time::Duration,
+) -> Option<(maru_llm::LlamaServer, maru_core::config::LlmConfig)> {
+    let total = attempts.len();
+    for (i, cfg) in attempts.into_iter().enumerate() {
+        println!("Starting {label} (attempt {} of {total}); loading the model …", i + 1);
+        match maru_llm::LlamaServer::start(&cfg, paths, timeout).await {
+            Ok(server) => return Some((server, cfg)),
+            Err(e) => eprintln!("  attempt {} failed: {e}", i + 1),
+        }
+    }
+    None
+}
+
 fn paths_for(cli: &Cli) -> Paths {
     match &cli.home {
         Some(h) => Paths::under(h),
@@ -309,7 +391,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             tools::bench(&mut s, sentences, runs.max(1)).await?;
             Ok(0)
         }
-        Command::EvalOcr { dir, engine, paddle_vl_repo, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt } => {
+        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt } => {
             use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};
             let s = services(&paths, cfg, false).await;
             let cases = tools::load_cases(&dir)?;
@@ -317,17 +399,17 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             let mut scores = Vec::new();
             let extra: Vec<String> = vlm_args.as_deref().unwrap_or("").split_whitespace().map(str::to_string).collect();
             // Vision-model servers take turns, so they never compete for VRAM (or for timing).
-            let vlm_cfg = |repo: String| {
+            let vlm_cfg = {
                 let mut c = s.engine.config().llm.clone();
                 c.endpoint = None;
                 c.model_path = None;
                 c.draft_model_path = None;
-                c.hf_repo = Some(repo);
+                c.hf_repo = None;
                 c.vision = true;
                 c.port = 18090;
                 c.parallel = 1;
                 c.ctx_size = 8192;
-                c.extra_args = extra.clone();
+                c.extra_args = Vec::new();
                 c
             };
             for e in engine {
@@ -355,24 +437,25 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         }
                     }
                     EngineArg::PaddleVl | EngineArg::Gemma => {
-                        let (label, repo, prompt) = if e == EngineArg::PaddleVl {
-                            ("PaddleOCR-VL-1.5", paddle_vl_repo.clone(), PADDLE_VL_PROMPT)
-                        } else {
-                            let repo = gemma_repo
-                                .clone()
-                                .or_else(|| s.engine.config().llm.hf_repo.clone())
-                                .unwrap_or_else(|| setup::RECOMMENDED_MODEL.to_string());
-                            ("Gemma 4 (vision)", repo, GENERAL_VLM_PROMPT)
+                        let label = if e == EngineArg::PaddleVl { "PaddleOCR-VL-1.5" } else { "Gemma 4 (vision)" };
+                        println!("Preparing {label} (the first run downloads the model; this can take a while) …");
+                        let (attempts, prompt) = match e {
+                            EngineArg::PaddleVl => (paddle_vl_attempts(&paths, &vlm_cfg, &extra).await, PADDLE_VL_PROMPT),
+                            _ => {
+                                let repo = gemma_repo
+                                    .clone()
+                                    .or_else(|| s.engine.config().llm.hf_repo.clone())
+                                    .unwrap_or_else(|| setup::RECOMMENDED_MODEL.to_string());
+                                (gemma_attempts(&paths, &repo, &vlm_cfg, &extra).await, GENERAL_VLM_PROMPT)
+                            }
                         };
-                        println!("Starting {label} from {repo} (the first run downloads the model; this can take a while) …");
-                        let cfg = vlm_cfg(repo);
-                        match maru_llm::LlamaServer::start(&cfg, &paths, SERVER_READY).await {
-                            Ok(server) => {
+                        match start_vision_server(label, attempts, &paths, SERVER_READY).await {
+                            Some((server, cfg)) => {
                                 let ocr: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, prompt));
                                 (label.to_string(), ocr, Some(server))
                             }
-                            Err(err) => {
-                                eprintln!("({label} could not start: {err}; skipping)\n  Tip: start it yourself and use --engine endpoint --vlm-endpoint <url>; see `maru eval-ocr --help`.\n");
+                            None => {
+                                eprintln!("({label} could not start; skipping)\n  Tip: start it yourself and use --engine endpoint --vlm-endpoint <url>; see `maru eval-ocr --help`.\n");
                                 continue;
                             }
                         }
@@ -485,4 +568,68 @@ fn import_jsonl(dict: &maru_dict::Dictionary, path: &std::path::Path) -> Result<
     let total = file.metadata().map(|m| m.len()).unwrap_or(0);
     eprintln!("Importing {} ({:.0} MB) …", path.display(), total as f64 / 1_048_576.0);
     Ok(dict.import_kaikki(std::io::BufReader::new(file), |n| eprint!("\r  {n} entries   "))?)
+}
+
+#[cfg(test)]
+mod vision_launch_tests {
+    use super::*;
+
+    /// Pre-seeded model files make `fetch_hf` skip the network, so the launch plans can be checked offline.
+    fn seeded(dir: &std::path::Path, files: &[&str]) {
+        std::fs::create_dir_all(dir).unwrap();
+        for f in files {
+            std::fs::write(dir.join(f), b"x").unwrap();
+        }
+    }
+
+    fn scratch(name: &str) -> Paths {
+        let root = std::env::temp_dir().join(format!("maru-vlm-test-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        Paths::under(&root)
+    }
+
+    fn flag<'a>(args: &'a [String], name: &str) -> Option<&'a str> {
+        args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).map(String::as_str)
+    }
+
+    #[tokio::test]
+    async fn paddle_vl_starts_like_the_model_card_then_retries_with_the_chat_template() {
+        let paths = scratch("paddle");
+        seeded(
+            &paths.models_dir.join("vlm").join("paddleocr-vl-1.5"),
+            &["PaddleOCR-VL-1.5.gguf", "PaddleOCR-VL-1.5-mmproj.gguf", "chat_template.jinja"],
+        );
+        let base = maru_core::config::LlmConfig { vision: true, ..Default::default() };
+        let plans = paddle_vl_attempts(&paths, &base, &["--no-warmup".to_string()]).await;
+        assert_eq!(plans.len(), 2);
+
+        let first = maru_llm::build_args(&plans[0], &maru_llm::ModelSource::from_config(&plans[0]).unwrap());
+        assert!(flag(&first, "-m").unwrap().ends_with("PaddleOCR-VL-1.5.gguf"), "{first:?}");
+        assert!(flag(&first, "--mmproj").unwrap().ends_with("PaddleOCR-VL-1.5-mmproj.gguf"));
+        assert_eq!(flag(&first, "--temp"), Some("0"));
+        assert!(first.contains(&"--no-warmup".to_string()), "user arguments are kept");
+        assert!(!first.contains(&"--chat-template-file".to_string()));
+
+        let second = maru_llm::build_args(&plans[1], &maru_llm::ModelSource::from_config(&plans[1]).unwrap());
+        assert!(flag(&second, "--chat-template-file").unwrap().ends_with("chat_template.jinja"));
+        assert!(second.contains(&"--jinja".to_string()));
+        assert_eq!(flag(&second, "-fa"), Some("off"), "the fallback also drops flash attention");
+    }
+
+    #[tokio::test]
+    async fn gemma_pins_the_f16_projector_and_keeps_the_quantisation_in_the_repo_spec() {
+        let paths = scratch("gemma");
+        seeded(&paths.models_dir.join("vlm").join("gemma"), &["mmproj-F16.gguf"]);
+        let base = maru_core::config::LlmConfig { vision: true, ..Default::default() };
+        let plans = gemma_attempts(&paths, "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL", &base, &[]).await;
+        assert_eq!(plans.len(), 2, "second plan lets llama.cpp choose its own projector");
+
+        let pinned = maru_llm::build_args(&plans[0], &maru_llm::ModelSource::from_config(&plans[0]).unwrap());
+        assert_eq!(flag(&pinned, "-hf"), Some("unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"));
+        assert!(flag(&pinned, "--mmproj").unwrap().ends_with("mmproj-F16.gguf"));
+        assert!(!pinned.contains(&"--no-mmproj".to_string()), "vision needs its projector");
+
+        let auto = maru_llm::build_args(&plans[1], &maru_llm::ModelSource::from_config(&plans[1]).unwrap());
+        assert!(flag(&auto, "--mmproj").is_none() && !auto.contains(&"--no-mmproj".to_string()));
+    }
 }
