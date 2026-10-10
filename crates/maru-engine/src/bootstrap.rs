@@ -489,6 +489,8 @@ mod tests {
         std::fs::remove_dir_all(paths.config_file.parent().unwrap()).ok();
     }
 
+    // The stand-in server is a `#!` script, which Windows cannot launch; Linux CI covers this path.
+    #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_language_model_is_started_in_the_background_and_reported_ready() {
         if std::process::Command::new("python3").arg("--version").output().is_err() {

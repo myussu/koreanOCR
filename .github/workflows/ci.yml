@@ -13,7 +13,8 @@ jobs:
         with:
           workspaces: ". -> target\napp/src-tauri -> target"
       - run: cargo build --workspace
-      - run: cargo test --workspace
+      # --no-fail-fast: one failing test binary must not hide the rest.
+      - run: cargo test --workspace --no-fail-fast
       - run: cargo build --manifest-path app/src-tauri/Cargo.toml
       - run: cargo test --manifest-path app/src-tauri/Cargo.toml
       - uses: actions/setup-node@v4
