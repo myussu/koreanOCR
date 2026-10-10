@@ -1,6 +1,6 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use maru_core::{Capture, Point, Rect};
+use maru_core::{Capture, Config, Point, Rect};
 use maru_engine::{ContinuousHandle, Engine, Services};
 
 /// What the overlay is doing right now.
@@ -40,9 +40,23 @@ pub struct AppState {
     /// The area live mode watches: from the config at start-up, replaced whenever a new one is picked.
     pub live_region: Mutex<Option<Rect>>,
     pub scan: Mutex<ScanState>,
+    /// The settings the shell itself reads (shortcuts, panel look): replaced as soon as they are
+    /// saved. The engine keeps the settings it started with until Maru restarts.
+    pub live: RwLock<Config>,
+    /// The file's settings as they were when Maru started, to tell what a restart would change.
+    pub booted: Config,
 }
 
 impl AppState {
+    /// The current settings for shortcuts and the panel.
+    pub fn cfg(&self) -> Config {
+        self.live.read().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+
+    pub fn set_cfg(&self, cfg: Config) {
+        *self.live.write().unwrap_or_else(|p| p.into_inner()) = cfg;
+    }
+
     pub fn engine(&self) -> &Engine {
         &self.services.engine
     }

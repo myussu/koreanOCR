@@ -58,6 +58,8 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 
 Each action accepts several keys separated by `|` in `config.toml` (e.g. `translate = "Ctrl+Alt+T | F6"`), which helps in games that use Ctrl/Shift/Alt. A registered key is taken from every program while Maru runs, so pick ones you don't use (see `docs/config.example.toml`). `Status` shows which toggles are on, and the tray icon's tooltip lists them too.
 
+**Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
+
 ## Game menus: screen labels
 
 Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless-windowed games; an exclusive-fullscreen game cannot be drawn over), finds every piece of Korean text, and puts a short English label beside each.

@@ -11,5 +11,6 @@ description = "Shared types, pipeline events and configuration for Maru"
 serde.workspace = true
 serde_json.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
 thiserror.workspace = true
 directories.workspace = true

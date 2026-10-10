@@ -1,0 +1,92 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { SECTIONS, ALL_FIELDS, appliesLive, labelFor, valueAt, toEditor, fromEditor, withEdit, shown, isDefault, withReset, splitKeys, joinKeys, keyName, comboFromEvent, keyRisk } from '../settings-core.js';
+
+const current = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
+const defaults = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
+
+test('every field has a unique path, a label and a known type', () => {
+  const paths = ALL_FIELDS.map((f) => f.path);
+  assert.equal(new Set(paths).size, paths.length);
+  for (const f of ALL_FIELDS) {
+    assert.ok(f.label && ['toggle', 'select', 'number', 'range', 'percent', 'text', 'keys'].includes(f.type), f.path);
+    if (f.type === 'select') assert.ok(f.options.length >= 2, f.path);
+    if (f.type === 'range' || f.type === 'number' || f.type === 'percent') assert.ok(f.min < f.max && f.step > 0, f.path);
+  }
+  assert.ok(SECTIONS.every((s) => s.fields.length));
+});
+
+test('live settings are the shortcuts and the panel, as in the backend', () => {
+  assert.ok(appliesLive('hotkeys.scan') && appliesLive('ui.theme'));
+  assert.ok(!appliesLive('llm.hf_repo') && !appliesLive('lite') && !appliesLive('learning.gloss_mode'));
+  assert.equal(labelFor('llm.ctx_size'), 'Context per request');
+  assert.equal(labelFor('nope.x'), 'nope.x');
+});
+
+test('editing tracks only real changes', () => {
+  let d = withEdit({}, current, 'ui.font_size_px', 22);
+  assert.deepEqual(d, { 'ui.font_size_px': 22 });
+  assert.equal(shown(d, current, defaults, 'ui.font_size_px'), 22);
+  d = withEdit(d, current, 'ui.font_size_px', 18);
+  assert.deepEqual(d, {}, 'back to what the file has: nothing to save');
+});
+
+test('reset sends null and shows the default', () => {
+  const cur = { ...current, ui: { font_size_px: 24, theme: 'dark' } };
+  assert.ok(!isDefault({}, cur, defaults, 'ui.font_size_px'));
+  const d = withReset({}, cur, defaults, 'ui.font_size_px');
+  assert.deepEqual(d, { 'ui.font_size_px': null });
+  assert.equal(shown(d, cur, defaults, 'ui.font_size_px'), 18);
+  assert.ok(isDefault(d, cur, defaults, 'ui.font_size_px'));
+  assert.deepEqual(withReset({}, current, defaults, 'ui.font_size_px'), {}, 'already the default: nothing to do');
+});
+
+test('editor conversions: percent, nullable text, rounding', () => {
+  const pct = ALL_FIELDS.find((f) => f.path === 'learning.desired_retention');
+  assert.equal(toEditor(pct, 0.8999999761581421), 90);
+  assert.equal(fromEditor(pct, 87), 0.87);
+  const model = ALL_FIELDS.find((f) => f.path === 'llm.model_path');
+  assert.equal(fromEditor(model, '  '), null, 'empty removes the key');
+  assert.equal(fromEditor(model, ' D:/m.gguf '), 'D:/m.gguf');
+  assert.equal(toEditor(model, null), '');
+  const lite = ALL_FIELDS.find((f) => f.path === 'lite_profile.hf_repo');
+  assert.equal(fromEditor(lite, ''), '', 'an empty lite model is a real value (keep the main model)');
+  const temp = ALL_FIELDS.find((f) => f.path === 'llm.temperature');
+  assert.equal(toEditor(temp, 0.20000000298023224), 0.2);
+  assert.equal(valueAt(current, 'llm.parallel'), 2);
+  assert.equal(valueAt(current, 'a.b.c'), undefined);
+});
+
+test('shortcut lists', () => {
+  assert.deepEqual(splitKeys('Ctrl+Alt+T | F6'), ['Ctrl+Alt+T', 'F6']);
+  assert.deepEqual(splitKeys(' | '), []);
+  assert.equal(joinKeys(['Ctrl+Alt+T', 'F6']), 'Ctrl+Alt+T | F6');
+  assert.equal(joinKeys(splitKeys('Ctrl+,')), 'Ctrl+,', 'the comma key stays');
+});
+
+const ev = (code, mods = {}) => ({ code, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false, ...mods });
+
+test('key presses become shortcut names', () => {
+  assert.equal(comboFromEvent(ev('KeyT', { ctrlKey: true, altKey: true })), 'Ctrl+Alt+T');
+  assert.equal(comboFromEvent(ev('F7')), 'F7');
+  assert.equal(comboFromEvent(ev('Digit5', { shiftKey: true })), 'Shift+5');
+  assert.equal(comboFromEvent(ev('Numpad5')), 'Numpad5');
+  assert.equal(comboFromEvent(ev('Escape', { ctrlKey: true, altKey: true })), 'Ctrl+Alt+Escape');
+  assert.equal(comboFromEvent(ev('ArrowUp', { ctrlKey: true })), 'Ctrl+Up');
+  assert.equal(comboFromEvent(ev('Comma', { ctrlKey: true })), 'Ctrl+,');
+  assert.equal(comboFromEvent(ev('Escape')), 'cancel');
+  assert.equal(comboFromEvent(ev('ControlLeft', { ctrlKey: true })), null, 'a modifier alone is not a shortcut yet');
+  assert.equal(comboFromEvent(ev('ShiftRight', { shiftKey: true })), null);
+  assert.equal(comboFromEvent(ev('IntlBackslash')), 'unknown');
+  assert.equal(keyName('F24'), 'F24');
+  assert.equal(keyName('F25'), null);
+});
+
+test('warns about keys that would be taken from every program', () => {
+  assert.equal(keyRisk('Ctrl+Alt+T'), null);
+  assert.equal(keyRisk('Pause'), null);
+  assert.equal(keyRisk('Numpad5'), null);
+  assert.equal(keyRisk('F15'), null);
+  assert.match(keyRisk('F6'), /browsers/);
+  assert.match(keyRisk('T'), /everywhere else/);
+});

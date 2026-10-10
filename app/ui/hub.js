@@ -1,4 +1,5 @@
 import { invoke, listen, mockCommands, inTauri } from './bridge.js';
+import { settingsView } from './settings.js';
 
 const view = document.getElementById('view');
 const tabs = [...document.querySelectorAll('#tabs button')];
@@ -23,7 +24,7 @@ async function show(name) {
   for (const b of tabs) b.setAttribute('aria-selected', String(b.dataset.tab === name));
   view.replaceChildren(h('p', { class: 'center', text: 'Loading…' }));
   try {
-    view.replaceChildren(...(await { review, history, status }[name]()));
+    view.replaceChildren(...(await { review, history, status, settings: settingsView }[name]()));
   } catch (e) {
     view.replaceChildren(h('div', { class: 'err', text: String(e) }));
   }
@@ -108,6 +109,26 @@ for (const b of tabs) b.addEventListener('click', () => show(b.dataset.tab));
 listen('maru-tab', (name) => show(name));
 
 if (!inTauri) {
+
+  // A stand-in settings store for browser screenshots and tests.
+  const flat = { 'hotkeys.translate': 'Ctrl+Alt+T | F6', 'hotkeys.region': 'Ctrl+Alt+R', 'hotkeys.hover': 'Ctrl+Alt+H', 'hotkeys.continuous': 'Ctrl+Alt+C', 'hotkeys.continuous_area': 'Ctrl+Alt+Shift+C', 'hotkeys.scan': 'Ctrl+Alt+S', 'hotkeys.history': 'Ctrl+Alt+L', 'hotkeys.dismiss': 'Ctrl+Alt+Escape', 'ui.font_size_px': 18, 'ui.max_width_px': 760, 'ui.theme': 'auto', 'ui.placement': 'auto', 'ui.show_romanization': true, 'ui.show_pronunciation': true, 'ui.show_grammar_formula': true, 'learning.gloss_mode': 'fade_known', 'learning.register': 'polite', 'learning.track_lookups': true, 'learning.auto_save_after_lookups': 2, 'learning.known_stability_days': 21, 'learning.desired_retention': 0.9, 'learning.anki.enabled': false, 'learning.anki.deck': 'Maru', 'learning.anki.note_type': 'Basic', 'learning.anki.url': 'http://127.0.0.1:8765', 'ocr.vision_reader': true, 'ocr.backend': 'auto', 'ocr.device': 'cpu', 'ocr.min_confidence': 0.8, 'capture.use_accessibility': true, 'capture.use_clipboard_fallback': true, 'capture.use_ocr_fallback': true, 'capture.ocr_radius_px': 320, 'capture.max_chars': 500, 'continuous.interval_ms': 250, 'continuous.stable_ms': 350, 'continuous.diff_threshold': 0.01, 'continuous.history_len': 50, lite: false, 'llm.hf_repo': null, 'llm.model_path': null, 'llm.endpoint': null, 'llm.parallel': 2, 'llm.ctx_size': 4096, 'llm.gpu_layers': 'all', 'llm.flash_attn': true, 'llm.temperature': 0.2, 'llm.context_lines': 4, 'lite_profile.hf_repo': 'unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL', 'lite_profile.ctx_size': 3072, 'lite_profile.parallel': 1 };
+  const nest = (f) => Object.entries(f).reduce((o, [k, v]) => (k.split('.').reduce((t, p, i, a) => (t[p] = i === a.length - 1 ? v : (t[p] ?? {})), o), o), {});
+  const mockDefaults = nest(flat);
+  let mockValues = nest({ ...flat, 'llm.hf_repo': 'unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL' });
+  let mockPending = [];
+  mockCommands({
+    get_settings: () => ({ values: mockValues, defaults: mockDefaults, path: 'C:\\Users\\you\\AppData\\Roaming\\maru\\Maru\\config\\config.toml', pending_restart: mockPending, lite_from_env: false }),
+    save_settings: ({ changes }) => {
+      const next = JSON.parse(JSON.stringify(mockValues));
+      for (const [path, v] of Object.entries(changes)) path.split('.').reduce((t, p, i, a) => (i === a.length - 1 ? (t[p] = v === null ? path.split('.').reduce((d, k) => d?.[k], mockDefaults) : v) : t[p]), next);
+      mockValues = next;
+      const restart = Object.keys(changes).filter((p) => !p.startsWith('hotkeys.') && !p.startsWith('ui.'));
+      mockPending = [...new Set([...mockPending, ...restart])];
+      return { changed: Object.keys(changes), restart: mockPending, warnings: [] };
+    },
+    restart_app: () => {},
+    open_config_file: () => {},
+  });
   mockCommands({
     due_words: () => [{ key: '공부하다', meaning: 'to study', level: 'TOPIK 1', state: 'learning', lookups: 2, saved: true }, { key: '학교', meaning: 'school', state: 'learning', lookups: 2, saved: true }],
     word_contexts: () => [{ sentence: '저는 학교에서 공부했어요', translation: 'I studied at school.' }],

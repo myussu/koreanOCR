@@ -8,6 +8,7 @@ mod commands;
 mod flow;
 mod hotkeys;
 mod logic;
+mod settings;
 mod state;
 mod watch;
 mod windows;
@@ -42,10 +43,11 @@ fn init_logging() {
     tracing::info!("log file: {}", log.display());
 }
 
-fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()> {
-    let keys = state.engine().config().hotkeys.clone();
+/// The tray menu, with the shortcuts as currently configured.
+pub fn tray_menu(app: &tauri::AppHandle, state: &AppState) -> tauri::Result<Menu<tauri::Wry>> {
+    let keys = state.cfg().hotkeys;
     let item = |id: &str, label: String| MenuItem::with_id(app, id, label, true, None::<&str>);
-    let menu = Menu::with_items(
+    Menu::with_items(
         app,
         &[
             &item("translate", format!("Translate selection\t{}", keys.translate))?,
@@ -57,10 +59,15 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             &PredefinedMenuItem::separator(app)?,
             &item("review", "Review & history…".into())?,
             &item("status", "Status…".into())?,
+            &item("settings", "Settings…".into())?,
             &PredefinedMenuItem::separator(app)?,
             &item("quit", "Quit".into())?,
         ],
-    )?;
+    )
+}
+
+fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()> {
+    let menu = tray_menu(app, state)?;
     let state = state.clone();
     let mut tray = TrayIconBuilder::with_id("maru").tooltip("Maru").menu(&menu).on_menu_event(move |app, event| {
         let (app, state) = (app.clone(), state.clone());
@@ -78,6 +85,9 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             }
             "status" => {
                 let _ = windows::open_hub(&app, "status");
+            }
+            "settings" => {
+                let _ = windows::open_hub(&app, "settings");
             }
             "quit" => app.exit(0),
             _ => {}
@@ -103,15 +113,16 @@ fn main() {
                 tracing::error!("{e}; using defaults");
                 Config::default()
             });
+            let booted = cfg.clone();
             // Engines start in the background (the language model loads while you work).
             let services = tauri::async_runtime::block_on(boot(paths, cfg, BootOptions::default()));
             for note in &services.notes {
                 tracing::info!("{note}");
             }
             let live_region = Mutex::new(services.engine.config().continuous.region);
-            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region, scan: Mutex::default() });
+            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region, scan: Mutex::default(), live: std::sync::RwLock::new(booted.clone()), booted });
 
-            let width = state.engine().config().ui.max_width_px as f32;
+            let width = state.cfg().ui.max_width_px as f32;
             windows::create_panel(app.handle(), width)?;
             windows::create_scan(app.handle())?;
             build_tray(app.handle(), &state)?;
@@ -143,6 +154,10 @@ fn main() {
             commands::scan_open,
             commands::word_contexts,
             commands::open_hub,
+            settings::get_settings,
+            settings::save_settings,
+            settings::restart_app,
+            settings::open_config_file,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Maru application");

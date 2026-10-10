@@ -37,7 +37,9 @@ pub fn alternatives(text: &str) -> Vec<String> {
 
 /// Register every configured hotkey. Returns human-readable problems (bad syntax, already taken).
 pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
-    let keys = state.engine().config().hotkeys.clone();
+    // Saving new shortcuts registers them again from scratch.
+    let _ = app.global_shortcut().unregister_all();
+    let keys = state.cfg().hotkeys;
     let table = [
         (keys.translate, Action::Translate),
         (keys.region, Action::Region),

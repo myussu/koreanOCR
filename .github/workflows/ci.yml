@@ -19,7 +19,7 @@ jobs:
       - run: cargo test --manifest-path app/src-tauri/Cargo.toml
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - run: node --test app/ui/test/core.test.mjs
+      - run: node --test app/ui/test/core.test.mjs app/ui/test/layout.test.mjs app/ui/test/settings.test.mjs
 
   linux:
     runs-on: ubuntu-latest

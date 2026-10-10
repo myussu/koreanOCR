@@ -23,9 +23,9 @@ pub fn notice(app: &AppHandle, state: &AppState, anchor: Option<Point>, level: &
     {
         let mut p = state.panel();
         p.anchor = anchor;
-        p.size = (state.engine().config().ui.max_width_px as f32, 80.0);
+        p.size = (state.cfg().ui.max_width_px as f32, 80.0);
     }
-    windows::place_and_show(app, state, state.engine().config().ui.placement);
+    windows::place_and_show(app, state, state.cfg().ui.placement);
     let _ = app.emit_to(PANEL, "maru-notice", Notice { level, text: text.into() });
 }
 
@@ -60,10 +60,10 @@ pub fn show_capture(app: &AppHandle, state: &Arc<AppState>, capture: Capture, wo
     {
         let mut p = state.panel();
         p.anchor = anchor_of(&capture, cursor);
-        p.size = (state.engine().config().ui.max_width_px as f32, 160.0);
+        p.size = (state.cfg().ui.max_width_px as f32, 160.0);
         p.last_capture = Some(capture.clone());
     }
-    windows::place_and_show(app, state, state.engine().config().ui.placement);
+    windows::place_and_show(app, state, state.cfg().ui.placement);
     let (id, rx) = if word_only { state.engine().lookup_word(capture) } else { state.engine().translate(capture) };
     if auto_deep {
         let _ = app.emit_to(PANEL, "maru-auto-deep", id);
@@ -211,7 +211,7 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
     }
     state.panel().pinned = true;
     refresh_tray(&app, &state);
-    let keys = state.engine().config().hotkeys.clone();
+    let keys = state.cfg().hotkeys;
     let text = format!(
         "Continuous mode on: new lines in the {}×{} area at ({}, {}) are translated automatically. {} turns it off; {} chooses a different area.",
         region.w.round(),
@@ -227,7 +227,7 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
             {
                 let mut p = state.panel();
                 p.anchor = region;
-                p.size = (state.engine().config().ui.max_width_px as f32, 160.0);
+                p.size = (state.cfg().ui.max_width_px as f32, 160.0);
             }
             windows::place_and_show(&app, &state, maru_core::config::Placement::Below);
             let (_, events) = state.engine().translate(capture);

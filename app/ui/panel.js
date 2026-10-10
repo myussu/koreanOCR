@@ -234,6 +234,13 @@ listen('maru-event', (e) => {
     autoDeepId = null;
   }
 });
+listen('maru-config', () => {
+  invoke('ui_config').then((c) => {
+    applyConfig(c);
+    lastSize = '';
+    render();
+  }).catch(() => {});
+});
 listen('maru-notice', (n) => {
   lastSize = '';
   state = { ...emptyState(), notice: n };

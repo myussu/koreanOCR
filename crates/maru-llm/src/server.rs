@@ -156,9 +156,17 @@ pub struct LlamaServer {
     log: Arc<Mutex<VecDeque<String>>>,
 }
 
+/// How long a server already on our port is given to disappear before it is reported as left over.
+const PORT_GRACE: Duration = Duration::from_secs(6);
+
 impl LlamaServer {
     /// Start the server and return once it answers `/health` (model loaded).
     pub async fn start(cfg: &LlmConfig, paths: &Paths, ready_timeout: Duration) -> Result<Self> {
+        Self::start_after(cfg, paths, ready_timeout, PORT_GRACE).await
+    }
+
+    /// [`LlamaServer::start`], waiting up to `grace` for another server on our port to go away.
+    async fn start_after(cfg: &LlmConfig, paths: &Paths, ready_timeout: Duration, grace: Duration) -> Result<Self> {
         let model = ModelSource::from_config(cfg)
             .ok_or_else(|| LlmError::Spawn("no model configured: set [llm] model_path or hf_repo in config.toml".into()))?;
         if let ModelSource::File(p) = &model
@@ -173,7 +181,14 @@ impl LlamaServer {
         // Something already answering on our private port is almost always a server left behind by
         // an earlier run. Starting another would fail to bind and exit, which looks like a
         // mysterious "llama-server exited": say what is actually wrong.
-        if LlmClient::from_config(cfg).health().await {
+        // The previous run may still be shutting down (the app restarts itself after a settings
+        // change), so give it a moment before calling it an orphan.
+        let client = LlmClient::from_config(cfg);
+        let deadline = tokio::time::Instant::now() + grace;
+        while client.health().await && tokio::time::Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+        if client.health().await {
             return Err(LlmError::Spawn(format!(
                 "port {} is already answered by another server (most likely a llama-server left over from an earlier run). \
                  End it in Task Manager, or run `taskkill /F /IM llama-server.exe`, then start Maru again.",
@@ -275,7 +290,7 @@ mod tests {
         let mock = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![b"{}".to_vec()], delay_ms: 0 }).await;
         let port: u16 = mock.url.rsplit(':').next().unwrap().parse().unwrap();
         let cfg = LlmConfig { port, hf_repo: Some("a/b".into()), ..Default::default() };
-        let err = LlamaServer::start(&cfg, &Paths::under(&std::env::temp_dir()), Duration::from_secs(1)).await.err().expect("must refuse").to_string();
+        let err = LlamaServer::start_after(&cfg, &Paths::under(&std::env::temp_dir()), Duration::from_secs(1), Duration::from_millis(400)).await.err().expect("must refuse").to_string();
         assert!(err.contains(&port.to_string()) && err.contains("already") && err.contains("taskkill"), "{err}");
     }
 

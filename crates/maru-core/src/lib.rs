@@ -7,6 +7,7 @@ pub mod config;
 pub mod error;
 pub mod event;
 pub mod paths;
+pub mod settings;
 pub mod types;
 
 pub use config::Config;

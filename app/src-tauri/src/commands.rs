@@ -34,9 +34,10 @@ pub struct UiConfig {
 
 #[tauri::command]
 pub fn ui_config(state: S) -> UiConfig {
-    let cfg = state.engine().config();
+    let cfg = state.cfg();
+    let learning = state.engine().config().learning.gloss_mode;
     UiConfig {
-        gloss_mode: cfg.learning.gloss_mode,
+        gloss_mode: learning,
         font_size_px: cfg.ui.font_size_px,
         show_romanization: cfg.ui.show_romanization,
         show_pronunciation: cfg.ui.show_pronunciation,
@@ -44,7 +45,7 @@ pub fn ui_config(state: S) -> UiConfig {
         opacity: cfg.ui.opacity,
         max_width_px: cfg.ui.max_width_px,
         theme: cfg.ui.theme.clone(),
-        anki: cfg.learning.anki.enabled,
+        anki: state.engine().config().learning.anki.enabled,
     }
 }
 
@@ -143,7 +144,7 @@ pub fn status(state: S) -> Status {
         analyser: e.analyzer_name(),
         ocr: e.has_ocr(),
         dictionary: e.has_dictionary(),
-        hotkeys: e.config().hotkeys.clone(),
+        hotkeys: state.cfg().hotkeys,
         vocab: e.vocab_stats().ok().map(|s| VocabCounts { total: s.total, saved: s.saved, known: s.known, due_now: s.due_now }),
         scan_visible: state.scan().visible,
         lite: state.services.lite,
@@ -162,9 +163,9 @@ pub fn status(state: S) -> Status {
 /// The page measured its content; resize the window to fit and re-place it.
 #[tauri::command]
 pub fn resize_panel(app: AppHandle, state: S, width: f32, height: f32) {
-    let max_w = state.engine().config().ui.max_width_px as f32 * 1.6;
+    let max_w = state.cfg().ui.max_width_px as f32 * 1.6;
     state.panel().size = (width.clamp(160.0, max_w), height.clamp(40.0, 1400.0));
-    let placement: Placement = state.engine().config().ui.placement;
+    let placement: Placement = state.cfg().ui.placement;
     windows::place_and_show(&app, &state, placement);
 }
 
