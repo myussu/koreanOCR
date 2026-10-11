@@ -73,6 +73,8 @@ pub struct LlmClient {
     idle_timeout: Duration,
     /// Send llama.cpp-specific request fields (`cache_prompt`, …). Off for foreign servers.
     llama_extensions: bool,
+    /// `reasoning_effort` for foreign servers; `None` sends nothing.
+    reasoning_effort: Option<String>,
 }
 
 impl LlmClient {
@@ -91,6 +93,7 @@ impl LlmClient {
             max_tokens: cfg.max_tokens,
             idle_timeout: Duration::from_secs(cfg.request_timeout_secs.max(1)),
             llama_extensions: cfg.endpoint.is_none(),
+            reasoning_effort: Some(cfg.reasoning_effort.trim().to_string()).filter(|e| !e.is_empty()),
         }
     }
 
@@ -144,6 +147,10 @@ impl LlmClient {
             // "thinking" models (Qwen3-style templates) from reasoning aloud.
             body["cache_prompt"] = json!(true);
             body["chat_template_kwargs"] = json!({ "enable_thinking": false });
+        } else if let Some(effort) = &self.reasoning_effort {
+            // A thinking model behind a foreign server (Ollama, …) would otherwise spend `max_tokens` reasoning and
+            // answer with nothing; Ollama maps "none" to "no thinking".
+            body["reasoning_effort"] = json!(effort);
         }
         body
     }
@@ -413,6 +420,35 @@ mod tests {
         client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap();
         let body = server.requests.lock().unwrap()[0].1.clone();
         assert!(!body.contains("cache_prompt"));
+    }
+
+    async fn body_sent_to_external(cfg: LlmConfig) -> Value {
+        let server = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["ok"]), delay_ms: 0 }).await;
+        let cfg = LlmConfig { endpoint: Some(format!("{}/v1", server.url)), ..cfg };
+        LlmClient::from_config(&cfg).stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap();
+        let sent = server.requests.lock().unwrap()[0].1.clone();
+        serde_json::from_str(&sent).unwrap()
+    }
+
+    #[tokio::test]
+    async fn an_external_server_is_asked_not_to_think_by_default() {
+        let body = body_sent_to_external(cfg()).await;
+        assert_eq!(body["reasoning_effort"], "none");
+    }
+
+    #[tokio::test]
+    async fn the_reasoning_effort_can_be_changed_or_left_out_for_servers_that_reject_it() {
+        let low = body_sent_to_external(LlmConfig { reasoning_effort: "low".into(), ..cfg() }).await;
+        assert_eq!(low["reasoning_effort"], "low");
+        let none_sent = body_sent_to_external(LlmConfig { reasoning_effort: "  ".into(), ..cfg() }).await;
+        assert!(none_sent.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn the_local_server_is_told_about_thinking_its_own_way() {
+        let body = LlmClient::new("http://127.0.0.1:1", &cfg()).body(&[Message::user("x")], &ChatOpts::default());
+        assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+        assert!(body.get("reasoning_effort").is_none());
     }
 
     #[tokio::test]

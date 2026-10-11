@@ -69,8 +69,9 @@ Run 1 against 2 is what sharing the GPU with the game costs; 2 against 3 is what
 **With Ollama on the other PC** (for example TrueNAS SCALE) instead of llama-server: pull the same model (`ollama pull hf.co/unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL`, if
 that Ollama is new enough for it), check `ollama list` for the name and `ollama ps` for `100% GPU` while it is loaded, set `OLLAMA_KEEP_ALIVE=-1` (and
 `OLLAMA_NUM_PARALLEL=2`) on the server, and use `maru bench --live --endpoint http://<that-pc>:<port> --model "<name from ollama list>" -n 3`. For the cutscene runs set
-the same endpoint and `[llm] model_name` (Settings → Translation model). If the model starts with a stream of reasoning text, or the first-word times are far higher than
-llama-server's, say so: a switch for "thinking" models is not built yet.
+the same endpoint and `[llm] model_name` (Settings → Translation model). Maru asks such servers not to think (`[llm] reasoning_effort = "none"`; a person testing live subtitles reported that without it a thinking model used the whole
+token limit on reasoning and returned nothing: 4.95 s and no translation, against 1.15 s and a correct one with thinking off). If you still see reasoning text, or the first-word
+times are far higher than llama-server's, say so, with the model name.
 **Part 2: the whole thing on the cutscene (as in M-3).** Run it twice and keep every other setting equal:
 * **A, everything local** as it is now (model, reading model and speech server on your GPU).
 * **C, model on the other PC** with `[ocr] vision_reader = false` and `[tts] enabled = false` (so nothing else of ours is on the GPU; the reading model is a separate model

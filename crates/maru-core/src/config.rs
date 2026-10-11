@@ -167,6 +167,10 @@ pub struct LlmConfig {
     pub extra_args: Vec<String>,
     /// Model name sent in requests (ignored by llama-server, needed by others).
     pub model_name: String,
+    /// Sent as `reasoning_effort` to a server given by `endpoint` (Ollama, LM Studio, vLLM, …) so "thinking" models answer straight
+    /// away instead of spending the token limit on reasoning. `"none"` turns thinking off; empty sends nothing (for servers that
+    /// reject the field). The local llama-server is told with its own flags and ignores this.
+    pub reasoning_effort: String,
     pub temperature: f32,
     /// Hard cap on generated tokens per request.
     pub max_tokens: u32,
@@ -195,6 +199,7 @@ impl Default for LlmConfig {
             flash_attn: true,
             extra_args: Vec::new(),
             model_name: "maru".into(),
+            reasoning_effort: "none".into(),
             temperature: 0.2,
             max_tokens: 512,
             context_lines: 4,

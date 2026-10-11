@@ -34,6 +34,10 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 # model_path = "D:/models/gemma-4-12b-it-qat-UD-Q4_K_XL.gguf"
 # ...or an already-running OpenAI-compatible server (LM Studio, a LAN box):
 # endpoint = "http://127.0.0.1:1234/v1"
+# model_name = "qwen3:8b"     # servers that choose by name (Ollama: exactly what `ollama list` shows)
+# Sent to such a server so "thinking" models (Qwen3, gpt-oss, ...) answer straight away instead of spending the
+# token limit on reasoning. "none" = no thinking (the default); "" = send nothing, if the server rejects the field.
+# reasoning_effort = "none"
 # Speculative decoding with a small draft model of the same family (faster, same quality):
 # draft_model_path = "D:/models/gemma-4-1b-it-Q8_0.gguf"
 parallel = 2          # translation and word meanings are generated at the same time
