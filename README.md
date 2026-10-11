@@ -136,6 +136,21 @@ Each action accepts several keys separated by `|` in `config.toml` (e.g. `transl
 
 **Live subtitles** draw the English in a dark band next to the original line — above it or below it, on the side with room, never over it — stay while it is on screen and for a moment after (`continuous.linger_ms`), and every line goes into **History → Live subtitles** in order, with how long it took, so you can read a cutscene afterwards; click a line for its word-by-word breakdown. Each line is logged in `maru-app.log` (`live line: on screen → read … → first word … → done …`).
 
+For live speed comparisons, **Settings → Live subtitles** has two experimental options (save and restart Maru):
+
+* **Use CPU PP-OCR for live subtitles** (`continuous.cpu_ocr = true`) skips PaddleOCR-VL requests for the live area. Manual translation,
+  hover and scans keep their configured OCR. The reading model stays loaded for those features; this option does not free its VRAM.
+  PP-OCR must already be installed. Recognition can differ, so compare the captured Korean as well as the English on your own game.
+* **Active live translations** (`continuous.max_in_flight`): `0` keeps the existing detached requests, `1` queues lines in capture order
+  so each can see the previous completed answer, and `2` permits two overlapping translations. Waiting lines are retained for history,
+  rather than discarded. With `2`, a request can start before the preceding answer is available as context.
+
+Both options default to the existing behavior (`false`, `0`). They keep the translation model, prompt and context settings.
+The log adds request IDs, waiting/active counts, time before the model call, time to response headers/first text, and llama.cpp's
+prompt/decode timings when the server supplies them. **History → Live subtitles** uses capture order and the estimated appearance time;
+other history views keep completion order. `maru bench --live` tests the model alone, so use the same cutscene for a full OCR-to-English
+comparison; see M-11 in [manual tests](docs/MANUAL_TESTS.md).
+
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
 
 ## Game menus: screen labels

@@ -76,6 +76,8 @@ export const SECTIONS = [
     id: 'live',
     title: 'Live subtitles',
     fields: [
+      { path: 'continuous.cpu_ocr', label: 'Use CPU PP-OCR for live subtitles', help: 'Experimental: skips the OCR reading model for live subtitles. Other features keep their screen reader. Recognition can differ', type: 'toggle' },
+      { path: 'continuous.max_in_flight', label: 'Active live translations', help: '0 keeps the existing behavior; 1 translates in order; 2 allows overlap. Pending lines are kept for history', type: 'number', min: 0, max: 2, step: 1 },
       { path: 'continuous.interval_ms', label: 'Look at the area every', help: 'Lower notices a new line sooner and uses more CPU', type: 'range', min: 50, max: 1000, step: 25, unit: 'ms' },
       { path: 'continuous.stable_ms', label: 'A picture this still is a finished line', help: 'A line that is still fading in is read sooner than this', type: 'range', min: 50, max: 1500, step: 25, unit: 'ms' },
       { path: 'continuous.linger_ms', label: 'Keep the translation after the line is gone', type: 'range', min: 0, max: 5000, step: 100, unit: 'ms' },

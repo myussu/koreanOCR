@@ -68,11 +68,13 @@ pub struct HistoryItem {
     /// Live lines: from the line appearing on screen until its translation started / finished, in ms.
     pub first_ms: Option<u32>,
     pub total_ms: Option<u32>,
+    /// Live lines: approximate screen appearance time in Unix seconds.
+    pub appeared_at: Option<i64>,
 }
 
 impl HistoryItem {
     pub fn new(id: u64, at: i64, source: String, translation: String, direction: Direction, app: Option<String>) -> Self {
-        Self { id, at, source, translation, direction, app, live: false, first_ms: None, total_ms: None }
+        Self { id, at, source, translation, direction, app, live: false, first_ms: None, total_ms: None, appeared_at: None }
     }
 }
 

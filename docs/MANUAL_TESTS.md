@@ -145,6 +145,21 @@ set `lite = true` (or run with `MARU_LITE=1`) and check the footprint (smaller m
 **Expect:** invalid values are refused with a reason; comments in `config.toml` survive saves; the restart notice appears only when needed.
 **Bring:** anything that was saved wrongly (the before/after of `config.toml`).
 
+## M-11 Live speed experiments with the same translation model
+**Needs:** existing PP-OCR and translation model; use the build containing `continuous.cpu_ocr` and `continuous.max_in_flight`.
+**Steps:** replay the same cutscene after a fresh Maru start for each condition: CPU option off / active translations `0` (baseline),
+CPU option off / `1` (original OCR, ordered requests), then optionally CPU option on / `0`, `/1`, `/2`. Save and restart after each change. Keep the model, context,
+subtitle area, game resolution and other settings fixed. Repeat the baseline last to catch changing game load or server warm-up.
+**Expect:** translations arrive quickly enough to read, every captured line finishes and reaches history, and Live subtitles lists lines
+in appearance order even if answers finish in another order. With `1`, later requests have preceding completed answers as context.
+Check names and negation against the original Korean: CPU recognition is an experiment, not a promise of equal quality on every font.
+Open a manual region translation and a scan afterwards to confirm they still use the original screen reader.
+**Bring:** the log from each fresh run, History → Live subtitles and any missed/misread Korean; game name/resolution and GPU memory use.
+New `live request` fields show waiting/active requests and admission/model/first-text timing. Model-only `maru bench --live` excludes
+screen capture, OCR and the app's other model resources, so its figures are not full live latency.
+**Why unverified:** fake-server tests establish scheduling and OCR isolation; the optional real-model recording replay can establish
+timings on that video, but neither exercises physical-screen capture, the overlay or game rendering during a real cutscene.
+
 ---
 
 ## Results log

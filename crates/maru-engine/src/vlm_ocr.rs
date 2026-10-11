@@ -50,7 +50,7 @@ impl OcrEngine for VlmOcr {
     fn recognize(&self, image: &RgbImage) -> Result<OcrOutput> {
         let url = data_url(image).map_err(OcrError::Run)?;
         let messages = [Message::user_with_image(self.prompt.clone(), url)];
-        let opts = ChatOpts { max_tokens: Some(self.cfg.max_tokens), temperature: Some(0.0), stop: Vec::new() };
+        let opts = ChatOpts { max_tokens: Some(self.cfg.max_tokens), temperature: Some(0.0), stop: Vec::new(), log_timings: false };
         let (root, cfg) = (self.root.clone(), self.cfg.clone());
         // The engine trait is synchronous and may be called from inside a Tokio runtime, so the
         // request gets its own thread and a private current-thread runtime (and a fresh client,

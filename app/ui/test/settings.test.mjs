@@ -5,6 +5,16 @@ import { ANKI, isVisible, SPEECH, SECTIONS, ALL_FIELDS, appliesLive, labelFor, v
 const current = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
 const defaults = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
 
+test('live OCR and request experiments need a restart and do not edit the general OCR reader', () => {
+  const fields = SECTIONS.find((s) => s.id === 'live').fields;
+  for (const path of ['continuous.cpu_ocr', 'continuous.max_in_flight']) {
+    assert.ok(fields.some((f) => f.path === path));
+    assert.equal(appliesLive(path), false);
+  }
+  const edited = withEdit({}, { continuous: { cpu_ocr: false } }, 'continuous.cpu_ocr', true);
+  assert.deepEqual(edited, { 'continuous.cpu_ocr': true });
+});
+
 test('every field has a unique path, a label and a known type', () => {
   const paths = ALL_FIELDS.map((f) => f.path);
   assert.equal(new Set(paths).size, paths.length);

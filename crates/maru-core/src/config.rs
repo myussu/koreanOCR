@@ -415,11 +415,17 @@ pub struct ContinuousConfig {
     pub linger_ms: u64,
     /// Earlier lines the model sees, so pronouns and names stay consistent.
     pub context_lines: usize,
+    /// Use CPU PP-OCR for live subtitles only, without the vision reader.
+    #[serde(default)]
+    pub cpu_ocr: bool,
+    /// Active live translations; zero preserves the detached-request behaviour.
+    #[serde(default)]
+    pub max_in_flight: usize,
 }
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4 }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0 }
     }
 }
 
@@ -654,5 +660,13 @@ mod tests {
     fn missing_file_gives_defaults() {
         let c = Config::load(Path::new("/definitely/not/here/config.toml")).unwrap();
         assert_eq!(c, Config::default());
+    }
+
+    #[test]
+    fn older_live_settings_keep_their_ocr_and_request_behaviour() {
+        let cfg: Config = toml::from_str("[continuous]\ncontext_lines = 3").unwrap();
+        assert!(!cfg.continuous.cpu_ocr);
+        assert_eq!(cfg.continuous.max_in_flight, 0);
+        assert_eq!(cfg.continuous.context_lines, 3);
     }
 }

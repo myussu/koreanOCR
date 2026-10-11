@@ -148,6 +148,7 @@ pub fn validate(cfg: &Config) -> Result<()> {
     check((0.0..=1.0).contains(&cfg.continuous.diff_threshold), "change threshold must be between 0 and 1");
     check(cfg.continuous.linger_ms <= 10_000, "a live translation can stay at most 10 seconds after its line is gone");
     check(cfg.continuous.context_lines <= 20, "live mode can show the model at most 20 earlier lines");
+    check(cfg.continuous.max_in_flight <= 2, "live mode can run at most two translations at once (0 keeps the existing behaviour)");
     check((1024..=65535).contains(&cfg.tts.port), "speech server port must be between 1024 and 65535");
     check(cfg.tts.speed >= 0.25 && cfg.tts.speed <= 4.0, "speech speed must be between 0.25 and 4");
     check(cfg.tts.timeout_secs >= 5, "speech timeout must be at least 5 seconds");
@@ -249,5 +250,16 @@ font_size_px = 18
         let cfg: Config = toml::from_str(include_str!("../../../docs/config.example.toml")).unwrap();
         validate(&cfg).unwrap();
         validate(&Config::default()).unwrap();
+    }
+
+    #[test]
+    fn the_live_experiment_is_saved_without_changing_other_ocr_settings() {
+        let patched = patch(FILE, &changes(json!({"continuous.cpu_ocr": true, "continuous.max_in_flight": 1}))).unwrap();
+        let cfg: Config = toml::from_str(&patched.text).unwrap();
+        assert!(cfg.continuous.cpu_ocr);
+        assert_eq!(cfg.continuous.max_in_flight, 1);
+        assert_eq!(cfg.ocr, Config::default().ocr);
+        assert!(!applies_live("continuous.cpu_ocr"));
+        assert!(patch(FILE, &changes(json!({"continuous.max_in_flight": 3}))).is_err());
     }
 }

@@ -249,7 +249,7 @@ impl LlmClient {
         let messages = prompts::ko_en_live(req.text, req.ctx, req.turns);
         // A subtitle is a sentence or two: cut off a model that starts to ramble.
         let max_tokens = (req.text.chars().count() as u32 * 2 + 40).min(256);
-        let opts = ChatOpts { max_tokens: Some(max_tokens), temperature: Some(0.1), ..Default::default() };
+        let opts = ChatOpts { max_tokens: Some(max_tokens), temperature: Some(0.1), log_timings: true, ..Default::default() };
         let mut started = false;
         let full = self
             .stream_chat(&messages, &opts, &mut |d| {

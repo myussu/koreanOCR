@@ -60,6 +60,8 @@ pub struct ChatOpts {
     pub max_tokens: Option<u32>,
     pub temperature: Option<f32>,
     pub stop: Vec<String>,
+    /// Live diagnostics only; leaves other requests and their wire format alone.
+    pub log_timings: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +144,9 @@ impl LlmClient {
         if !opts.stop.is_empty() {
             body["stop"] = json!(opts.stop);
         }
+        if opts.log_timings {
+            body["stream_options"] = json!({ "include_usage": true });
+        }
         if self.llama_extensions {
             // Reuse the KV cache for the shared system-prompt prefix, and keep
             // "thinking" models (Qwen3-style templates) from reasoning aloud.
@@ -159,6 +164,7 @@ impl LlmClient {
     /// the full text is returned at the end. Dropping the future cancels the
     /// request (the server stops generating when the connection closes).
     pub async fn stream_chat(&self, messages: &[Message], opts: &ChatOpts, on_delta: &mut (dyn FnMut(&str) + Send)) -> Result<String> {
+        let started = std::time::Instant::now();
         let url = format!("{}/v1/chat/completions", self.root);
         let resp = self
             .http
@@ -169,6 +175,9 @@ impl LlmClient {
             .map_err(|source| LlmError::Unreachable { url: self.root.clone(), source })?;
 
         let status = resp.status();
+        if opts.log_timings {
+            tracing::info!(headers_ms = started.elapsed().as_millis() as u64, "live model response");
+        }
         if !status.is_success() {
             let body = resp.text().await.unwrap_or_default();
             return Err(LlmError::Http { status: status.as_u16(), body: body.chars().take(400).collect() });
@@ -190,6 +199,15 @@ impl LlmClient {
                         full.push_str(&text);
                     }
                     SseEvent::Error(e) => return Err(LlmError::Api(e)),
+                    SseEvent::Timings(t) => {
+                        if opts.log_timings {
+                            tracing::info!(prompt_ms = t.get("prompt_ms").and_then(|v| v.as_f64()),
+                                decode_ms = t.get("predicted_ms").and_then(|v| v.as_f64()),
+                                decode_tokens = t.get("predicted_n").and_then(|v| v.as_u64()),
+                                tokens_per_second = t.get("predicted_per_second").and_then(|v| v.as_f64()),
+                                cache_tokens = t.get("cache_n").and_then(|v| v.as_u64()), "live model timings");
+                        }
+                    }
                     SseEvent::Done => return Ok(full),
                 }
             }
@@ -209,6 +227,7 @@ pub enum SseEvent {
     Delta(String),
     Error(String),
     Done,
+    Timings(Value),
 }
 
 /// Incremental `text/event-stream` parser for chat-completion chunks.
@@ -248,8 +267,10 @@ fn parse_line(line: &[u8]) -> Option<SseEvent> {
         let msg = err.get("message").and_then(Value::as_str).or_else(|| err.as_str()).unwrap_or("unknown error");
         return Some(SseEvent::Error(msg.to_string()));
     }
-    let text = v.pointer("/choices/0/delta/content").and_then(Value::as_str)?;
-    (!text.is_empty()).then(|| SseEvent::Delta(text.to_string()))
+    if let Some(text) = v.pointer("/choices/0/delta/content").and_then(Value::as_str).filter(|s| !s.is_empty()) {
+        return Some(SseEvent::Delta(text.to_string()));
+    }
+    v.get("timings").cloned().map(SseEvent::Timings)
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -341,6 +362,13 @@ pub mod testing {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn server_timings_split_across_chunks_do_not_become_translation_text() {
+        let mut parser = super::SseParser::default();
+        assert!(parser.push(b"data: {\"timings\":{\"prompt_ms\":2,").is_empty());
+        let events = parser.push(b"\"predicted_ms\":5}}\n\n");
+        assert!(matches!(&events[..], [super::SseEvent::Timings(t)] if t["predicted_ms"] == 5));
+    }
     use super::testing::*;
     use super::*;
 
@@ -449,6 +477,15 @@ mod tests {
         let body = LlmClient::new("http://127.0.0.1:1", &cfg()).body(&[Message::user("x")], &ChatOpts::default());
         assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
         assert!(body.get("reasoning_effort").is_none());
+    }
+
+    #[test]
+    fn usage_metadata_is_only_requested_when_live_diagnostics_are_enabled() {
+        let client = LlmClient::new("http://127.0.0.1:1", &cfg());
+        let messages = [Message::user("x")];
+        assert!(client.body(&messages, &ChatOpts::default()).get("stream_options").is_none());
+        let live = client.body(&messages, &ChatOpts { log_timings: true, ..Default::default() });
+        assert_eq!(live["stream_options"]["include_usage"], true);
     }
 
     #[tokio::test]

@@ -365,11 +365,14 @@ fn remember_live_turn(inner: &Inner, source: &str, translation: &str) {
 /// no word meanings (they come from the history, on a click), the earlier lines go in as chat
 /// turns, and a line that comes back is answered from its own cache. Lines never cancel each
 /// other: each one reaches the history even when the next arrives before it is done.
-pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx) {
+#[tracing::instrument(skip_all, fields(id))]
+pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx, mut timing: crate::live_lane::Timing) {
+    timing.admitted();
     let em = Emitter { tx, id };
     let LiveLine { capture, appeared, ready_ms, ocr_ms } = line;
     let (text, _) = prepare_text(&capture.text, inner.cfg.capture.max_chars);
     if detect_direction(&text) != Some(Direction::KoToEn) {
+        timing.finish("skipped");
         em.done(); // an English line on a Korean game's screen: nothing to translate
         return;
     }
@@ -384,6 +387,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     capture.text = text.clone();
     em.send(Event::Started { id, direction: Direction::KoToEn, capture: capture.clone(), cached: cached.is_some() });
 
+    let is_cached = cached.is_some();
     let (first_ms, translation) = if let Some(hit) = cached {
         let main = hit.translations.first().map(|(_, t)| t.clone()).unwrap_or_default();
         em.send(Event::Translation { id, variant: Variant::Primary, delta: main.clone() });
@@ -391,6 +395,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         (since_ms(appeared), main)
     } else {
         let Some(llm) = await_llm(&inner, &em).await else {
+            timing.finish("model_unavailable");
             em.done();
             return;
         };
@@ -401,9 +406,11 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         let first_token = AtomicBool::new(false);
         let first = AtomicU32::new(0);
         let llm_started = Instant::now();
+        timing.request(turns.len());
         let result = llm
             .translate_live(&LiveRequest { text: &text, ctx: &ctx, turns: &turns }, &mut |c| {
                 if matches!(c, LlmChunk::Text { .. }) && !first_token.load(Ordering::Relaxed) {
+                    timing.first();
                     first.store(since_ms(appeared), Ordering::Relaxed);
                 }
                 forward(&em, &collected, Side::Source, &first_token, llm_started, c)
@@ -415,6 +422,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         let result = std::mem::take(&mut *lock(&collected));
         let main = result.translations.first().map(|(_, t)| t.clone()).unwrap_or_default();
         if main.trim().is_empty() {
+            timing.finish("empty_or_error");
             em.error(Stage::Llm, "The model did not return a translation for this line.");
             em.done();
             return;
@@ -424,6 +432,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     };
 
     let total_ms = since_ms(appeared);
+    timing.finish(if is_cached { "cached" } else { "translated" });
     tracing::info!(
         "live line: on screen → read {ready_ms} ms (OCR {ocr_ms} ms) → first word {first_ms} ms → done {total_ms} ms, {} characters",
         text.chars().count()
@@ -434,6 +443,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         live: true,
         first_ms: Some(first_ms),
         total_ms: Some(total_ms),
+        appeared_at: Some(now_secs().saturating_sub(i64::from(total_ms / 1000))),
         ..HistoryItem::new(id, now_secs(), text, translation, Direction::KoToEn, capture.app.as_ref().map(|a| a.exe.clone()))
     });
     em.timing(Stage::Total, appeared);

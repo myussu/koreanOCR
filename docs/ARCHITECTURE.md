@@ -210,15 +210,27 @@ UI state (selection, pending joins, the chip) is in `scan.js`; the commands are 
 * **Live lane** (`Engine::translate_live`): *translation only*, with the earlier lines (`Inner::live_turns`, `context_lines`)
   sent as chat turns, a short answer cap and low temperature (`maru-llm` `translate_live`, `prompts::ko_en_live`). It has its
   own cache and never touches the normal translation's cache or memory. Every line also goes into the history
-  (`HistoryItem` with `live`, `first_ms`, `total_ms`).
+  (`HistoryItem` with `live`, `first_ms`, `total_ms`, optional `appeared_at`). `at` remains completion time; `appeared_at` estimates
+  the wall-clock second corresponding to the watcher's monotonic appearance clock.
+* **Optional live experiments:** `bootstrap.rs` retains CPU PP-OCR before adding the vision reader and passes it as
+  `EngineParts::live_ocr`. `continuous.cpu_ocr` selects it only for `start_continuous`; normal capture and scan OCR remain unchanged.
+  The reader stays resident for other features. Missing CPU OCR gives an explicit error, with no silent change of recognizer.
+  `live_lane.rs` admits at most `continuous.max_in_flight` live jobs (`0` retains detached requests). `1` keeps FIFO requests and
+  completed dialogue context; `2` overlaps requests and may lack an unfinished preceding turn. Queued lines are not superseded.
+  Request timing logs separate admission/model wait from first text and generation; live HTTP requests ask for usage metadata so
+  llama.cpp prompt/decode timings can be logged. Normal model requests do not enable this option.
 * **Shell** (`flow::start_continuous`): builds the band window geometry (`logic::band_window`: the subtitle area plus room above and below, and which side to prefer; `band_cover`: the original line's box the band must stay clear of), keeps only the
   newest line drawn (`AppState::live_latest`), emits `maru-live` (a `LiveBand`), `maru-live-clear`, `maru-live-off` to the live window.
 * **UI:** `live.js` (+ `live-core.js`: `chooseSide`/`bandStyle`/`fitFont` put the band above or below the original, never over it; the `createBand` state machine; `latencyText`), `live.html`, `live.css`.
   The window is created hidden, click-through, never focused, and excluded from screen capture so OCR never reads the translation back.
-  `live_idle` hides it after the fade. History → Live subtitles (`hub.js`) shows the lines in order with latency.
-* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`).
-* **Tests:** `continuous.rs`, `change.rs`, `pipeline.rs` (live lane tests), `logic.rs`, `live.test.mjs`, `prompts.rs`.
-* **Real-PC check:** M-3.
+  `live_idle` hides it after the fade. History → Live subtitles (`hub.js`, `live-core::liveHistory`) sorts by capture ID with latency,
+  even when requests finish out of order. Other history views retain their existing ordering.
+* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`, `cpu_ocr`, `max_in_flight`).
+  New fields default to `false`/`0`, preserving existing files and behavior, and require restart.
+* **Tests:** `continuous.rs`, `change.rs`, `live_lane.rs`, `pipeline.rs` (live lane, bounded admission, failure recovery, isolated OCR),
+  `logic.rs`, `live.test.mjs`, `settings.test.mjs`, `prompts.rs`, `client.rs`. Optional `tests/live_recording.rs` runs the real watcher,
+  OCR and translation against a recording, with installed local models and speech resources; it writes raw results, never asserts speed.
+* **Real-PC check:** M-3, M-11.
 
 ### 4.8 Speech (TTS)
 `maru-tts` (`Tts`: split into sentences → disk cache → provider → remember). Providers: the local `tts-server`
@@ -301,6 +313,10 @@ this table in the same change. Errors are `Error { id, stage, message }` followe
 slot that would cancel a scan (joins are detached; live lines have their own lane). Anything that must outlive a request
 (remembered labels, vocabulary) is written by the task itself.
 
+Live request scheduling is opt-in; it does not cancel pending lines or change per-request event order. `history` adds nullable
+`appeared_at` for live entries; the existing `at` keeps its meaning. Capture IDs, rather than completion order, determine the live
+history display. Neither queued jobs nor history are durable across app exit.
+
 ### 6.3 Shell ↔ pages
 * **Windows** (labels in `windows.rs`): `panel` (`index.html`), `picker`, `hub`, `scan`, `live`. Adding one needs a capability entry in
   `app/src-tauri/capabilities/default.json`.
@@ -322,9 +338,10 @@ slot that would cancel a scan (joins are detached; live lines have their own lan
 | `models/` | installers | OCR, reading model, TTS models; GGUF models are cached by `llama-server` |
 | `bin/` | `setup llm` | llama.cpp (**loose files only**; `kiwi/` and `tts/` are subfolders and must never be mixed in — their DLLs would replace llama.cpp's) |
 | `tts-cache/` | `maru-tts` | spoken sentences |
-| `maru-app.log` | `app/src-tauri/main.rs` | the overlay's log (previous run in `maru-app.previous.log`) |
+| `maru-app.log` | `app/src-tauri/main.rs` | the overlay's log (previous run in `maru-app.previous.log`); live request phases/counts and optional model prompt/decode timings |
 
 `MARU_HOME` relocates everything (`config.toml`, `data`, `models`, `bin`); tests and `--home` use `Paths::under`.
+Live pending jobs, context turns, timings and history (including appearance timestamps) stay in memory; no database migration is added.
 
 ## 7. Concurrency, cancellation, speed
 * The engine runs on a Tokio runtime owned by the front end; blocking work (GDI, ONNX, SQLite) goes through `spawn_blocking`.

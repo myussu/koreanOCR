@@ -364,6 +364,25 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         (chosen.map(|o| crate::respace::RespacingOcr::wrap(o, &analyzer)), scan)
     };
 
+    let live_ocr = if cfg.continuous.cpu_ocr {
+        if cfg.ocr.device == "cpu" && ocr.as_ref().is_some_and(|o| o.name() == "paddle") {
+            ocr.clone()
+        } else {
+            let (mut live_cfg, live_paths) = (cfg.clone(), paths.clone());
+            live_cfg.ocr.device = "cpu".into();
+            let loaded = tokio::task::spawn_blocking(move || load_paddle(&live_cfg, &live_paths, None)).await.unwrap_or_else(|e| Err(e.to_string()));
+            match loaded {
+                Ok(o) => Some(crate::respace::RespacingOcr::wrap(o, &analyzer)),
+                Err(why) => {
+                    notes.push(format!("Live CPU PP-OCR is unavailable ({why}); turn off continuous.cpu_ocr or run `maru setup ocr`."));
+                    None
+                }
+            }
+        }
+    } else {
+        None
+    };
+
     // Screen-scan labels are remembered between sessions.
     let labels = match crate::labels::LabelCache::open(&paths.labels_db()) {
         Ok(c) => Arc::new(c),
@@ -422,6 +441,7 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         platform,
         ocr,
         scan_ocr,
+        live_ocr,
         labels: Some(labels),
     });
 

@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { bandStyle, bandWidth, chooseSide, clampCenter, createBand, estimateHeight, fitFont, fontFor, gapFor, latencyText, roomOn } from '../live-core.js';
+import { bandStyle, bandWidth, chooseSide, clampCenter, createBand, estimateHeight, fitFont, fontFor, gapFor, latencyText, liveHistory, roomOn } from '../live-core.js';
+
+test('live history follows capture order without changing the normal history array', () => {
+  const items = [{ id: 3, live: true }, { id: 1, live: true }, { id: 2, live: false }];
+  assert.deepEqual(liveHistory(items).map((i) => i.id), [1, 3]);
+  assert.deepEqual(items.map((i) => i.id), [3, 1, 2]);
+});
 
 test('the font follows the original text and stays readable', () => {
   assert.equal(fontFor(30), 24);

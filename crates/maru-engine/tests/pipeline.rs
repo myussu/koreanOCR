@@ -77,6 +77,7 @@ fn build(cfg: Config, llm: Option<LlmClient>, server: Option<MockServer>) -> Har
         platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
         ocr: None,
         scan_ocr: None,
+        live_ocr: None,
         labels: None,
     });
     Harness { engine, vocab, server }
@@ -414,6 +415,7 @@ async fn requests_wait_for_a_model_that_is_still_loading() {
         platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
         ocr: None,
         scan_ocr: None,
+        live_ocr: None,
         labels: None,
     });
     assert_eq!(engine.llm_status(), LlmStatus::Starting);
@@ -451,6 +453,7 @@ async fn a_model_that_failed_to_start_explains_why() {
         platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
         ocr: None,
         scan_ocr: None,
+        live_ocr: None,
         labels: None,
     });
     let events = collect(engine.translate(Capture::typed(SENTENCE)).1).await;
@@ -531,6 +534,7 @@ mod scan {
             platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(screen), os_ocr: None },
             ocr: None,
             scan_ocr: Some(Arc::new(FakeOcr(lines))),
+            live_ocr: None,
             labels,
         });
         Setup { engine, vocab, server }
@@ -739,6 +743,7 @@ mod scan {
             platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![])), os_ocr: None },
             ocr: None,
             scan_ocr: None,
+            live_ocr: None,
             labels: None,
         });
         let events = collect(engine.scan(SCREEN).1).await;
@@ -879,4 +884,120 @@ async fn live_lines_do_not_cancel_each_other() {
     let (a, b) = tokio::join!(collect(a), collect(b));
     assert!(names(&a).contains(&"translation_done") && names(&b).contains(&"translation_done"));
     assert_eq!(h.engine.history().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn one_active_live_translation_keeps_pending_lines_and_gives_them_the_previous_answer() {
+    let h = harness_with(|_, _| MockResponse { status: 200, chunks: sse_answer(&["The answer."]), delay_ms: 50 }, |c| c.continuous.max_in_flight = 1).await;
+    let (first_id, a) = h.engine.translate_live(live_line(SENTENCE));
+    let (second_id, b) = h.engine.translate_live(live_line("저는 학생이에요"));
+    let (a, b) = tokio::join!(collect(a), collect(b));
+    assert!(names(&a).contains(&"translation_done") && names(&b).contains(&"translation_done"));
+    let requests = h.requests();
+    assert_eq!(requests.len(), 2);
+    assert!(!requests[0].contains("\"assistant\""));
+    assert!(requests[1].contains(SENTENCE) && requests[1].contains("The answer.") && requests[1].contains("\"assistant\""), "{}", requests[1]);
+    let history = h.engine.history();
+    assert_eq!(history.iter().map(|i| i.id).collect::<Vec<_>>(), [first_id, second_id]);
+    assert!(history.iter().all(|i| i.appeared_at.is_some_and(|t| t <= i.at)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn two_active_live_translations_leave_the_third_waiting_without_losing_it() {
+    let h = harness_with(|_, _| MockResponse { status: 200, chunks: sse_answer(&["First ", "second ", "third."]), delay_ms: 200 }, |c| c.continuous.max_in_flight = 2).await;
+    let (_, a) = h.engine.translate_live(live_line(SENTENCE));
+    let (_, b) = h.engine.translate_live(live_line("저는 학생이에요"));
+    let (_, c) = h.engine.translate_live(live_line("안녕하세요"));
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while h.requests().len() < 2 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    }).await.expect("the first two requests start");
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    assert_eq!(h.requests().len(), 2, "the third cannot reach the model while both places are occupied");
+    let (a, b, c) = tokio::join!(collect(a), collect(b), collect(c));
+    assert!([a, b, c].iter().all(|e| names(e).contains(&"translation_done")));
+    assert_eq!(h.requests().len(), 3);
+    assert_eq!(h.engine.history().len(), 3);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_failed_live_request_releases_the_place_for_the_next_line() {
+    let calls = std::sync::atomic::AtomicUsize::new(0);
+    let h = harness_with(move |_, _| {
+        if calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst) == 0 {
+            MockResponse { status: 503, chunks: vec![b"unavailable".to_vec()], delay_ms: 0 }
+        } else {
+            MockResponse { status: 200, chunks: sse_answer(&["An answer."]), delay_ms: 0 }
+        }
+    }, |c| c.continuous.max_in_flight = 1).await;
+    let (_, a) = h.engine.translate_live(live_line(SENTENCE));
+    let (_, b) = h.engine.translate_live(live_line("저는 학생이에요"));
+    let (a, b) = tokio::join!(collect(a), collect(b));
+    assert!(names(&a).contains(&"error"));
+    assert_eq!(text_of(&b, Variant::Primary), "An answer.");
+    assert_eq!(h.requests().len(), 2);
+    assert_eq!(h.engine.history().len(), 1);
+}
+
+struct CountingOcr(std::sync::atomic::AtomicUsize);
+
+impl maru_ocr::OcrEngine for CountingOcr {
+    fn name(&self) -> &'static str { "counting" }
+    fn recognize(&self, _: &image::RgbImage) -> maru_ocr::Result<maru_ocr::OcrOutput> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(maru_ocr::OcrOutput { lines: vec![maru_ocr::OcrLine { text: SENTENCE.into(), rect: maru_core::Rect::new(0.0, 0.0, 100.0, 20.0), words: vec![], confidence: 1.0 }] })
+    }
+}
+
+fn ocr_engine(cpu_ocr: bool, normal: Arc<CountingOcr>, live: Option<Arc<CountingOcr>>) -> Engine {
+    let mut config = Config::default();
+    config.continuous.cpu_ocr = cpu_ocr;
+    config.continuous.interval_ms = 50;
+    config.continuous.stable_ms = 50;
+    Engine::new(EngineParts {
+        config, analyzer: Analyzer::heuristic(), dict: None,
+        vocab: Arc::new(Vocab::open_in_memory(SrsConfig::default()).unwrap()),
+        llm: None, llm_status: None,
+        platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![FakeScreen::blank(100, 30)])), os_ocr: None },
+        ocr: Some(normal), scan_ocr: None, live_ocr: live.map(|o| o as Arc<dyn maru_ocr::OcrEngine>), labels: None,
+    })
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn opting_into_cpu_live_ocr_leaves_manual_region_ocr_on_its_original_engine() {
+    let normal = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
+    let cpu = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
+    let engine = ocr_engine(true, normal.clone(), Some(cpu.clone()));
+    let region = maru_core::Rect::new(0.0, 0.0, 100.0, 30.0);
+    engine.capture_region(region).await.unwrap();
+    let before = normal.0.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(before > 0);
+    let mut watcher = engine.start_continuous(region).unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(2), watcher.rx.recv()).await.unwrap().unwrap();
+    watcher.stop();
+    assert!(matches!(event, maru_engine::LiveEvent::Line(_)));
+    assert!(cpu.0.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    assert_eq!(normal.0.load(std::sync::atomic::Ordering::SeqCst), before);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn unavailable_cpu_live_ocr_is_reported_instead_of_silently_changing_recognition() {
+    let normal = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
+    let engine = ocr_engine(true, normal, None);
+    let err = engine.start_continuous(maru_core::Rect::new(0.0, 0.0, 100.0, 30.0)).err().expect("missing CPU OCR");
+    assert!(err.to_string().contains("CPU PP-OCR for live subtitles is unavailable"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_subtitles_keep_the_original_ocr_until_cpu_ocr_is_requested() {
+    let normal = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
+    let cpu = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
+    let engine = ocr_engine(false, normal.clone(), Some(cpu.clone()));
+    let mut watcher = engine.start_continuous(maru_core::Rect::new(0.0, 0.0, 100.0, 30.0)).unwrap();
+    let event = tokio::time::timeout(Duration::from_secs(2), watcher.rx.recv()).await.unwrap().unwrap();
+    watcher.stop();
+    assert!(matches!(event, maru_engine::LiveEvent::Line(_)));
+    assert!(normal.0.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    assert_eq!(cpu.0.load(std::sync::atomic::Ordering::SeqCst), 0);
 }

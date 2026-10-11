@@ -64,6 +64,8 @@ pub struct EngineParts {
     pub scan_ocr: Option<Arc<dyn OcrEngine>>,
     /// Remembered scan labels. `None` = labels are not remembered between scans.
     pub labels: Option<Arc<crate::labels::LabelCache>>,
+    /// CPU PP-OCR for the optional live-only path. `None` means it is unavailable.
+    pub live_ocr: Option<Arc<dyn OcrEngine>>,
 }
 
 /// A click on a word, with the context needed to explain it.
@@ -112,6 +114,9 @@ pub(crate) struct Inner {
     /// A sync with AnkiWeb is already scheduled.
     pub anki_sync_pending: std::sync::atomic::AtomicBool,
     pub runtime: tokio::runtime::Handle,
+    pub live_ocr: Option<Arc<dyn OcrEngine>>,
+    pub live_counts: Arc<crate::live_lane::Counters>,
+    pub live_queue: std::sync::OnceLock<mpsc::UnboundedSender<crate::live_lane::Job>>,
 }
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -157,6 +162,9 @@ impl Engine {
             ocr: parts.ocr,
             scan_ocr: parts.scan_ocr,
             labels: parts.labels,
+            live_ocr: parts.live_ocr,
+            live_counts: Arc::new(crate::live_lane::Counters::default()),
+            live_queue: std::sync::OnceLock::new(),
             scan_task: Mutex::new(None),
             scan_scope: Mutex::new((0, String::new())),
             cache: Mutex::new(Cache::new(256)),
@@ -171,7 +179,12 @@ impl Engine {
             runtime: tokio::runtime::Handle::current(),
             cfg,
         };
-        Self { inner: Arc::new(inner) }
+        let inner = Arc::new(inner);
+        if inner.cfg.continuous.max_in_flight > 0 {
+            let tx = crate::live_lane::queue(&inner.runtime, Arc::downgrade(&inner), inner.cfg.continuous.max_in_flight);
+            let _ = inner.live_queue.set(tx);
+        }
+        Self { inner }
     }
 
     pub fn config(&self) -> &Config {
@@ -228,7 +241,13 @@ impl Engine {
 
     /// Watch `region` and emit a capture whenever its text changes.
     pub fn start_continuous(&self, region: Rect) -> Result<ContinuousHandle> {
-        let ocr = self.inner.ocr.clone().ok_or(CaptureError::NoOcr)?;
+        let ocr = if self.inner.cfg.continuous.cpu_ocr {
+            self.inner.live_ocr.clone().ok_or_else(|| EngineError::Other("CPU PP-OCR for live subtitles is unavailable. Run `maru setup ocr`, or turn off continuous.cpu_ocr.".into()))?
+        } else {
+            self.inner.ocr.clone().ok_or(CaptureError::NoOcr)?
+        };
+        tracing::info!(ocr = ocr.name(), cpu_ocr = self.inner.cfg.continuous.cpu_ocr,
+            max_in_flight = self.inner.cfg.continuous.max_in_flight, "live session started");
         lock(&self.inner.live_turns).clear(); // a new session is a new scene
         Ok(continuous::spawn(&self.inner.runtime, self.inner.platform.screen.clone(), ocr, self.inner.cfg.continuous.clone(), region))
     }
@@ -250,7 +269,15 @@ impl Engine {
     pub fn translate_live(&self, line: LiveLine) -> (u64, EventRx) {
         let id = self.next_id();
         let (tx, rx) = mpsc::unbounded_channel();
-        self.inner.runtime.spawn(pipeline::live(self.inner.clone(), id, line, tx));
+        let timing = crate::live_lane::Timing::new(self.inner.live_counts.clone(), id, &line);
+        if let Some(queue) = self.inner.live_queue.get() {
+            if let Err(e) = queue.send(crate::live_lane::Job { id, line, tx, timing }) {
+                let _ = e.0.tx.send(Event::Error { id, stage: maru_core::event::Stage::Llm, message: "The live translation queue stopped. Restart Maru.".into() });
+                let _ = e.0.tx.send(Event::Done { id });
+            }
+        } else {
+            self.inner.runtime.spawn(pipeline::live(self.inner.clone(), id, line, tx, timing));
+        }
         (id, rx)
     }
 

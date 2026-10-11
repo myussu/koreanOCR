@@ -119,3 +119,6 @@ export function latencyText(item) {
   const s = (ms) => `${(ms / 1000).toFixed(1)} s`;
   return `${s(item.first_ms)} to the first word · ${s(item.total_ms)} in all`;
 }
+
+/** Capture ids keep live history in dialogue order even when answers finish out of order. */
+export const liveHistory = (items) => items.filter((i) => i.live).sort((a, b) => a.id - b.id);
