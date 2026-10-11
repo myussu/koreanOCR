@@ -154,7 +154,7 @@ positions, so they are a candidate for a "double-check" mode rather than a repla
 3. The model server is started in the background at launch, kept warm, and its prompt prefix is cached
    (constant system prompts, `--cache-reuse`); thinking is switched off.
 4. Selecting text is read **exactly** through UI Automation (no OCR error, no OCR time); OCR is the fallback.
-5. Live subtitles read a line as soon as two reads in a row agree (or the picture holds still), without waiting for a fade to finish, read a moving scene without text slowly, and ignore one-character OCR jitter. Their translation is its own lane: translation only (no word breakdown), the earlier lines as chat turns, a short answer cap and low temperature. The normal translation is not touched.
+5. Live subtitles read a line as soon as two reads in a row agree (or the picture holds still), without waiting for a fade to finish, read a moving scene without text slowly, and ignore one-character OCR jitter. They also notice lettering the instant it appears (a cheap check for bright-next-to-dark contrast, which a moving 3D backdrop does not produce), so even a one-second subtitle over a busy cutscene is read straight away and taken down as soon as it goes. Their translation is its own lane: translation only (no word breakdown), the earlier lines as chat turns, a short answer cap and low temperature. The normal translation is not touched.
 6. Repeated lines come from a cache; words you know are not sent for glossing at all.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the extension points.

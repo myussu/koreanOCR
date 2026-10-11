@@ -9,6 +9,11 @@
 //!   `stable_ms` (a finished line needs only one read);
 //! * a scene that keeps moving with no text in it is read at a slower rate, so a cutscene does not
 //!   cost a core;
+//! * but text itself is noticed at once, whatever the scene is doing: lettering is bright next to dark
+//!   (see [`text_score`]), so a jump in that number means a line just appeared or went. It starts the
+//!   clock for the line, makes the watcher read on every tick until it has the line, lets a read that
+//!   saw the lettering unchanged while the OCR ran be believed on its own, and takes a line down as soon
+//!   as the lettering collapses, without another read;
 //! * a re-read that is just OCR jitter is not reported again.
 
 use std::sync::Arc;
@@ -21,7 +26,7 @@ use maru_platform::ScreenGrabber;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
-use crate::change::{Signature, changed_fraction, signature, similarity};
+use crate::change::{Signature, changed_fraction, signature, similarity, text_jumped, text_presence, text_score};
 
 /// Cells must brighten/darken by more than this (0..255) to count as changed.
 const CELL_THRESHOLD: u8 = 12;
@@ -127,6 +132,10 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
     let mut pending: Option<Pending> = None; // read once, waiting for a second read to agree
     let mut shown = String::new(); // the line on screen now
     let mut empty_reads = 0u8;
+    let mut score_prev = 0u32; // the text signal at the previous tick
+    let mut score_shown = 0u32; // the text signal of the frame the line on screen was read from
+    let mut text_changed_at = Instant::now(); // when the text signal last jumped
+    let mut gone_ticks = 0u8; // consecutive ticks the text signal has been far below the shown line's
 
     loop {
         tokio::select! {
@@ -143,6 +152,36 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
         let sig = signature(&frame);
         let changed = prev_sig.as_ref().is_none_or(|p| changed_fraction(p, &sig, CELL_THRESHOLD) > cfg.diff_threshold);
         prev_sig = Some(sig.clone());
+
+        // The text signal: lettering appearing or going is visible in it at once, over any backdrop.
+        let area = frame.width() as usize * frame.height() as usize;
+        let score = text_score(&frame);
+        if text_jumped(score_prev, score, area) {
+            text_changed_at = now;
+            // The clock for this line starts when its lettering appears, not at some earlier scene change.
+            burst = Some(now);
+        }
+        score_prev = score;
+        let text_still = now.duration_since(text_changed_at) >= stable;
+        let present = score >= text_presence(area);
+        // The signal vouches that the line is gone only if it had seen lettering for it in the first place.
+        let text_gone = score_shown >= text_presence(area) && !present;
+
+        // The lettering of the line on screen has collapsed: it is gone, no read needed.
+        if !shown.is_empty() && score_shown >= text_presence(area) && u64::from(score) * 4 < u64::from(score_shown) {
+            gone_ticks = gone_ticks.saturating_add(1);
+        } else {
+            gone_ticks = 0;
+        }
+        if gone_ticks >= 2 {
+            gone_ticks = 0;
+            shown.clear();
+            pending = None;
+            if tx.send(LiveEvent::Cleared).await.is_err() {
+                return;
+            }
+        }
+
         if changed {
             still_since = now;
             burst.get_or_insert(now);
@@ -157,6 +196,7 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
             if let Some(p) = pending.take() {
                 let appeared = burst.unwrap_or(now);
                 shown = p.text.clone();
+                score_shown = score;
                 if tx.send(LiveEvent::Line(Box::new(line_of(p, appeared, screen.as_ref())))).await.is_err() {
                     return;
                 }
@@ -193,7 +233,7 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
             empty_reads = empty_reads.saturating_add(1);
             // Gone once the picture has settled on nothing, or twice in a row (one missed read
             // over a busy background must not take the line down and bring it back).
-            if !shown.is_empty() && (still || empty_reads >= 2) {
+            if !shown.is_empty() && (still || text_gone || empty_reads >= 2) {
                 shown.clear();
                 burst = None;
                 if tx.send(LiveEvent::Cleared).await.is_err() {
@@ -216,7 +256,9 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
         }
         let agrees = pending.as_ref().is_some_and(|c| similarity(&c.text, &text) >= AGREE);
         let read = Pending { text, out, ocr_ms };
-        if !(still || agrees) {
+        // Lettering that was there, and did not change while the OCR ran, is a finished line: one read is enough.
+        let settled = !(still || agrees) && present && (text_still || text_settled(&screen, region, score, area).await);
+        if !(still || agrees || settled) {
             pending = Some(read); // wait for the next read (or the picture holding still) to confirm it
             continue;
         }
@@ -224,9 +266,19 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
         let appeared = burst.take().unwrap_or(now);
         pending = None;
         shown = read.text.clone();
+        score_shown = score;
         if tx.send(LiveEvent::Line(Box::new(line_of(read, appeared, screen.as_ref())))).await.is_err() {
             return;
         }
+    }
+}
+
+/// Is the text signal the same now as when the frame was taken? Then the lettering did not change while it was being read.
+async fn text_settled(screen: &Arc<dyn ScreenGrabber>, region: Rect, score: u32, area: usize) -> bool {
+    let screen = screen.clone();
+    match tokio::task::spawn_blocking(move || screen.grab(region)).await {
+        Ok(Ok(now)) => !text_jumped(score, text_score(&now), area),
+        _ => false,
     }
 }
 
@@ -346,6 +398,96 @@ mod tests {
         assert!(next(&mut h, 450).await.is_none());
         let reads = *ocr.calls.lock().unwrap() - before;
         assert!(reads <= 14, "a moving empty scene was read {reads} times in 450 ms (15 ms ticks)");
+    }
+
+    /// A strip of lettering (bright blocks with a dark outline) over a backdrop of mid tones that moves with `shift`.
+    /// `page` is what the fake OCR sees, as everywhere in these tests; 0 means no lettering.
+    fn lettered(page: u8, shift: u32) -> RgbImage {
+        let mut img = RgbImage::from_fn(400, 80, |x, y| {
+            let v = 100 + ((x + y * 3 + shift * 7) % 70) as u8;
+            Rgb([v, v, v])
+        });
+        if page != 0 {
+            for k in 0..16u32 {
+                for y in 30..48u32 {
+                    for x in 20 + k * 20..32 + k * 20 {
+                        let edge = x < 22 + k * 20 || x >= 30 + k * 20 || !(32..46).contains(&y);
+                        img.put_pixel(x, y, if edge { Rgb([10, 10, 10]) } else { Rgb([250, 250, 250]) });
+                    }
+                }
+            }
+        }
+        img.put_pixel(0, 0, Rgb([page, 0, 0]));
+        img
+    }
+
+    /// Reads the lettering once and never again, so a line can only be reported if the first read is believed.
+    struct OnceOcr(std::sync::Mutex<bool>);
+
+    impl OcrEngine for OnceOcr {
+        fn name(&self) -> &'static str {
+            "once"
+        }
+        fn recognize(&self, image: &RgbImage) -> maru_ocr::Result<OcrOutput> {
+            let mut spent = self.0.lock().unwrap();
+            if image.get_pixel(0, 0)[0] == 0 || *spent {
+                return Ok(OcrOutput::default());
+            }
+            *spent = true;
+            Ok(OcrOutput { lines: vec![line("안녕하세요 여러분", 5.0, 5.0, 200.0)] })
+        }
+    }
+
+    /// Says the same words for every picture, with or without lettering.
+    struct StuckOcr;
+
+    impl OcrEngine for StuckOcr {
+        fn name(&self) -> &'static str {
+            "stuck"
+        }
+        fn recognize(&self, _: &RgbImage) -> maru_ocr::Result<OcrOutput> {
+            Ok(OcrOutput { lines: vec![line("안녕하세요 여러분", 5.0, 5.0, 200.0)] })
+        }
+    }
+
+    fn watch_with(frames: Vec<RgbImage>, ocr: Arc<dyn OcrEngine>) -> ContinuousHandle {
+        spawn(&tokio::runtime::Handle::current(), Arc::new(FakeScreen::new(frames)), ocr, cfg(), Rect::new(100.0, 800.0, 400.0, 80.0))
+    }
+
+    #[tokio::test]
+    async fn lettering_that_pops_in_over_a_moving_backdrop_is_believed_on_its_first_read() {
+        // the backdrop changes on every frame, so the picture never holds still; the lettering appears at once and stays
+        let mut frames: Vec<RgbImage> = (0..6).map(|i| lettered(0, i)).collect();
+        frames.extend((6..400).map(|i| lettered(10, i)));
+        let mut h = watch_with(frames, Arc::new(OnceOcr(Default::default())));
+        let line = next_line(&mut h, 1500).await.expect("one read of steady lettering is enough");
+        assert_eq!(line.capture.text, "안녕하세요 여러분");
+    }
+
+    #[tokio::test]
+    async fn a_single_read_is_not_believed_where_there_is_no_lettering() {
+        // the same one-read OCR, but the backdrop keeps moving and nothing text-like is on screen (the reader saw words
+        // in the texture): with nothing to confirm the read, the old rule (two agreeing reads) still applies
+        let frames: Vec<RgbImage> = (0..400)
+            .map(|i| {
+                let mut f = lettered(0, i);
+                if i >= 6 {
+                    f.put_pixel(0, 0, Rgb([10, 0, 0])); // the reader "sees" the page, the pixels have no lettering
+                }
+                f
+            })
+            .collect();
+        let mut h = watch_with(frames, Arc::new(OnceOcr(Default::default())));
+        assert!(next_line(&mut h, 800).await.is_none(), "nothing to confirm the read, so it is not reported");
+    }
+
+    #[tokio::test]
+    async fn a_line_ends_when_its_lettering_collapses_even_if_the_reader_keeps_saying_the_words() {
+        let mut frames: Vec<RgbImage> = (0..30).map(|i| lettered(10, i)).collect();
+        frames.extend((30..600).map(|i| lettered(0, i)));
+        let mut h = watch_with(frames, Arc::new(StuckOcr));
+        assert!(next_line(&mut h, 1500).await.is_some(), "the line");
+        assert!(matches!(next(&mut h, 1500).await, Some(LiveEvent::Cleared)), "gone as soon as the lettering is");
     }
 
     /// The overlay starts live mode from a window-event callback, which is not a Tokio thread.

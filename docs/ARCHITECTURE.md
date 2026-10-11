@@ -189,10 +189,21 @@ UI state (selection, pending joins, the chip) is in `scan.js`; the commands are 
 * **Real-PC check:** M-4.
 
 ### 4.7 Live subtitles (`Ctrl+Alt+C`, `Ctrl+Alt+Shift+C` to choose the area)
-* **Watcher** (`continuous.rs`, `change.rs`): looks at a fixed region every `interval_ms`; a picture that stopped moving
-  (`stable_ms`) or two agreeing reads is a finished line, read at once; a fading line is read sooner; a moving scene without
-  text is polled slowly; one-character OCR jitter is ignored. It emits `LiveEvent::Line(LiveLine)` and `LiveEvent::Cleared`
-  (the original line is gone). It reports its own stage timings to the log.
+* **Watcher** (`continuous.rs`, `change.rs`): looks at a fixed region every `interval_ms` and reads it with OCR only when the picture
+  differs from the last one read. A line is reported when two reads agree, the picture holds still (`stable_ms`), or — new — the
+  **text signal** vouches for it. A moving scene without text is polled slowly; one-character OCR jitter is ignored. It emits
+  `LiveEvent::Line(LiveLine)` and `LiveEvent::Cleared` (the original line is gone) and reports its own stage timings to the log.
+* **The text signal** (`change::text_score`): how many pixels are very bright right next to very dark ones (and the reverse), i.e.
+  lettering. A moving 3D backdrop scores about zero, lettering hundreds to thousands, and it appears the instant a subtitle does. A
+  jump (`text_jumped`) therefore means "a line appeared or went": it restarts the line's clock (`LiveLine::appeared`, so the logged
+  latency is honest), makes the watcher read on every tick until it has the line (a short subtitle over a constantly moving scene
+  was being missed because that scene is read at the slow idle rate), lets one read be believed when the signal did not change while
+  the OCR ran, and ends a line as soon as the lettering collapses, without another read. It is only used to decide *when to look*,
+  never what the text says, and where it carries no information (no lettering-like contrast) the older rules apply unchanged.
+* **Replay tool** (`crates/maru-engine/tests/replay.rs`, ignored by default): plays a recorded clip through the real watcher in real
+  time with a stand-in OCR that knows the truth and takes a realistic time, then prints, per subtitle, how long after appearing it was
+  read. Use it for any change to the watcher; see the file header for the environment variables. It needs `ffmpeg` and a clip, and the
+  clip is never committed (it is the game's content).
 * **Live lane** (`Engine::translate_live`): *translation only*, with the earlier lines (`Inner::live_turns`, `context_lines`)
   sent as chat turns, a short answer cap and low temperature (`maru-llm` `translate_live`, `prompts::ko_en_live`). It has its
   own cache and never touches the normal translation's cache or memory. Every line also goes into the history

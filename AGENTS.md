@@ -57,6 +57,8 @@ node --test app/ui/test/*.test.mjs
   tests; engine behaviour goes in `crates/maru-engine/tests/pipeline.rs` against the scripted model server and fake OCR/screen;
   UI decisions go in a pure `*-core.js` with a `node --test` file.
 * **A new `*.test.mjs` file must be added to the list in `.github/workflows/ci.yml`** (it does not use a glob).
+* Changes to the live-subtitle watcher (`continuous.rs`, `change.rs`) are also replayed against a recorded clip with
+  `crates/maru-engine/tests/replay.rs` (see its header; needs `ffmpeg` and a clip you were given — never commit a clip).
 * Layout and interaction changes in `app/ui` are checked in real Chromium through the page's browser demo (`?demo=…`, mocked commands);
   look at a screenshot, do not assume.
 * After pushing, check the CI run on the commit; a red push is yours to fix.
