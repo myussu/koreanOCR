@@ -59,13 +59,19 @@ enum Command {
         #[arg(long)]
         deep: bool,
     },
-    /// Measure translation latency.
+    /// Measure translation latency. It times the language model alone: the speech server and the vision reader are not started.
     Bench {
         /// Text file with one sentence per line (default: a built-in set).
         #[arg(long)]
         file: Option<PathBuf>,
         #[arg(short = 'n', long, default_value_t = 3)]
         runs: usize,
+        /// Time the live-subtitle lane (translation only, earlier lines as context) instead of the full translation.
+        #[arg(long)]
+        live: bool,
+        /// Use the model served at this address (e.g. `http://192.168.1.20:8080`) for this run, instead of the one in the config.
+        #[arg(long, value_name = "URL")]
+        endpoint: Option<String>,
     },
     /// Read a screenshot the way the screen scan does: list every Korean text found and how it is labelled.
     Scan {
@@ -437,16 +443,28 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             tools::doctor(&mut s, deep).await?;
             Ok(0)
         }
-        Command::Bench { file, runs } => {
+        Command::Bench { file, runs, live, endpoint } => {
             let sentences: Vec<String> = match file {
                 Some(f) => std::fs::read_to_string(&f)?.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect(),
+                // Subtitles are Korean: the live lane has nothing to do with the English sentences.
+                None if live => tools::KO_SENTENCES.iter().map(|s| s.to_string()).collect(),
                 None => tools::KO_SENTENCES.iter().chain(tools::EN_SENTENCES).map(|s| s.to_string()).collect(),
             };
             if sentences.is_empty() {
                 bail!("no sentences to run");
             }
+            // This times the language model, so nothing else may compete for the GPU while it runs.
+            cfg.ocr.vision_reader = false;
+            cfg.tts.enabled = false;
+            if let Some(url) = endpoint {
+                cfg.llm.endpoint = Some(url);
+            }
             let mut s = services(&paths, cfg, true).await;
-            tools::bench(&mut s, sentences, runs.max(1)).await?;
+            if live {
+                tools::bench_live(&mut s, sentences, runs.max(1)).await?;
+            } else {
+                tools::bench(&mut s, sentences, runs.max(1)).await?;
+            }
             Ok(0)
         }
         Command::Scan { image, boxes, no_llm } => {
@@ -678,6 +696,13 @@ mod cli_tests {
     #[test]
     fn the_command_line_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn bench_can_time_the_live_lane_against_another_pc() {
+        let b = Cli::try_parse_from(["maru", "bench", "--live", "--endpoint", "http://192.168.1.20:8080", "-n", "2"]).unwrap();
+        assert!(matches!(b.command, Command::Bench { live: true, runs: 2, endpoint: Some(ref e), .. } if e == "http://192.168.1.20:8080"));
+        assert!(matches!(Cli::try_parse_from(["maru", "bench"]).unwrap().command, Command::Bench { live: false, endpoint: None, .. }));
     }
 
     #[test]

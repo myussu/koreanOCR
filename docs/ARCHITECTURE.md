@@ -200,6 +200,9 @@ UI state (selection, pending joins, the chip) is in `scan.js`; the commands are 
   was being missed because that scene is read at the slow idle rate), lets one read be believed when the signal did not change while
   the OCR ran, and ends a line as soon as the lettering collapses, without another read. It is only used to decide *when to look*,
   never what the text says, and where it carries no information (no lettering-like contrast) the older rules apply unchanged.
+* **Model benchmark** (`maru bench --live [--endpoint URL]`, `maru-cli/src/tools.rs::bench_live`): sends Korean sentences through `translate_live`
+  one after another (so earlier lines are context, as in a cutscene) and prints first-word and total latency. It starts neither the speech server
+  nor the reading model, and `--endpoint` points one run at another PC's model without touching the config.
 * **Replay tool** (`crates/maru-engine/tests/replay.rs`, ignored by default): plays a recorded clip through the real watcher in real
   time with a stand-in OCR that knows the truth and takes a realistic time, then prints, per subtitle, how long after appearing it was
   read. Use it for any change to the watcher; see the file header for the environment variables. It needs `ffmpeg` and a clip, and the

@@ -84,6 +84,67 @@ pub async fn bench(services: &mut Services, sentences: Vec<String>, runs: usize)
     Ok(())
 }
 
+/// Time the live-subtitle lane: each Korean sentence goes through `translate_live`, one after the other, as
+/// subtitles of a cutscene would, so the earlier lines are sent to the model as context. Only the model (and the
+/// network to it) is timed; there is no screen and no OCR.
+pub async fn bench_live(services: &mut Services, sentences: Vec<String>, runs: usize) -> Result<()> {
+    if !services.engine.has_llm() {
+        bail!("no language model is configured, so there is nothing to time (set [llm] in config.toml or pass --endpoint)");
+    }
+    eprintln!("Waiting for the language model …");
+    if let LlmStatus::Failed(why) = services.wait_for_llm().await {
+        bail!("the language model did not start: {why}");
+    }
+    let (mut first, mut total) = (vec![], vec![]);
+    let mut errors = 0;
+    // One untimed line so cold-start costs (KV cache, GPU clocks, the first connection) do not skew the numbers.
+    live_once(&services.engine, &sentences[0]).await;
+    for _ in 0..runs {
+        for s in &sentences {
+            services.engine.clear_cache(); // a repeated line would otherwise be answered from the cache
+            let timed = live_once(&services.engine, s).await;
+            errors += usize::from(timed.error);
+            if let Some(ms) = timed.first_ms {
+                first.push(ms);
+            }
+            total.push(timed.total_ms);
+        }
+    }
+    let model = services.engine.config().llm.endpoint.clone().map_or_else(|| "the local model".to_string(), |url| format!("the model at {url}"));
+    println!("Live-subtitle latency with {model}: {} lines ({} sentences × {runs} run(s)), each sent with the lines before it as context:", sentences.len() * runs, sentences.len());
+    for (name, v) in [("first word", first), ("done", total)] {
+        println!("{}", summarize(name, v));
+    }
+    if errors > 0 {
+        println!("  {errors} line(s) reported errors; the numbers above include them");
+    }
+    Ok(())
+}
+
+struct LiveTiming {
+    first_ms: Option<u32>,
+    total_ms: u32,
+    error: bool,
+}
+
+async fn live_once(engine: &maru_engine::Engine, text: &str) -> LiveTiming {
+    let started = std::time::Instant::now();
+    let ms = |t: std::time::Instant| t.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+    let line = maru_engine::LiveLine { capture: Capture::typed(text), appeared: started, ready_ms: 0, ocr_ms: 0 };
+    let (_, mut rx) = engine.translate_live(line);
+    let mut out = LiveTiming { first_ms: None, total_ms: 0, error: false };
+    while let Some(e) = rx.recv().await {
+        match e {
+            Event::Translation { .. } if out.first_ms.is_none() => out.first_ms = Some(ms(started)),
+            Event::Error { .. } => out.error = true,
+            Event::Done { .. } => break,
+            _ => {}
+        }
+    }
+    out.total_ms = ms(started);
+    out
+}
+
 struct Drained {
     stages: Vec<(Stage, u32)>,
     errors: usize,

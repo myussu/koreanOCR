@@ -87,6 +87,23 @@ Everything else already works without CUDA: OCR runs on the CPU by default (`[oc
 * or keep the model on the strong PC: start `llama-server` there (or LM Studio, with the server reachable on your network) and set `[llm] endpoint = "http://<that-pc>:8080/v1"` on this one. Maru then uses it instead of starting its own, so on this PC skip `maru setup llm` and only the OCR and the overlay run locally;
 * point `[tts]` at that PC too (`provider = "endpoint"`), as in **Speech** below, or leave speech off.
 
+### A model on another PC (optional)
+
+The translation model can run on a second PC on your network, so the PC you play on keeps its GPU for the game. It is a setting, not part of
+the wizard: on the PC that will serve the model, install llama.cpp (the same release `maru setup llm` downloads, or `maru setup llm` itself) and start
+the server the way Maru starts its own, but listening on the network:
+
+```powershell
+llama-server.exe -hf unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL --no-mmproj --host 0.0.0.0 --port 8080 -c 8192 -np 2 -ngl all -fa on --cache-reuse 256 --reasoning off
+```
+Let it through the firewall on private networks (`New-NetFirewallRule -DisplayName llama-server -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private`)
+and check it from your PC with `curl http://<that-pc>:8080/health`. The server has no login: keep it on your home network and never forward the port.
+Then on your PC, either set it for good in **Settings → Translation model** (or `[llm] endpoint = "http://<that-pc>:8080"`), or try it for one command only:
+`maru bench --live --endpoint http://<that-pc>:8080` times the live-subtitle lane against it (`maru bench --live` alone times the local model; quit the
+overlay first, it holds the local model's port). The reading model and the speech server still start on your PC unless you turn them off
+(`[ocr] vision_reader = false`, `[tts] enabled = false` or `provider = "endpoint"`). To compare local and remote on a real cutscene, follow M-11 in
+[docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md).
+
 Config file (`maru config init` writes it; [docs/config.example.toml](docs/config.example.toml)
 shows every option):
 

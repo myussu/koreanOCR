@@ -55,6 +55,28 @@ cargo test -p maru-engine --release --test replay -- --ignored --nocapture` (nee
 per subtitle; see the file header). It checks the watcher's timing, not recognition quality or the model's speed.
 **Why unverified:** needs real OCR, a real model and a real screen. Latency numbers can only come from your hardware.
 
+## M-11 Live subtitles: the model on this PC against the model on another PC
+**Why:** the model, the reading model, the speech server and the game all want the same GPU; a few lines took 1–1.8 s to the first word when most
+took 0.4–0.5 s. This test says how much of that is the GPU being shared, and what a second PC buys.
+**Needs:** a second PC on the same network with a GPU, serving the same model (README → "A model on another PC"), and the recorded cutscene (M-3).
+**Part 1: the model alone, no screen, no OCR (about a minute each).** Quit the Maru overlay first (it holds the local model's port and GPU memory).
+| Run | Setup | Command |
+|---|---|---|
+| 1 | game closed, local model | `maru bench --live -n 3` |
+| 2 | game running (a scene on screen), local model | `maru bench --live -n 3` |
+| 3 | game running, model on the other PC | `maru bench --live --endpoint http://<that-pc>:8080 -n 3` |
+Run 1 against 2 is what sharing the GPU with the game costs; 2 against 3 is what the second PC buys. Run 3 also with the game closed if you can.
+**Part 2: the whole thing on the cutscene (as in M-3).** Run it twice and keep every other setting equal:
+* **A, everything local** as it is now (model, reading model and speech server on your GPU).
+* **C, model on the other PC** with `[ocr] vision_reader = false` and `[tts] enabled = false` (so nothing else of ours is on the GPU; the reading model is a separate model
+  that every live read uses once it has loaded).
+Optionally **B**: local model with the same two switched off, which separates "our other servers" from "the model itself".
+In another terminal during each cutscene run: `nvidia-smi --query-gpu=timestamp,memory.used,memory.total,utilization.gpu --format=csv -l 1 > gpu-A.csv` (stop with Ctrl+C afterwards).
+**Expect:** local model idle ≈ the first-word times of the typical lines; with the game running slower and more variable; the second PC's numbers close to idle plus a
+few milliseconds of network, as long as its GPU is no slower.
+**Bring, for each run/condition:** the `maru bench` output; for Part 2 the History → Live subtitles text and the `live line:` log lines, and the `gpu-*.csv`; the GPU of each PC.
+**Why unverified:** needs your two PCs; the benchmark and the external-endpoint path are only tested against fake servers.
+
 ## M-4 Screen scan and manual join
 **Steps:** `Ctrl+Alt+S` on a game menu, an inventory grid and a HUD. Click a label (its breakdown opens), hover for the ×, right-click to remove one.
 Then find a phrase that got two labels: **Shift+click** both, press **Join**; scan again (`Ctrl+Alt+S`) and check it comes back joined without
