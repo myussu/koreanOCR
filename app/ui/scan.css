@@ -46,6 +46,26 @@ html, body {
 .lab.dot:hover { width: auto !important; height: 18px !important; padding: 2px 7px; border-radius: 5px; z-index: 10; }
 .lab.dot:hover .t { display: block; }
 
+/* picked to be joined */
+.lab.sel { border-color: #fbbf24; box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.75), 0 1px 3px rgba(0, 0, 0, 0.5); z-index: 6; }
+
+/* Join / Split */
+#chip {
+  position: absolute;
+  display: flex;
+  height: 26px;
+  border-radius: 13px;
+  background: #fbbf24;
+  color: #1b1405;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+  pointer-events: auto;
+  z-index: 20;
+}
+#chip button { all: unset; box-sizing: border-box; height: 26px; cursor: pointer; font: 600 12px/26px "Segoe UI", system-ui, sans-serif; }
+#chip .main { padding: 0 6px 0 13px; border-radius: 13px 0 0 13px; }
+#chip .cancel { width: 24px; text-align: center; border-radius: 0 13px 13px 0; opacity: 0.7; }
+#chip button:hover { background: rgba(0, 0, 0, 0.12); opacity: 1; }
+
 /* delete this label */
 .lab .x {
   display: none;

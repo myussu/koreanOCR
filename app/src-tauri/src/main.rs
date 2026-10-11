@@ -165,6 +165,8 @@ fn main() {
             commands::picker_done,
             commands::scan_labels,
             commands::scan_open,
+            commands::scan_join,
+            commands::scan_unjoin,
             commands::word_contexts,
             commands::open_hub,
             commands::tts_test,

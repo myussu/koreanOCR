@@ -486,7 +486,7 @@ mod scan {
 
     /// A model that labels the screen strings it recognises, line by line, and counts as `?` the rest.
     fn labeller(_path: &str, body: &str) -> MockResponse {
-        let table = [("인벤토리", "Inventory"), ("확인", "OK"), ("상점", "Shop"), ("학교", "School")];
+        let table = [("인벤토리", "Inventory"), ("확인", "OK"), ("상점", "Shop"), ("학교", "School"), ("새 게임", "New game")];
         let mut lines = Vec::new();
         // the request body is JSON: its newlines arrive as the two characters `\n`
         for part in body.split("\\n") {
@@ -573,6 +573,74 @@ mod scan {
         let labels = model_labels(&events);
         assert!(labels.contains(&(0, "Inventory".into())) && labels.contains(&(2, "OK".into())) && labels.contains(&(1, "School".into())), "{labels:?}");
         assert!(events.iter().any(|e| matches!(e, Event::Timing { stage: Stage::Ocr, .. })));
+    }
+
+    fn rect_of(l: &OcrLine) -> Rect {
+        l.rect
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn labels_joined_by_hand_become_one_item_that_is_translated_and_remembered() {
+        use maru_engine::joins::JoinPiece;
+        let (a, b) = (line("새", 100.0, 100.0), line("게임", 230.0, 100.0));
+        let cache = Arc::new(LabelCache::open_in_memory().unwrap());
+        let s = setup(vec![a.clone(), b.clone(), line("확인", 900.0, 900.0)], true, |_| {}, Some(cache.clone())).await;
+
+        // the detector cut "새 게임" in two: three items on screen
+        let (scan_id, rx) = s.engine.scan(SCREEN);
+        let first = collect(rx).await;
+        assert_eq!(items_of(&first).iter().map(|i| i.text.as_str()).collect::<Vec<_>>(), ["새", "게임", "확인"]);
+
+        // the person joins the two labels (picked in the "wrong" order): one new item, number 3
+        let pieces = vec![JoinPiece { text: "게임".into(), rect: rect_of(&b) }, JoinPiece { text: "새".into(), rect: rect_of(&a) }];
+        let events = collect(s.engine.scan_join(scan_id, 3, pieces)).await;
+        let joined = items_of(&events);
+        assert_eq!(joined.len(), 1);
+        assert_eq!((joined[0].item, joined[0].text.as_str()), (3, "새 게임"));
+        assert_eq!(joined[0].rect, Rect::new(100.0, 100.0, 250.0, 22.0), "one box around both");
+        assert!(events.iter().all(|e| !matches!(e, Event::ScanItems { id, .. } if *id != scan_id)), "it belongs to the scan that is on screen");
+        assert_eq!(model_labels(&events), vec![(3, "New game".to_string())]);
+        assert_eq!(names(&events).last(), Some(&"done"));
+        assert_eq!(s.model_requests(), 2, "the scan, then the joined text");
+
+        // the next scan of this screen makes the same join by itself, with the label already known
+        let (second_id, rx) = s.engine.scan(SCREEN);
+        let again = collect(rx).await;
+        let items = items_of(&again);
+        assert_eq!(items.iter().map(|i| i.text.as_str()).collect::<Vec<_>>(), ["새 게임", "확인"]);
+        assert_eq!((items[0].label.as_str(), items[0].source), ("New game", LabelSource::Cache));
+        assert_eq!(s.model_requests(), 2, "nothing new to ask");
+
+        // splitting it again forgets the join
+        assert_eq!(s.engine.forget_join(second_id, "새 게임"), 1);
+        let (_, rx) = s.engine.scan(SCREEN);
+        assert_eq!(items_of(&collect(rx).await).len(), 3);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_join_on_a_scan_that_is_no_longer_current_is_refused_and_remembers_nothing() {
+        use maru_engine::joins::JoinPiece;
+        let cache = Arc::new(LabelCache::open_in_memory().unwrap());
+        let s = setup(vec![line("새", 100.0, 100.0), line("게임", 230.0, 100.0)], true, |_| {}, Some(cache.clone())).await;
+        let (old_id, rx) = s.engine.scan(SCREEN);
+        collect(rx).await;
+        collect(s.engine.scan(SCREEN).1).await; // a newer scan replaced it
+
+        let pieces = vec![JoinPiece { text: "새".into(), rect: Rect::new(100.0, 100.0, 120.0, 22.0) }, JoinPiece { text: "게임".into(), rect: Rect::new(230.0, 100.0, 120.0, 22.0) }];
+        let events = collect(s.engine.scan_join(old_id, 2, pieces)).await;
+        assert!(events.iter().any(|e| matches!(e, Event::Error { .. })));
+        assert!(!events.iter().any(|e| matches!(e, Event::ScanItems { .. })));
+        assert!(cache.joins_for("game.exe").is_empty());
+        assert_eq!(s.engine.forget_join(old_id, "새 게임"), 0);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_join_made_in_one_program_is_not_made_in_another() {
+        let cache = Arc::new(LabelCache::open_in_memory().unwrap());
+        cache.put_join("other.exe", &["새".to_string(), "게임".to_string()], "새 게임", 1);
+        let s = setup(vec![line("새", 100.0, 100.0), line("게임", 230.0, 100.0)], true, |_| {}, Some(cache)).await;
+        let items = items_of(&collect(s.engine.scan(SCREEN).1).await);
+        assert_eq!(items.len(), 2, "the scan runs in game.exe, where nothing was joined");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

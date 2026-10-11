@@ -68,7 +68,7 @@ pub(crate) fn found_items(out: &OcrOutput) -> Vec<Found> {
 }
 
 /// Everything we can say about the found lines without asking the model.
-fn offline_items(inner: &Inner, found: &[Found], mode: GlossMode, profile: Option<&AppProfile>, scope: &str) -> Vec<ScanItem> {
+fn offline_items(inner: &Inner, found: &[Found], mode: GlossMode, profile: Option<&AppProfile>, scope: &str, first_id: u32) -> Vec<ScanItem> {
     let glossary: HashMap<String, &String> = profile.map(|p| p.glossary.iter().map(|(k, v)| (key(k), v)).collect()).unwrap_or_default();
     let unglossed: Vec<&str> = found.iter().map(|f| f.text.as_str()).filter(|t| !glossary.contains_key(&key(t))).collect();
     let remembered = inner.labels.as_ref().map(|c| c.get_many(scope, &unglossed)).unwrap_or_default();
@@ -100,7 +100,7 @@ fn offline_items(inner: &Inner, found: &[Found], mode: GlossMode, profile: Optio
         } else {
             (String::new(), LabelSource::Pending)
         };
-        items.push(ScanItem { item: items.len() as u32, rect: f.rect, text: f.text.clone(), label, source, known: known && mode != GlossMode::All });
+        items.push(ScanItem { item: first_id + items.len() as u32, rect: f.rect, text: f.text.clone(), label, source, known: known && mode != GlossMode::All });
     }
     items
 }
@@ -184,13 +184,29 @@ pub(crate) async fn run(inner: Arc<Inner>, id: u64, source: Source, tx: EventTx)
     // ── the free part: dictionary, glossary, remembered labels ──
     let app = inner.platform.screen.foreground_app();
     let scope = app.as_ref().map(|a| a.exe.clone()).unwrap_or_default();
+    *crate::engine::lock(&inner.scan_scope) = (id, scope.clone());
+    // Lines the person once joined by hand are joined again.
+    let found = {
+        let rules = inner.labels.as_ref().map(|c| c.joins_for(&scope)).unwrap_or_default();
+        crate::joins::apply_rules(found_items(&out), &rules)
+    };
+    label(&inner, &em, found, 0, &scope, started).await;
+
+    em.send(Event::Timing { id, stage: Stage::Total, ms: started.elapsed().as_millis() as u32 });
+    em.done();
+}
+
+/// Give `found` its labels: what is free at once (`ScanItems`), then the model's answers, streamed
+/// (`ScanLabel`). Item numbers start at `first_id`, so a later join can add items to a scan that is on screen.
+async fn label(inner: &Arc<Inner>, em: &Emitter, found: Vec<Found>, first_id: u32, scope: &str, started: Instant) {
+    let id = em.id();
+    let scope = scope.to_string();
     let profile = inner.cfg.profile_for(&scope).cloned();
-    let mode = effective_gloss_mode(&inner, profile.as_ref());
-    let found = found_items(&out);
+    let mode = effective_gloss_mode(inner, profile.as_ref());
     let t = Instant::now();
     let items = {
         let (inner, profile, scope) = (inner.clone(), profile.clone(), scope.clone());
-        tokio::task::spawn_blocking(move || offline_items(&inner, &found, mode, profile.as_ref(), &scope)).await.unwrap_or_default()
+        tokio::task::spawn_blocking(move || offline_items(&inner, &found, mode, profile.as_ref(), &scope, first_id)).await.unwrap_or_default()
     };
     em.send(Event::Timing { id, stage: Stage::Morphology, ms: t.elapsed().as_millis() as u32 });
     let groups = needs_model(&items);
@@ -198,7 +214,7 @@ pub(crate) async fn run(inner: Arc<Inner>, id: u64, source: Source, tx: EventTx)
 
     // ── the rest: the model, in batches, streamed ──
     if !groups.is_empty()
-        && let Some(client) = await_llm(&inner, &em).await
+        && let Some(client) = await_llm(inner, em).await
     {
         let ctx = PromptContext {
             hint: profile.as_ref().and_then(|p| p.hint.clone()),
@@ -246,8 +262,34 @@ pub(crate) async fn run(inner: Arc<Inner>, id: u64, source: Source, tx: EventTx)
         }
         while batches.join_next().await.is_some() {}
     }
+}
 
-    em.send(Event::Timing { id, stage: Stage::Total, ms: started.elapsed().as_millis() as u32 });
+/// A join the person made by hand: `pieces` (labels on screen) become one item `item` of scan `scan_id`.
+/// The join is remembered for the program the scan was made in, so the next scan makes it again.
+pub(crate) async fn join(inner: Arc<Inner>, scan_id: u64, item: u32, pieces: Vec<crate::joins::JoinPiece>, tx: EventTx) {
+    let em = Emitter::new(tx, scan_id);
+    let started = Instant::now();
+    let scope = {
+        let current = crate::engine::lock(&inner.scan_scope);
+        if current.0 != scan_id {
+            drop(current);
+            em.error(Stage::Capture, "That scan is no longer on screen; scan again and join the labels.");
+            em.done();
+            return;
+        }
+        current.1.clone()
+    };
+    let ordered = crate::joins::reading_order(pieces.into_iter().map(|p| Found { rect: p.rect, text: p.text }).collect());
+    let parts: Vec<String> = ordered.iter().map(|f| f.text.clone()).collect();
+    let Some(joined) = crate::joins::join_pieces(ordered) else {
+        em.done();
+        return;
+    };
+    if let Some(cache) = inner.labels.clone() {
+        let (scope, text) = (scope.clone(), joined.text.clone());
+        let _ = tokio::task::spawn_blocking(move || cache.put_join(&scope, &parts, &text, now_secs())).await;
+    }
+    label(&inner, &em, vec![joined], item, &scope, started).await;
     em.done();
 }
 

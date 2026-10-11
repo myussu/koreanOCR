@@ -253,6 +253,18 @@ pub fn scan_open(app: AppHandle, state: S, text: String, rect: Rect) {
     flow::open_scan_item(app, state.inner().clone(), text, rect);
 }
 
+/// The person picked labels of the scan on screen and joined them: they become one item `item`, translated as one text.
+#[tauri::command]
+pub fn scan_join(app: AppHandle, state: S, scan_id: u64, item: u32, pieces: Vec<maru_engine::joins::JoinPiece>) {
+    flow::scan_join(app, state.inner().clone(), scan_id, item, pieces);
+}
+
+/// A joined label was split again: forget the join, so later scans do not make it.
+#[tauri::command]
+pub fn scan_unjoin(state: S, scan_id: u64, joined: String) -> usize {
+    state.engine().forget_join(scan_id, &joined)
+}
+
 /// The picker reports a rectangle in *its own* pixels; add the window's screen origin.
 #[tauri::command]
 pub fn picker_done(app: AppHandle, state: S, rect: Option<Rect>) {

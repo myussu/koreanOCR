@@ -3,6 +3,7 @@
 
 import { emitMock, invoke, inTauri, listen, mockCommands } from './bridge.js';
 import { placeLabels } from './layout.js';
+import { CHIP_H, chipFor, chipPlacement, nextItemId, piecesOf, unionRect } from './scan-core.js';
 
 const layer = document.getElementById('layer');
 const toast = document.getElementById('toast');
@@ -12,8 +13,14 @@ const FONT = '12px "Segoe UI", system-ui, sans-serif';
 const PAD = 18; // 7px padding each side, 1px border each side, 2px of slack for rounding
 const HEIGHT = 18;
 
-/** item id → { data: ScanItem, hidden: boolean, el: HTMLElement | null } */
+/** item id → { data: ScanItem, hidden: boolean, el: HTMLElement | null, parts?: number[] (the labels a joined one was made of) } */
 const items = new Map();
+/** Labels picked with Shift+click, to be joined (or one joined label, to be split). */
+const selected = new Set();
+/** A join the backend has not answered yet: new item id → the labels it absorbs (hidden meanwhile). */
+const pending = new Map();
+let chip = null;
+let chipRect = null;
 let scanId = null;
 let origin = { x: 0, y: 0 }; // physical pixel of the window's top-left corner
 let dpr = window.devicePixelRatio || 1;
@@ -45,6 +52,11 @@ function say(message, ms = 4500) {
 function clearAll() {
   for (const it of items.values()) it.el?.remove();
   items.clear();
+  selected.clear();
+  pending.clear();
+  chip?.remove();
+  chip = null;
+  chipRect = null;
   placements = new Map();
   reported = '';
   invoke('scan_labels', { dpr, rects: [] }).catch(() => {});
@@ -76,7 +88,7 @@ function render() {
     const el = it.el;
     const text = labelText(it);
     el.firstChild.textContent = text;
-    el.className = `lab ${it.data.source}${it.data.known ? ' known' : ''}${p.mode === 'dot' ? ' dot' : ''}`;
+    el.className = `lab ${it.data.source}${it.data.known ? ' known' : ''}${p.mode === 'dot' ? ' dot' : ''}${selected.has(id) ? ' sel' : ''}`;
     el.style.left = `${p.x}px`;
     el.style.top = `${p.y}px`;
     // A shrunken label is the normal label scaled as a whole, so padding and border shrink with the text.
@@ -85,6 +97,7 @@ function render() {
     el.style.transform = p.scale === 1 ? '' : `scale(${p.scale})`;
     el.title = it.data.text;
   }
+  updateChip();
   report();
 }
 
@@ -102,7 +115,11 @@ function makeLabel(id, it) {
     e.stopPropagation();
     hide(id);
   });
-  el.addEventListener('click', () => open(id));
+  el.addEventListener('click', (e) => {
+    if (e.shiftKey) return toggleSelect(id);
+    clearSelection();
+    open(id);
+  });
   el.addEventListener('contextmenu', (e) => {
     e.preventDefault();
     hide(id);
@@ -115,6 +132,104 @@ function hide(id) {
   const it = items.get(id);
   if (!it) return;
   it.hidden = true;
+  selected.delete(id);
+  schedule();
+}
+
+// ───────────── joining labels the detector cut in two ─────────────
+
+function toggleSelect(id) {
+  const it = items.get(id);
+  if (!it || it.hidden) return;
+  if (!selected.delete(id)) selected.add(id);
+  if (selected.size === 1 && !it.parts) say('Shift+click the other label(s) of the same text, then press Join.', 3200);
+  schedule();
+}
+
+function clearSelection() {
+  if (!selected.size) return;
+  selected.clear();
+  schedule();
+}
+
+/** The picked labels that are still on screen, in the order they were picked. */
+function picked() {
+  return [...selected].map((id) => ({ id, it: items.get(id) })).filter((x) => x.it && !x.it.hidden);
+}
+
+function updateChip() {
+  const sel = picked().filter((x) => placements.has(x.id));
+  const kind = chipFor(sel.map((x) => x.it));
+  if (!kind) {
+    chip?.remove();
+    chip = null;
+    chipRect = null;
+    return;
+  }
+  if (!chip) {
+    chip = document.createElement('div');
+    chip.id = 'chip';
+    const main = document.createElement('button');
+    main.type = 'button';
+    main.className = 'main';
+    main.addEventListener('click', () => (chip.dataset.kind === 'split' ? doSplit() : doJoin()));
+    const cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.className = 'cancel';
+    cancel.textContent = '×';
+    cancel.setAttribute('aria-label', 'Clear the selection');
+    cancel.addEventListener('click', clearSelection);
+    chip.append(main, cancel);
+    layer.append(chip);
+  }
+  chip.dataset.kind = kind.kind;
+  chip.firstChild.textContent = kind.kind === 'split' ? 'Split' : `Join ${kind.n}`;
+  const union = unionRect(sel.map((x) => ({ x: placements.get(x.id).x, y: placements.get(x.id).y, w: placements.get(x.id).w, h: placements.get(x.id).h })));
+  chipRect = chipPlacement(union, { w: chip.offsetWidth || 96, h: CHIP_H }, { w: innerWidth, h: innerHeight });
+  chip.style.left = `${chipRect.x}px`;
+  chip.style.top = `${chipRect.y}px`;
+}
+
+function restore(ids) {
+  for (const id of ids) {
+    const it = items.get(id);
+    if (it) {
+      it.hidden = false;
+      delete it.absorbedBy;
+    }
+  }
+}
+
+/** The picked labels become one: they disappear now and the backend sends the joined one (translated as a whole). */
+function doJoin() {
+  const sel = picked();
+  if (sel.length < 2 || scanId == null) return;
+  const item = nextItemId(items.keys());
+  const pieces = piecesOf(sel.map((x) => x.it));
+  for (const { it } of sel) {
+    it.hidden = true;
+    it.absorbedBy = item;
+  }
+  pending.set(item, sel.map((x) => x.id));
+  selected.clear();
+  invoke('scan_join', { scanId, item, pieces }).catch((e) => {
+    say(String(e));
+    restore(pending.get(item) ?? []);
+    pending.delete(item);
+    schedule();
+  });
+  schedule();
+}
+
+/** A joined label goes back to the pieces it was made of, and the join is forgotten. */
+function doSplit() {
+  const [only] = picked();
+  if (!only?.it.parts) return;
+  invoke('scan_unjoin', { scanId, joined: only.it.data.text }).catch(() => {});
+  only.it.el?.remove();
+  items.delete(only.id);
+  restore(only.it.parts);
+  selected.clear();
   schedule();
 }
 
@@ -134,6 +249,7 @@ function report() {
     // …plus the corner where the delete button appears.
     rects.push({ x: p.x - 2, y: p.y - 9, w: full.w + 11, h: full.h + 11 });
   }
+  if (chipRect) rects.push({ x: chipRect.x - 2, y: chipRect.y - 2, w: chipRect.w + 4, h: chipRect.h + 4 });
   const key = JSON.stringify(rects);
   if (key === reported) return;
   reported = key;
@@ -151,7 +267,11 @@ function onEvent(e) {
   }
   if (e.id !== scanId) return; // an older scan
   if (e.type === 'scan_items') {
-    for (const data of e.items) items.set(data.item, { data, hidden: false, el: null });
+    for (const data of e.items) {
+      const parts = pending.get(data.item);
+      pending.delete(data.item);
+      items.set(data.item, { data, hidden: false, el: null, parts });
+    }
     schedule();
   } else if (e.type === 'scan_label') {
     const it = items.get(e.item);
@@ -161,6 +281,12 @@ function onEvent(e) {
     }
   } else if (e.type === 'error') {
     say(e.message);
+    // a join that was refused (its scan is gone) brings its labels back
+    for (const [item, ids] of pending) {
+      restore(ids);
+      pending.delete(item);
+    }
+    schedule();
   }
 }
 
@@ -200,6 +326,14 @@ function demo(name) {
         put(items_[k], 420 + c * 86, 140 + r * 56, 74, 16, itemsEn[k], c === 4 && r === 1 ? 'pending' : 'model', c === 5 && r === 2);
       }
   }
+  if (name === 'split' || name === 'all') {
+    // the detector cut these phrases in two
+    put('새', 140, 360, 24, 20, 'New');
+    put('게임', 172, 360, 44, 20, 'Game');
+    put('이어하기', 140, 385, 80, 20, 'Continue', 'model');
+    put('빨간', 420, 360, 40, 18, 'Red');
+    put('물약', 468, 360, 40, 18, 'Potion');
+  }
   if (name === 'hud' || name === 'all') {
     put('체력 87/100', 30, 20, 110, 18, 'HP 87/100');
     put('경험치', 30, 44, 60, 16, 'EXP', 'dictionary');
@@ -230,7 +364,28 @@ function demo(name) {
 }
 
 if (!inTauri) {
-  mockCommands({ scan_labels: () => null, scan_open: () => null });
+  // The browser has no backend: answer a join the way the real one does (reading order, one box, a label a moment later).
+  const joinMock = ({ scanId: id, item, pieces }) => {
+    const sorted = [...pieces].sort((a, b) => a.rect.y - b.rect.y || a.rect.x - b.rect.x);
+    const x0 = Math.min(...sorted.map((p) => p.rect.x));
+    const y0 = Math.min(...sorted.map((p) => p.rect.y));
+    const x1 = Math.max(...sorted.map((p) => p.rect.x + p.rect.w));
+    const y1 = Math.max(...sorted.map((p) => p.rect.y + p.rect.h));
+    const text = sorted.map((p) => p.text).join(' ');
+    window.__joined = (window.__joined ?? []).concat([{ id, item, text }]);
+    setTimeout(() => emitMock('maru-scan', { type: 'scan_items', id, items: [{ item, rect: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, text, label: '', source: 'pending', known: false }] }), 60);
+    setTimeout(() => emitMock('maru-scan', { type: 'scan_label', id, item, label: `Joined: ${text}`, source: 'model' }), 300);
+    return null;
+  };
+  mockCommands({
+    scan_labels: () => null,
+    scan_open: () => null,
+    scan_join: joinMock,
+    scan_unjoin: (a) => {
+      window.__unjoined = (window.__unjoined ?? []).concat([a.joined]);
+      return 1;
+    },
+  });
   const name = params.get('demo');
   if (name) queueMicrotask(() => demo(name));
 }

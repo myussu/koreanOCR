@@ -146,6 +146,21 @@ pub fn scan_screen(app: AppHandle, state: Arc<AppState>) {
     });
 }
 
+/// Labels the person joined: the engine builds the one item and its label, and the events go to the same overlay as the scan's.
+pub fn scan_join(app: AppHandle, state: Arc<AppState>, scan_id: u64, item: u32, pieces: Vec<maru_engine::joins::JoinPiece>) {
+    tracing::info!("scan labels joined: {:?}", pieces.iter().map(|p| p.text.as_str()).collect::<Vec<_>>());
+    let mut rx = state.engine().scan_join(scan_id, item, pieces);
+    tauri::async_runtime::spawn(async move {
+        while let Some(event) = rx.recv().await {
+            let done = matches!(event, Event::Done { .. });
+            let _ = app.emit_to(windows::SCAN, "maru-scan", &event);
+            if done {
+                break;
+            }
+        }
+    });
+}
+
 /// A scan label was clicked: explain its text in the panel. One word goes straight to its deep dive.
 pub fn open_scan_item(app: AppHandle, state: Arc<AppState>, text: String, rect: Rect) {
     tracing::info!("scan label clicked: {text:?}");

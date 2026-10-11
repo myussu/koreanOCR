@@ -97,6 +97,9 @@ pub(crate) struct Inner {
     pub scan_ocr: Option<Arc<dyn OcrEngine>>,
     pub labels: Option<Arc<crate::labels::LabelCache>>,
     pub scan_task: Mutex<Option<JoinHandle<()>>>,
+    /// The newest scan's id and the program it was made in: joins and splits made on its labels belong to that program,
+    /// even though clicking the overlay may have changed which window is in front.
+    pub scan_scope: Mutex<(u64, String)>,
     pub cache: Mutex<Cache>,
     pub memory: Mutex<Memory>,
     pub history: Mutex<History>,
@@ -155,6 +158,7 @@ impl Engine {
             scan_ocr: parts.scan_ocr,
             labels: parts.labels,
             scan_task: Mutex::new(None),
+            scan_scope: Mutex::new((0, String::new())),
             cache: Mutex::new(Cache::new(256)),
             memory: Mutex::new(Memory::new(cfg.llm.context_lines)),
             history: Mutex::new(History::new(cfg.continuous.history_len)),
@@ -267,6 +271,27 @@ impl Engine {
         let inner = self.inner.clone();
         self.spawn_into(&self.inner.scan_task, crate::scan::run(inner, id, crate::scan::Source::Screen(screen), tx));
         (id, rx)
+    }
+
+    /// Join labels of scan `scan_id` that the person picked into one item numbered `item`: it is read in
+    /// reading order, translated as one text and remembered for the program the scan was made in.
+    pub fn scan_join(&self, scan_id: u64, item: u32, pieces: Vec<crate::joins::JoinPiece>) -> EventRx {
+        let (tx, rx) = mpsc::unbounded_channel();
+        let inner = self.inner.clone();
+        self.inner.runtime.spawn(crate::scan::join(inner, scan_id, item, pieces, tx));
+        rx
+    }
+
+    /// The person split a joined label again: forget the join that made `joined` (in the program of scan `scan_id`).
+    pub fn forget_join(&self, scan_id: u64, joined: &str) -> usize {
+        let scope = {
+            let current = lock(&self.inner.scan_scope);
+            if current.0 != scan_id {
+                return 0;
+            }
+            current.1.clone()
+        };
+        self.inner.labels.as_ref().map(|c| c.forget_join(&scope, joined)).unwrap_or(0)
     }
 
     /// The same as [`Engine::scan`], on a picture of a screen (a screenshot) instead of the live one.
