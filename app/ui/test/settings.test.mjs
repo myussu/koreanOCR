@@ -122,3 +122,10 @@ test('the Anki settings: tags are a comma list, the key is a secret, and nothing
   assert.equal(new Set(paths).size, paths.length);
   assert.ok(paths.includes('learning.anki.reverse') && paths.includes('learning.anki.sync_after_add'));
 });
+
+test('the model name a server such as Ollama expects can be set from the settings page', () => {
+  const field = ALL_FIELDS.find((f) => f.path === 'llm.model_name');
+  assert.ok(field, 'the field exists');
+  assert.equal(field.type, 'text');
+  assert.ok(!appliesLive('llm.model_name'), 'it is read when Maru starts');
+});

@@ -93,6 +93,7 @@ export const SECTIONS = [
       { path: 'llm.hf_repo', label: 'Model to download', help: 'A Hugging Face repository and quantisation, fetched on first start', type: 'text', nullable: true, placeholder: 'unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL' },
       { path: 'llm.model_path', label: 'Or a model file you already have', help: 'Wins over the download', type: 'text', nullable: true, placeholder: 'D:/models/model.gguf' },
       { path: 'llm.endpoint', label: 'Or a server that is already running', help: 'LM Studio, Ollama, a PC on your network', type: 'text', nullable: true, placeholder: 'http://127.0.0.1:1234/v1' },
+      { path: 'llm.model_name', label: 'Model name that server expects', help: 'Only for servers that choose by name, such as Ollama: exactly what `ollama list` shows. llama-server ignores it', type: 'text', placeholder: 'maru' },
       { path: 'llm.parallel', label: 'Requests at once', help: 'Two lets translation and word meanings run together', type: 'number', min: 1, max: 4, step: 1 },
       { path: 'llm.ctx_size', label: 'Context per request', type: 'number', min: 512, max: 32768, step: 512, unit: 'tokens', advanced: true },
       { path: 'llm.gpu_layers', label: 'Layers on the GPU', help: 'all, auto or a number', type: 'text', advanced: true },

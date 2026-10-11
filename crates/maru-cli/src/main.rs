@@ -72,6 +72,9 @@ enum Command {
         /// Use the model served at this address (e.g. `http://192.168.1.20:8080`) for this run, instead of the one in the config.
         #[arg(long, value_name = "URL")]
         endpoint: Option<String>,
+        /// The model name that server expects (Ollama chooses by name: what `ollama list` shows). Only with a server, not llama-server.
+        #[arg(long, value_name = "NAME")]
+        model: Option<String>,
     },
     /// Read a screenshot the way the screen scan does: list every Korean text found and how it is labelled.
     Scan {
@@ -443,7 +446,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             tools::doctor(&mut s, deep).await?;
             Ok(0)
         }
-        Command::Bench { file, runs, live, endpoint } => {
+        Command::Bench { file, runs, live, endpoint, model } => {
             let sentences: Vec<String> = match file {
                 Some(f) => std::fs::read_to_string(&f)?.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect(),
                 // Subtitles are Korean: the live lane has nothing to do with the English sentences.
@@ -458,6 +461,9 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             cfg.tts.enabled = false;
             if let Some(url) = endpoint {
                 cfg.llm.endpoint = Some(url);
+            }
+            if let Some(name) = model {
+                cfg.llm.model_name = name;
             }
             let mut s = services(&paths, cfg, true).await;
             if live {
@@ -702,6 +708,8 @@ mod cli_tests {
     fn bench_can_time_the_live_lane_against_another_pc() {
         let b = Cli::try_parse_from(["maru", "bench", "--live", "--endpoint", "http://192.168.1.20:8080", "-n", "2"]).unwrap();
         assert!(matches!(b.command, Command::Bench { live: true, runs: 2, endpoint: Some(ref e), .. } if e == "http://192.168.1.20:8080"));
+        let o = Cli::try_parse_from(["maru", "bench", "--live", "--endpoint", "http://nas:11434", "--model", "hf.co/x/y:Q4"]).unwrap();
+        assert!(matches!(o.command, Command::Bench { model: Some(ref m), .. } if m == "hf.co/x/y:Q4"));
         assert!(matches!(Cli::try_parse_from(["maru", "bench"]).unwrap().command, Command::Bench { live: false, endpoint: None, .. }));
     }
 

@@ -104,6 +104,11 @@ overlay first, it holds the local model's port). The reading model and the speec
 (`[ocr] vision_reader = false`, `[tts] enabled = false` or `provider = "endpoint"`). To compare local and remote on a real cutscene, follow M-11 in
 [docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md).
 
+**Ollama** (for example on a TrueNAS SCALE box) works as that server too, with two differences from llama-server: it chooses the model by name, so set
+**Settings → Translation model → Model name that server expects** (`[llm] model_name`) to exactly what `ollama list` shows, and give `maru bench` the same with
+`--model`; and it unloads an idle model after five minutes by default, so set `OLLAMA_KEEP_ALIVE` (for example `-1`) on the server, or the first subtitle after a
+pause waits for the model to load. It is not yet verified by a person; M-11 covers it.
+
 Config file (`maru config init` writes it; [docs/config.example.toml](docs/config.example.toml)
 shows every option):
 
