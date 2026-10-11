@@ -25,6 +25,11 @@ Anki *Sync* triggers it. See `docs/config.example.toml`.
 > Status: the engine, command line and overlay are implemented and tested, but the Windows-specific parts and the
 > Korean model quality could only be checked on a real machine. See **[What is verified](#what-is-verified)**.
 
+**Documentation:** [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) (how it is built, the feature map, the contracts between parts) ·
+[docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md) (what only a real PC can verify, and what to bring when something fails) ·
+[docs/config.example.toml](docs/config.example.toml) (every setting) · [AGENTS.md](AGENTS.md) (how to change this repository without
+breaking other work).
+
 ## Quick start (Windows)
 
 **You need** (once): Windows 10/11 (64-bit), [Rust](https://rustup.rs) with the *Visual Studio Build Tools* ("Desktop development with C++") it asks for, **kept up to date** (see below), Git, and the WebView2 runtime (already part of Windows 11; the app installs it on Windows 10). About 12 GB of disk for the models. Anki is optional.
@@ -156,38 +161,51 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the extensio
 
 ## What is verified
 
-Checked here, automatically (about 200 tests; `cargo test --workspace`, `node --test app/ui/test/core.test.mjs`):
+**Checked automatically** (about 465 tests: `cargo test --workspace`, `cargo test --manifest-path app/src-tauri/Cargo.toml`,
+`node --test app/ui/test/*.test.mjs`; CI runs them on Windows and Linux, plus clippy with warnings denied):
 
 * Korean pronunciation and romanization rules, 어절 grouping, dictionary import, FSRS-6 (replays the reference
-  implementation's own test vector), vocabulary, Anki (against a fake AnkiConnect).
+  implementation's own test vector), vocabulary, Anki (against a **fake** AnkiConnect).
 * The language-model client, streaming parsers and process supervision (against scripted servers), and the whole
   engine pipeline: event order, cancellation, cache, English→Korean follow-up analysis, degraded modes.
-* The OCR pipeline against **real ONNX Runtime and real PP-OCR models** on rendered English text, including
-  word-box coordinates; the real `maru` binary end to end; the panel rendered in real Chromium from event streams
-  recorded from the real engine.
-* The Windows-only code (UI Automation, clipboard, GDI capture, Windows OCR) **type-checks** against the real
-  `windows` crate; the Tauri shell compiles against the real Tauri 2 API.
+* The screen scan end to end through the real engine with a fake screen, OCR and model: dictionary-first labels, remembered
+  labels, glossary, known-word fading, and manual joins (made, remembered per program, forgotten, refused when stale).
+* Live subtitles: the watcher's change logic, the translation-only lane (context turns, caching, history with timings) and the band's
+  placement and fade logic.
+* The setup wizard's decisions: parsers fed with real `nvidia-smi` and PowerShell output, the hardware → install recommendation,
+  the questions (scripted answers, cancelling on end of input) and in-place edits of `config.toml`.
+* The OCR pipeline against **real ONNX Runtime and real PP-OCR models** on rendered English text, including word-box
+  coordinates; the real `maru` binary end to end; pages rendered in real Chromium (panel, scan labels, the Join chip, the live band,
+  History) from recorded or mocked event streams.
+* The Windows-only code (UI Automation, clipboard, GDI capture, Windows OCR) **type-checks** against the real `windows` crate, and the
+  Tauri shell builds against the real Tauri 2 API on the Windows CI job.
 
-**Not verified; needs your machine** (each has a diagnostic: `maru doctor`, `maru eval-ocr`, `maru bench`):
+**Not verified; needs a real PC.** Each item has a step-by-step test and a list of what to bring in
+**[docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md)**; results are recorded there, and an empty results log means *not yet checked*:
 
-* Korean **OCR accuracy** (PP-OCRv5 Korean, Windows OCR): no Korean model or font was available.
-* Real **model quality and speed** (Gemma 4 12B on an RTX 5070 Ti): measure with `maru bench`.
-* **Kiwi** live (downloading `libkiwi`, real tokenization): the adapter compiles and its mapping is tested.
-* UI Automation selection across your apps, the Ctrl+C fallback, GDI capture, Windows OCR at run time.
-* **Overlay behaviour on Windows**: that the panel never steals focus, is transparent, is excluded from capture.
-* Download locations I could not reach from the build sandbox: the OCR model files on Hugging Face (several
-  layouts are tried), the Wiktionary extract, llama.cpp release assets, the bundled ONNX Runtime (`ort` only
-  publishes MSVC binaries). Every URL can be overridden on the command line.
-* The CI workflow in `.github/workflows/` is the intended check for the Windows build.
+* Setup wizard hardware detection on Windows, and the full install path (M-1, M-2).
+* Live subtitles: real OCR on a moving picture, band placement over real games, and the latency numbers (M-3).
+* Screen scan and manual join in a real game, including click-through behaviour (M-4).
+* UI Automation selection across programs, the Ctrl+C fallback, GDI capture, Windows OCR (M-5) and that the overlay never steals
+  focus, is transparent and is excluded from capture (M-6).
+* Korean **OCR accuracy**, real **model quality and speed**, **Kiwi** live (M-7).
+* **Speech**: the `tts-server` Windows build and the Qwen3-TTS models (M-8).
+* **Anki** against the real AnkiConnect (M-9).
+* The settings page with a real config, and lite mode beside a game (M-10).
+* Download locations I could not reach from the build sandbox: the OCR model files on Hugging Face (several layouts are tried), the
+  Wiktionary extract, llama.cpp release assets. Every URL can be overridden on the command line.
 
 Known limits: pronunciation rules that need morpheme knowledge (ㄴ-insertion in compounds, 사이시옷) are not
-guessed; word meanings in context come from the model, so they are only as good as the model.
+guessed; word meanings in context come from the model, so they are only as good as the model; the scan never merges OCR boxes by itself
+(you join them by hand), because tight menus and inventory grids would be glued together wrongly.
 
 ## Layout
 
 ```
-crates/   maru-core  maru-lang  maru-dict  maru-srs  maru-llm  maru-ocr  maru-platform  maru-engine  maru-cli
-app/      src-tauri (overlay shell)   ui (panel, picker, hub: plain ES modules, no build step)
-docs/     ARCHITECTURE.md  config.example.toml
+crates/   maru-core  maru-lang  maru-dict  maru-srs  maru-llm  maru-ocr  maru-platform  maru-tts  maru-engine  maru-cli
+app/      src-tauri (overlay shell: windows, hotkeys, tray, commands)   ui (panel, picker, hub, scan overlay, live band: plain ES modules, no build step)
+docs/     ARCHITECTURE.md  MANUAL_TESTS.md  config.example.toml
+AGENTS.md CLAUDE.md   rules for anyone (person or agent) changing the code; CLAUDE.md just imports AGENTS.md
+.github/  workflows: ci.yml (build + tests), tts-server.yml (builds the speech server)
 old/      the original Python prototype, kept for reference
 ```
