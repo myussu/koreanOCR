@@ -211,9 +211,9 @@ UI state (selection, pending joins, the chip) is in `scan.js`; the commands are 
   sent as chat turns, a short answer cap and low temperature (`maru-llm` `translate_live`, `prompts::ko_en_live`). It has its
   own cache and never touches the normal translation's cache or memory. Every line also goes into the history
   (`HistoryItem` with `live`, `first_ms`, `total_ms`).
-* **Shell** (`flow::start_continuous`): builds the band window geometry (`logic::band_window`, `band_cover`), keeps only the
+* **Shell** (`flow::start_continuous`): builds the band window geometry (`logic::band_window`: the subtitle area plus room above and below, and which side to prefer; `band_cover`: the original line's box the band must stay clear of), keeps only the
   newest line drawn (`AppState::live_latest`), emits `maru-live` (a `LiveBand`), `maru-live-clear`, `maru-live-off` to the live window.
-* **UI:** `live.js` (+ `live-core.js`: `bandStyle`, the `createBand` state machine, `latencyText`), `live.html`, `live.css`.
+* **UI:** `live.js` (+ `live-core.js`: `chooseSide`/`bandStyle`/`fitFont` put the band above or below the original, never over it; the `createBand` state machine; `latencyText`), `live.html`, `live.css`.
   The window is created hidden, click-through, never focused, and excluded from screen capture so OCR never reads the translation back.
   `live_idle` hides it after the fade. History → Live subtitles (`hub.js`) shows the lines in order with latency.
 * **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`).

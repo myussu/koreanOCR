@@ -45,10 +45,10 @@ step depends on the C++ toolset.
 **Needs:** a game or video with Korean subtitles, borderless/windowed (an exclusive-fullscreen game cannot be drawn over).
 **Steps:** `Ctrl+Alt+Shift+C`, drag a tight box around the subtitle strip; play a cutscene; then open History (`Ctrl+Alt+L`) → **Live subtitles**.
 Press `Ctrl+Alt+C` to stop and start. Try a subtitle that fades, one that appears over a moving scene, and one that is two lines.
-**Expect:** the English appears over the original soon after it appears; it hides the original; it stays while the original is on screen
+**Expect:** the English appears just above or below the original (the side with more room) soon after it appears and never covers it; it stays while the original is on screen
 and about `linger_ms` after; every line is in History → Live subtitles, in order, with timings; the band never gets read back as input.
-**Bring:** the "N s to the first word · N s in all" numbers for 5–10 lines; any `live line:` lines from `maru-app.log`; whether the band
-covers the original, sits in the right place, wraps badly, lingers too long or too briefly; the game and its resolution.
+**Bring:** the "N s to the first word · N s in all" numbers for 5–10 lines; any `live line:` lines from `maru-app.log`; which side the band sits on and whether it ever touches the original, whether it
+sits in the right place, wraps badly, lingers too long or too briefly; the game and its resolution.
 Optional: a 15–30 s clip (under ~50 MB) pushed to a `live-clip` branch under `clips/`, or 4–5 screenshots of one subtitle line (appearing, mid-fade, gone).
 **Replay tool:** a recorded clip can be replayed through the real watcher without the game: `MARU_CLIP=clip.mp4 MARU_CLIP_TRUTH=truth.txt
 cargo test -p maru-engine --release --test replay -- --ignored --nocapture` (needs `ffmpeg`; `truth.txt` has one `onset off` pair, in seconds,
@@ -152,4 +152,4 @@ Add a line per test run. An empty log means **nothing below has been checked on 
 
 | Date | Test | PC / setup | Result | Notes |
 |---|---|---|---|---|
-| 2026-10-11 | M-3 live subtitles | Ryzen 9 7900X3D, RTX 5070 Ti, a game in an emulator, 1280×720, PP-OCR on CPU | partly | Reported by the user: 11 lines translated in order and listed in History → Live subtitles, with "to the first word" times of 1.1–5.4 s. Found by replaying the recorded clip: those times were inflated (the clock started at an earlier scene change; real reads took 0.5–1.4 s), and two short subtitles (about 0.9 s and 1.1 s on screen) were never translated. The watcher was fixed (text signal) and passes the replay; **needs a retest on the real PC**. Band position and whether it covers the original: not reported yet. |
+| 2026-10-11 | M-3 live subtitles | Ryzen 9 7900X3D, RTX 5070 Ti, a game in an emulator, 1280×720, PP-OCR on CPU | partly | Reported by the user: 11 lines translated in order and listed in History → Live subtitles, with "to the first word" times of 1.1–5.4 s. Found by replaying the recorded clip: those times were inflated (the clock started at an earlier scene change; real reads took 0.5–1.4 s), and two short subtitles (about 0.9 s and 1.1 s on screen) were never translated. The watcher was fixed (text signal) and passes the replay; **needs a retest on the real PC**. The user also reported that the band covered the original subtitles, which they do not want; it now goes above or below the original (browser demo checked in Chromium, geometry unit-tested), **not yet seen on the real PC**. |

@@ -122,7 +122,7 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 | `Ctrl+Alt+T` | translate the selection (falls back to the text under the cursor) |
 | `Ctrl+Alt+R` | draw a rectangle anywhere and translate what is inside |
 | `Ctrl+Alt+H` | hover mode: rest the pointer on a Korean word for its meaning |
-| `Ctrl+Alt+C` | live subtitles: the translation appears over the original line as soon as it is read, on the last chosen area |
+| `Ctrl+Alt+C` | live subtitles: the translation appears just above or below the original line (whichever side has room) as soon as it is read, on the last chosen area |
 | `Ctrl+Alt+Shift+C` | choose a different live-mode area (and start it there) |
 | `Ctrl+Alt+S` | label every Korean text on the screen (game menus, HUDs); press again to rescan |
 | `Ctrl+Alt+L` | history, review and status |
@@ -134,7 +134,7 @@ Each action accepts several keys separated by `|` in `config.toml` (e.g. `transl
 
 **Moving the panel.** Drag it by its top bar (the ⠿ grip) to put it anywhere: it pins itself and stays there while it translates the next thing, however much it grows. Unpin (📌) to let it go back next to the text again.
 
-**Live subtitles** draw the English in a dark band over the original line, stay while it is on screen and for a moment after (`continuous.linger_ms`), and every line goes into **History → Live subtitles** in order, with how long it took, so you can read a cutscene afterwards; click a line for its word-by-word breakdown. Each line is logged in `maru-app.log` (`live line: on screen → read … → first word … → done …`).
+**Live subtitles** draw the English in a dark band next to the original line — above it or below it, on the side with room, never over it — stay while it is on screen and for a moment after (`continuous.linger_ms`), and every line goes into **History → Live subtitles** in order, with how long it took, so you can read a cutscene afterwards; click a line for its word-by-word breakdown. Each line is logged in `maru-app.log` (`live line: on screen → read … → first word … → done …`).
 
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
 

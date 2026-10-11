@@ -247,7 +247,7 @@ pub fn toggle_hover(app: &AppHandle, state: &Arc<AppState>) {
     }
 }
 
-/// What the live window needs to draw one translation over the original subtitle (positions in
+/// What the live window needs to draw one translation beside the original subtitle (positions in
 /// physical pixels, relative to the window).
 #[derive(Serialize, Clone)]
 struct LiveBand {
@@ -255,10 +255,14 @@ struct LiveBand {
     /// The translation so far.
     text: String,
     done: bool,
+    /// Where the original text is: the translation goes above or below this box, never over it.
     cover: Rect,
     /// Height of one line of the original text.
     line_h: f32,
-    anchor_bottom: bool,
+    /// How many characters the original line has (the page estimates how tall the translation will be from it).
+    source_chars: usize,
+    /// The original sits low on the screen, so the band goes above it if there is room (below it otherwise).
+    prefer_above: bool,
     linger_ms: u64,
 }
 
@@ -267,7 +271,8 @@ struct LiveBand {
 struct BandSpot {
     cover: Rect,
     line_h: f32,
-    anchor_bottom: bool,
+    source_chars: usize,
+    prefer_above: bool,
 }
 
 /// Height of a line of text: the middle word box, or the whole box when OCR gave no words.
@@ -290,7 +295,7 @@ fn pump_live(app: AppHandle, state: Arc<AppState>, id: u64, mut rx: EventRx, spo
                 return;
             }
             windows::show_live(&app);
-            let band = LiveBand { id, text: text.to_string(), done, cover: spot.cover, line_h: spot.line_h, anchor_bottom: spot.anchor_bottom, linger_ms: state.cfg().continuous.linger_ms };
+            let band = LiveBand { id, text: text.to_string(), done, cover: spot.cover, line_h: spot.line_h, source_chars: spot.source_chars, prefer_above: spot.prefer_above, linger_ms: state.cfg().continuous.linger_ms };
             let _ = app.emit_to(windows::LIVE, "maru-live", band);
         };
         while let Some(event) = rx.recv().await {
@@ -328,12 +333,12 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
     }
     state.live_error_shown.store(false, std::sync::atomic::Ordering::Relaxed);
     let monitor = windows::monitor_rect(&app, Point { x: region.x + region.w / 2.0, y: region.y + region.h / 2.0 });
-    let (window, anchor_bottom) = logic::band_window(region, monitor);
+    let (window, prefer_above) = logic::band_window(region, monitor);
     windows::place_live(&app, window);
     refresh_tray(&app, &state);
     let keys = state.cfg().hotkeys;
     let text = format!(
-        "Live subtitles on: new lines in the {}×{} area at ({}, {}) are translated over the original. {} turns it off; {} chooses a different area. The history ({}) keeps every line.",
+        "Live subtitles on: new lines in the {}×{} area at ({}, {}) are translated next to the original, above or below it. {} turns it off; {} chooses a different area. The history ({}) keeps every line.",
         region.w.round(),
         region.h.round(),
         region.x.round(),
@@ -348,7 +353,7 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
             match event {
                 maru_engine::LiveEvent::Line(line) => {
                     let cover = logic::band_cover(line.capture.rect, region, window);
-                    let spot = BandSpot { cover, line_h: line_height(&line.capture, cover), anchor_bottom };
+                    let spot = BandSpot { cover, line_h: line_height(&line.capture, cover), source_chars: line.capture.text.chars().count(), prefer_above };
                     let (id, events) = state.engine().translate_live(*line);
                     state.live_latest.store(id, std::sync::atomic::Ordering::Relaxed);
                     pump_live(app.clone(), state.clone(), id, events, spot);

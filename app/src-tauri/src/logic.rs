@@ -41,26 +41,23 @@ pub fn keep_on_screen(pos: Point, size: (f32, f32), monitor: Rect) -> Point {
     Point { x: pos.x.clamp(monitor.x + MARGIN, max_x), y: pos.y.clamp(monitor.y + MARGIN, max_y) }
 }
 
-/// The window that carries the live translation band, for subtitles watched in `region`: as wide as
-/// the region (at least `MIN_BAND_W`), tall enough to let a translation of several lines grow away from
-/// the screen edge. Returns the window and whether the band grows upward (subtitles in the lower half).
+/// The window that carries the live translation band, for subtitles watched in `region`: as wide as the region
+/// (at least `MIN_BAND_W`) and with room above and below it for a translation of several lines, so the page can put the
+/// band on either side of the original line without ever covering it. It never leaves the monitor.
+/// Also says which side to prefer: above when the subtitles sit in the lower half of the monitor (the usual place), below otherwise.
 pub fn band_window(region: Rect, monitor: Rect) -> (Rect, bool) {
     const MIN_BAND_W: f32 = 720.0;
+    /// How far above and below the region the window reaches (physical pixels): about four lines of a large subtitle.
+    const ROOM: f32 = 240.0;
     let w = region.w.max(MIN_BAND_W).min(monitor.w);
     let x = (region.x + region.w / 2.0 - w / 2.0).clamp(monitor.x, (monitor.right() - w).max(monitor.x));
-    let extra = region.h.max(160.0);
-    let grows_up = region.y + region.h / 2.0 > monitor.y + monitor.h / 2.0;
-    let (y, h) = if grows_up {
-        let y = (region.y - extra).max(monitor.y);
-        (y, (region.bottom() - y).min(monitor.bottom() - y))
-    } else {
-        let y = region.y.max(monitor.y);
-        (y, (region.h + extra).min(monitor.bottom() - y))
-    };
-    (Rect::new(x, y, w, h), grows_up)
+    let top = (region.y - ROOM).max(monitor.y);
+    let bottom = (region.bottom() + ROOM).min(monitor.bottom());
+    let prefer_above = region.y + region.h / 2.0 > monitor.y + monitor.h / 2.0;
+    (Rect::new(x, top, w, (bottom - top).max(region.h)), prefer_above)
 }
 
-/// The text box to cover with the translation: what OCR found, or the whole watched region when it
+/// The text box the translation must stay clear of: what OCR found, or the whole watched region when it
 /// gave no position, relative to the band window's top-left corner.
 pub fn band_cover(found: Option<Rect>, region: Rect, window: Rect) -> Rect {
     let r = found.filter(|r| !r.is_empty()).unwrap_or(region);
@@ -148,22 +145,38 @@ mod tests {
     const MON: Rect = Rect::new(0.0, 0.0, 1920.0, 1080.0);
     const SIZE: (f32, f32) = (600.0, 300.0);
 
-    #[test]
-    fn the_band_window_for_bottom_subtitles_grows_upward_and_stays_on_the_monitor() {
-        let region = Rect::new(480.0, 900.0, 960.0, 120.0);
-        let (win, up) = band_window(region, MON);
-        assert!(up);
-        assert_eq!((win.x, win.w), (480.0, 960.0));
-        assert_eq!(win.bottom(), region.bottom(), "bottom edge stays at the subtitles");
-        assert!(win.y >= 0.0 && win.h >= region.h + 160.0 - 1.0, "room for several lines above: {win:?}");
+    fn holds(outer: Rect, inner: Rect) -> bool {
+        outer.x <= inner.x && outer.y <= inner.y && outer.right() >= inner.right() && outer.bottom() >= inner.bottom()
     }
 
     #[test]
-    fn the_band_window_for_top_subtitles_grows_downward() {
-        let (win, up) = band_window(Rect::new(300.0, 40.0, 1200.0, 100.0), MON);
-        assert!(!up);
-        assert_eq!(win.y, 40.0);
-        assert!(win.bottom() <= MON.bottom());
+    fn the_band_window_for_bottom_subtitles_has_room_above_and_prefers_above() {
+        let region = Rect::new(480.0, 900.0, 960.0, 120.0);
+        let (win, prefer_above) = band_window(region, MON);
+        assert!(prefer_above, "subtitles low on the screen: the band goes above them");
+        assert_eq!((win.x, win.w), (480.0, 960.0));
+        assert_eq!(win.y, 660.0, "240 px of room above");
+        assert_eq!(win.bottom(), 1080.0, "and as much below as the monitor has");
+        assert!(holds(win, region), "the window holds the whole subtitle area: {win:?}");
+    }
+
+    #[test]
+    fn the_band_window_for_top_subtitles_has_room_below_and_prefers_below() {
+        let region = Rect::new(300.0, 40.0, 1200.0, 100.0);
+        let (win, prefer_above) = band_window(region, MON);
+        assert!(!prefer_above);
+        assert_eq!(win.y, 0.0, "the monitor's edge limits the room above");
+        assert_eq!(win.bottom(), 380.0, "240 px of room below the subtitles");
+        assert!(holds(win, region));
+    }
+
+    #[test]
+    fn the_band_window_stays_on_the_monitor_and_holds_the_region_wherever_it_is() {
+        for region in [Rect::new(0.0, 0.0, 300.0, 50.0), Rect::new(1700.0, 1000.0, 220.0, 80.0), Rect::new(800.0, 500.0, 400.0, 60.0), Rect::new(0.0, 900.0, 1920.0, 150.0)] {
+            let (win, _) = band_window(region, MON);
+            assert!(win.x >= 0.0 && win.y >= 0.0 && win.right() <= 1920.0 && win.bottom() <= 1080.0, "{region:?} -> {win:?}");
+            assert!(win.y <= region.y && win.bottom() >= region.bottom(), "{region:?} -> {win:?}");
+        }
     }
 
     #[test]

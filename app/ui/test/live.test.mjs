@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { bandStyle, clampCenter, createBand, fontFor, latencyText } from '../live-core.js';
+import { bandStyle, bandWidth, chooseSide, clampCenter, createBand, estimateHeight, fitFont, fontFor, gapFor, latencyText, roomOn } from '../live-core.js';
 
 test('the font follows the original text and stays readable', () => {
   assert.equal(fontFor(30), 24);
@@ -11,24 +11,59 @@ test('the font follows the original text and stays readable', () => {
   assert.equal(fontFor(0), 22);
 });
 
-test('the band covers the original and grows away from the edge it is anchored to', () => {
+test('the gap to the original is a third of a line, at least a few pixels', () => {
+  assert.equal(gapFor(34), 12);
+  assert.equal(gapFor(10), 8);
+  assert.equal(gapFor(undefined), 8);
+});
+
+test('the band is at least a comfortable line wide, as wide as the original with some to spare, and never wider than the window', () => {
+  assert.equal(bandWidth({ cover: { w: 500 }, win: { w: 900 } }), 640);
+  assert.equal(bandWidth({ cover: { w: 100 }, win: { w: 900 } }), 640);
+  assert.equal(bandWidth({ cover: { w: 900 }, win: { w: 900 } }), 884);
+  assert.equal(bandWidth({ cover: { w: 50 }, win: { w: 100 } }), 120, 'but never a sliver');
+});
+
+test('a long original is expected to need more lines than a short one', () => {
+  assert.equal(estimateHeight({ sourceChars: 13, font: 24, maxWidth: 640 }), 43, 'one line');
+  assert.equal(estimateHeight({ sourceChars: 60, font: 24, maxWidth: 640 }), 106, 'three lines');
+  assert.ok(estimateHeight({ sourceChars: undefined, font: 24, maxWidth: 640 }) > 0, 'an unknown length still gives a guess');
+});
+
+test('room is what is left on a side of the original after the gap and the window edge', () => {
+  const at = { cover: { x: 200, y: 200, w: 500, h: 40 }, win: { w: 900, h: 300 }, gap: 12 };
+  assert.equal(roomOn('above', at), 180);
+  assert.equal(roomOn('below', at), 40);
+});
+
+test('the band goes on the preferred side when it fits there, on the other when only that fits, and on the roomier when neither does', () => {
   const win = { w: 900, h: 300 };
-  const cover = { x: 200, y: 200, w: 500, h: 40 };
-  const up = bandStyle({ cover, win, anchorBottom: true });
-  assert.equal(up.bottom, 300 - 240 - 10, 'its bottom edge sits just under the original');
+  const low = { x: 200, y: 200, w: 500, h: 40 };
+  assert.equal(chooseSide({ cover: low, win, gap: 12, needed: 100, prefer: 'above' }), 'above');
+  assert.equal(chooseSide({ cover: low, win, gap: 12, needed: 100, prefer: 'below' }), 'above', 'no room below, so above');
+  const mid = { x: 200, y: 100, w: 500, h: 40 };
+  assert.equal(chooseSide({ cover: mid, win, gap: 12, needed: 200, prefer: 'above' }), 'below', 'neither fits: the roomier side');
+  assert.equal(chooseSide({ cover: low, win, gap: 12, needed: 20, prefer: undefined }), 'below', 'below is the default');
+});
+
+test('the band is pinned to the edge of the original on its side and never reaches over it', () => {
+  const win = { w: 900, h: 300 };
+  const low = { x: 200, y: 200, w: 500, h: 40 };
+  const up = bandStyle({ cover: low, win, side: 'above', gap: 12 });
+  assert.equal(up.bottom, 300 - 200 + 12, 'its bottom edge is a gap above the original');
   assert.equal(up.top, undefined);
-  assert.equal(up.minHeight, 60);
-  assert.equal(up.minWidth, 520);
   assert.equal(up.center, 450);
-  const down = bandStyle({ cover: { x: 200, y: 30, w: 500, h: 40 }, win, anchorBottom: false });
-  assert.equal(down.top, 20);
+  const high = { x: 200, y: 30, w: 500, h: 40 };
+  const down = bandStyle({ cover: high, win, side: 'below', gap: 12 });
+  assert.equal(down.top, 30 + 40 + 12, 'its top edge is a gap under the original');
   assert.equal(down.bottom, undefined);
 });
 
-test('a wide original does not make the band wider than the window', () => {
-  const st = bandStyle({ cover: { x: 0, y: 100, w: 900, h: 40 }, win: { w: 900, h: 300 }, anchorBottom: true });
-  assert.equal(st.minWidth, 884);
-  assert.equal(st.maxWidth, 884);
+test('the font shrinks in steps only as far as needed, and not below a readable size', () => {
+  const measure = (f) => f * 5;
+  assert.equal(fitFont(24, 200, measure), 24, 'fits already');
+  assert.equal(fitFont(24, 100, measure), 20);
+  assert.equal(fitFont(24, 10, measure), 14, 'a floor');
 });
 
 test('the band is kept inside the window', () => {

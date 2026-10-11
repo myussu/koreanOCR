@@ -73,7 +73,7 @@ show_romanization = true
 show_pronunciation = true
 
 [continuous]
-# Live subtitles: translation only, drawn over the original line. Word breakdowns come from the history.
+# Live subtitles: translation only, drawn just above or below the original line (never over it). Word breakdowns come from the history.
 interval_ms = 100     # how often the area is looked at
 stable_ms = 150       # a picture this still is a finished line and is read at once (a fading line is read sooner)
 linger_ms = 1500      # how long a translation stays after the original line is gone

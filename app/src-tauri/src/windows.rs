@@ -75,7 +75,7 @@ pub fn create_live(app: &AppHandle) -> tauri::Result<WebviewWindow> {
     Ok(win)
 }
 
-/// Put the live window over the subtitle area (it stays hidden until a translation arrives).
+/// Put the live window over the subtitle area and the room above and below it, where the band is drawn clear of the original (it stays hidden until a translation arrives).
 pub fn place_live(app: &AppHandle, window: Rect) {
     let Some(win) = app.get_webview_window(LIVE) else { return };
     let _ = win.set_position(PhysicalPosition::new(window.x as i32, window.y as i32));
