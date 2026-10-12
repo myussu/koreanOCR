@@ -107,6 +107,10 @@ enum Command {
         /// Ask PP-OCR to enlarge each picture this many times first, as live subtitles do (`[continuous] ocr_scale`).
         #[arg(long, default_value_t = 1.0)]
         scale: f32,
+        /// Do not score: read every picture that has no label yet (in the folder and the ones below it) and save what each engine
+        /// read beside it as `name.<engine>.txt`, for `tools/label_review.html` to show as a second opinion.
+        #[arg(long)]
+        write_drafts: bool,
     },
     /// Speak text with the voice from your settings (sentence by sentence) into a WAV file.
     Tts {
@@ -492,11 +496,11 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             // Nothing read *because* something is wrong is a failure; an honestly empty screen is not.
             Ok(if report.items.is_empty() && !report.errors.is_empty() { 1 } else { 0 })
         }
-        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, scale } => {
+        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, scale, write_drafts } => {
             use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};
             let s = services(&paths, cfg, false).await;
-            let cases = tools::load_cases(&dir)?;
-            println!("{} test image(s)\n", cases.len());
+            let (cases, images) = if write_drafts { (Vec::new(), tools::load_images(&dir)?) } else { (tools::load_cases(&dir)?, Vec::new()) };
+            println!("{} test image(s)\n", if write_drafts { images.len() } else { cases.len() });
             let mut scores = Vec::new();
             let extra: Vec<String> = vlm_args.as_deref().unwrap_or("").split_whitespace().map(str::to_string).collect();
             // Vision-model servers take turns, so they never compete for VRAM (or for timing).
@@ -577,6 +581,17 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         ("Vision model (endpoint)".into(), Arc::new(VlmOcr::new(&url, &cfg, &prompt)) as Arc<dyn maru_ocr::OcrEngine>, None)
                     }
                 };
+                if write_drafts {
+                    // clap names the engine the way the command line spells it (`paddle-vl`), which is what the review page lists it as.
+                    let tag = clap::ValueEnum::to_possible_value(&e).map(|v| v.get_name().to_string()).unwrap_or_else(|| "draft".into());
+                    println!("{name}: reading the pictures that have no label yet …");
+                    let (tag2, images) = (tag.clone(), images.clone());
+                    match tokio::task::spawn_blocking(move || tools::write_drafts(&tag2, ocr.as_ref(), &images, scale)).await? {
+                        Ok(n) => println!("  wrote {n} draft(s) as name.{tag}.txt\n"),
+                        Err(err) => eprintln!("({name} failed: {err:#})\n"),
+                    }
+                    continue;
+                }
                 // Recognition is blocking (and for vision models waits on HTTP): keep the runtime free.
                 let (task_name, cases) = (name.clone(), cases.clone());
                 let result = tokio::task::spawn_blocking(move || tools::eval_engine(&task_name, ocr.as_ref(), &cases, scale)).await?;
@@ -584,6 +599,9 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     Ok(score) => scores.push(score),
                     Err(err) => eprintln!("({name} failed: {err:#})\n"),
                 }
+            }
+            if write_drafts {
+                return Ok(0);
             }
             if scores.is_empty() {
                 bail!("no OCR engine could be evaluated; run `maru setup ocr` first");

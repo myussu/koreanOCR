@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Label review</title>
+<style>
+  :root {
+    --bg: #f6f6f4; --card: #ffffff; --ink: #1d1d1b; --muted: #6b6b66; --line: #dcdcd6;
+    --accent: #2f5fd0; --accent-ink: #ffffff; --warn: #b4540a; --warn-bg: #fdf0e3; --ok: #1f7a3d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #151514; --card: #1f1f1d; --ink: #ececE8; --muted: #9a9a93; --line: #34342f;
+      --accent: #6c93f0; --accent-ink: #0d0d0c; --warn: #f0a85c; --warn-bg: #2e2418; --ok: #5fcb84;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #151514; --card: #1f1f1d; --ink: #ececE8; --muted: #9a9a93; --line: #34342f;
+    --accent: #6c93f0; --accent-ink: #0d0d0c; --warn: #f0a85c; --warn-bg: #2e2418; --ok: #5fcb84;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, "Segoe UI", "Malgun Gothic", sans-serif; }
+  main { max-width: 860px; margin: 0 auto; padding: 16px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  p.lead { color: var(--muted); margin: 0 0 16px; }
+  .bar { display: flex; flex-wrap: wrap; gap: 8px 16px; align-items: center; margin-bottom: 12px; }
+  .bar .grow { flex: 1 1 200px; }
+  .meter { height: 8px; background: var(--line); border-radius: 4px; overflow: hidden; }
+  .meter > div { height: 100%; background: var(--ok); width: 0; transition: width .2s; }
+  .count { color: var(--muted); font-size: 13px; margin-top: 4px; }
+  button { font: inherit; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 8px 14px; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); font-weight: 600; }
+  button:disabled { opacity: .45; cursor: default; }
+  label.check { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); font-size: 13px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+  .shot { background: #000; border-radius: 8px; padding: 8px; }
+  .shot img { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+  .meta { color: var(--muted); font-size: 13px; margin: 8px 0; display: flex; flex-wrap: wrap; gap: 4px 14px; }
+  .readings { display: flex; flex-direction: column; gap: 6px; margin: 12px 0; }
+  .reading { display: flex; gap: 10px; align-items: baseline; text-align: left; width: 100%; }
+  .reading .from { flex: 0 0 82px; color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .reading .text { flex: 1; font-size: 17px; word-break: keep-all; overflow-wrap: anywhere; }
+  .flag { color: var(--warn); background: var(--warn-bg); border-radius: 6px; padding: 2px 8px; font-size: 13px; }
+  textarea { width: 100%; font: 20px/1.4 "Malgun Gothic", "Noto Sans CJK KR", system-ui, sans-serif; background: var(--bg); color: var(--ink); border: 2px solid var(--line); border-radius: 8px; padding: 10px 12px; resize: vertical; min-height: 64px; }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+  .row .spacer { flex: 1; }
+  input.tags { font: inherit; padding: 6px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); color: var(--ink); width: 220px; }
+  .hint { color: var(--muted); font-size: 12.5px; margin-top: 10px; }
+  .empty { text-align: center; padding: 48px 16px; color: var(--muted); }
+  .status { min-height: 1.4em; color: var(--muted); font-size: 13px; }
+  .status.bad { color: var(--warn); }
+  kbd { border: 1px solid var(--line); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; font-size: 12px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Label review</h1>
+  <p class="lead">Look at each subtitle picture, make the box say exactly what is on screen, and press Enter. The grey readings above the box are only drafts: check the picture, not them.</p>
+
+  <div class="bar">
+    <button id="open" class="primary">Open the folder…</button>
+    <label class="check"><input type="checkbox" id="byDisagreement" checked> disagreements first</label>
+    <label class="check"><input type="checkbox" id="onlyTodo" checked> only what is left</label>
+    <div class="grow">
+      <div class="meter"><div id="meterFill"></div></div>
+      <div class="count" id="count">Nothing open yet.</div>
+    </div>
+  </div>
+
+  <div id="stage"><div class="card empty" id="emptyMsg">Open the folder that holds the saved subtitle pictures (the <code>evalset\raw</code> folder, or one game's folder in it). The page needs Microsoft Edge or Google Chrome, and reads and writes only that folder.</div></div>
+  <div class="status" id="status" role="status"></div>
+</main>
+
+<script src="label-review-core.js"></script>
+<script>
+(() => {
+  'use strict';
+  const L = window.LabelCore;
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+
+  // ── Storage: the picked folder on disk, or (for ?demo) a few made-up items in memory ──────────────────────────────────
+
+  /** An item is one picture, `dir` the folder handle (or memory folder) that holds it and its sidecars. */
+  const fsStore = {
+    async pick() {
+      if (!window.showDirectoryPicker) throw new Error('This browser cannot open folders. Use Microsoft Edge or Google Chrome.');
+      const root = await window.showDirectoryPicker({ mode: 'readwrite' });
+      const items = [];
+      const walk = async (dir, game) => {
+        const names = [];
+        const subs = [];
+        for await (const [name, handle] of dir.entries()) {
+          if (handle.kind === 'directory') subs.push([name, handle]);
+          else names.push(name);
+        }
+        for (const g of L.groupFiles(names)) items.push({ ...g, key: `${game}/${g.id}`, id: `${game}/${g.id}`, base: g.id, game, dir });
+        for (const [name, handle] of subs) await walk(handle, game ? `${game}/${name}` : name);
+      };
+      await walk(root, root.name);
+      return items;
+    },
+    async text(item, name) { return name ? (await (await item.dir.getFileHandle(name)).getFile()).text() : null; },
+    async imageUrl(item) { return URL.createObjectURL(await (await item.dir.getFileHandle(item.png)).getFile()); },
+    async write(item, name, text) {
+      const w = await (await item.dir.getFileHandle(name, { create: true })).createWritable();
+      await w.write(text);
+      await w.close();
+    },
+    async remove(item, name) { try { await item.dir.removeEntry(name); } catch (_) { /* it was not there */ } },
+  };
+
+  function demoStore() {
+    const files = new Map();
+    const put = (item, name, text) => files.set(`${item.id}/${name}`, text);
+    const picture = (text) => {
+      const c = document.createElement('canvas');
+      c.width = 760; c.height = 70;
+      const g = c.getContext('2d');
+      const grad = g.createLinearGradient(0, 0, 760, 70);
+      grad.addColorStop(0, '#2a3b52'); grad.addColorStop(1, '#6b5a3c');
+      g.fillStyle = grad; g.fillRect(0, 0, 760, 70);
+      g.font = '28px "Malgun Gothic", "Noto Sans CJK KR", sans-serif';
+      g.textAlign = 'center'; g.textBaseline = 'middle';
+      g.lineWidth = 5; g.strokeStyle = '#000'; g.strokeText(text, 380, 36);
+      g.fillStyle = '#fff'; g.fillText(text, 380, 36);
+      return c.toDataURL('image/png');
+    };
+    const rows = [
+      ['오, 하고 있구나', '오, 하고 있구나', '오하고 있구나'],
+      ['저게 뭐야? 저런 짓을 하다니, 무섭지도 않나?', '저게 뭐야? 저런 짓을 하다니, 무섭지도 않나?', '저게 뭐야 저런 짓을 하다니 무섭지도 않나'],
+      ['렉스도 했었나요?', '렉스도 했었나요?', '렉스도 했었나요'],
+      ['샐비저가 됐을 때 무척 도움이 됐어', '새비저가 됐을 때 무척 도움이 됐어', '샐비저가 됐을 때 무척 도움이 됐어'],
+      ['잠깐, 뭐 하는 거야 오지 마, 손대지 마!', '잠깐 뭐 하는 거야 오지 마 손대지 마', '잠깐 뭐 하는거야 오지마 손대지마'],
+    ];
+    const items = rows.map(([truth, live, vl], i) => {
+      const id = `demo/s${String(i + 1).padStart(3, '0')}_0`;
+      return { id, key: id, base: `s${i + 1}`, game: 'demo', png: 'x.png', json: 'x.json', label: null, drafts: { 'paddle-vl': 'y.txt' }, unreadable: null, tags: null, _img: picture(truth), _live: live, _vl: vl };
+    });
+    return {
+      async pick() { return items; },
+      async text(item, name) {
+        if (name === item.json) return JSON.stringify({ draft: item._live, game: item.game, window_title: 'Demo game', confidence: 0.93 });
+        if (name === item.drafts['paddle-vl']) return item._vl;
+        return files.get(`${item.id}/${name}`) ?? '';
+      },
+      async imageUrl(item) { return item._img; },
+      async write(item, name, text) { put(item, name, text); },
+      async remove(item, name) { files.delete(`${item.id}/${name}`); },
+    };
+  }
+
+  const store = params.has('demo') ? demoStore() : fsStore;
+
+  // ── State ────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+  let items = [];            // every picture found
+  let queue = [];            // the ones being worked through, in order
+  let at = 0;                // position in the queue
+  let current = null;        // what is on screen: { item, start }
+  const edits = {};          // item id → whether the label differs from what the box started with (this session)
+  let lastTags = '';
+
+  const status = (msg, bad = false) => { $('status').textContent = msg; $('status').className = 'status' + (bad ? ' bad' : ''); };
+
+  async function load(item) {
+    if (item.loaded) return;
+    const sidecar = item.json ? JSON.parse((await store.text(item, item.json)) || '{}') : {};
+    item.draft = sidecar.draft ?? null;
+    item.info = { game: sidecar.game ?? item.game, title: sidecar.window_title ?? '', confidence: sidecar.confidence ?? null };
+    item.drafts = Object.fromEntries(await Promise.all(Object.entries(item.drafts).map(async ([tag, name]) => [tag, (await store.text(item, name)) ?? ''])));
+    item.labelText = item.labelFile ?? null;
+    item.loaded = true;
+  }
+
+  async function open() {
+    try {
+      status('Reading the folder…');
+      const found = await store.pick();
+      if (!found.length) { status('No pictures with a matching name were found there.', true); return; }
+      // Labels already written count as done.
+      for (const item of found) {
+        if (item.label && typeof item.label === 'string') {
+          item.labelFile = item.label;
+          item.label = (await store.text(item, item.labelFile)).trim();
+        }
+        await load(item);
+      }
+      items = found;
+      for (const k of Object.keys(edits)) delete edits[k];
+      rebuild();
+      status(`${items.length} pictures.`);
+    } catch (e) {
+      if (e && e.name === 'AbortError') { status(''); return; }
+      status(String(e.message || e), true);
+    }
+  }
+
+  function rebuild() {
+    const keepId = current ? current.item.id : null;
+    let ordered = L.order(items, { disagreementsFirst: $('byDisagreement').checked });
+    if ($('onlyTodo').checked) ordered = ordered.filter((i) => L.pending(i) || i.id === keepId);
+    queue = ordered;
+    at = keepId ? Math.max(0, queue.findIndex((i) => i.id === keepId)) : 0;
+    show();
+  }
+
+  function meter() {
+    const p = L.progress(items, edits);
+    $('meterFill').style.width = p.total ? `${((p.labelled + p.unreadable) / p.total) * 100}%` : '0';
+    const parts = [`${p.labelled} labelled`, `${p.unreadable} unreadable`, `${p.left} left`];
+    if (p.confirmed) parts.push(`you changed ${p.changed} of ${p.confirmed} drafts this session`);
+    $('count').textContent = parts.join(' · ');
+  }
+
+  async function show() {
+    meter();
+    const stage = $('stage');
+    if (!queue.length) {
+      stage.innerHTML = '<div class="card empty">' + (items.length ? 'Nothing left to do here. Untick “only what is left” to look at finished ones.' : 'Nothing open yet.') + '</div>';
+      current = null;
+      return;
+    }
+    at = Math.min(Math.max(at, 0), queue.length - 1);
+    const item = queue[at];
+    const start = L.startingText(item);
+    const readings = L.readings(item);
+    const gap = L.disagreement(readings.map((r) => r.text));
+    current = { item, start };
+
+    stage.innerHTML = '';
+    const card = document.createElement('div');
+    card.className = 'card';
+    const shot = document.createElement('div');
+    shot.className = 'shot';
+    const img = document.createElement('img');
+    img.alt = 'subtitle picture';
+    img.src = await store.imageUrl(item);
+    shot.append(img);
+
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const bits = [`${at + 1} of ${queue.length}`, item.info.game, item.info.title, item.info.confidence != null ? `reader confidence ${Math.round(item.info.confidence * 100)}%` : '', item.label != null ? 'already labelled' : '', item.unreadable ? 'marked unreadable' : ''];
+    for (const b of bits.filter(Boolean)) { const s = document.createElement('span'); s.textContent = b; meta.append(s); }
+    if (gap != null && gap > 0.02) { const f = document.createElement('span'); f.className = 'flag'; f.textContent = 'the readers disagree'; meta.append(f); }
+
+    const list = document.createElement('div');
+    list.className = 'readings';
+    for (const r of readings) {
+      const b = document.createElement('button');
+      b.type = 'button'; b.className = 'reading'; b.title = 'Use this reading';
+      b.innerHTML = '<span class="from"></span><span class="text"></span>';
+      b.querySelector('.from').textContent = r.from === 'live' ? 'live reader' : r.from;
+      b.querySelector('.text').textContent = r.text;
+      b.addEventListener('click', () => { $('box').value = r.text; $('box').focus(); });
+      list.append(b);
+    }
+
+    const box = document.createElement('textarea');
+    box.id = 'box'; box.lang = 'ko'; box.rows = 2; box.spellcheck = false;
+    box.value = start.text;
+    box.setAttribute('aria-label', 'What the subtitle says');
+
+    const row = document.createElement('div');
+    row.className = 'row';
+    const back = button('← Back', () => go(-1), 'Alt+←');
+    back.disabled = at === 0;
+    const skip = button('Skip →', () => go(1), 'Alt+→');
+    const bad = button('Unreadable', markUnreadable, 'Alt+U');
+    const tags = document.createElement('input');
+    tags.className = 'tags'; tags.id = 'tags'; tags.placeholder = 'tags, e.g. outlined, busy'; tags.value = lastTags; tags.setAttribute('aria-label', 'tags');
+    tags.addEventListener('input', () => { lastTags = tags.value; });
+    const sp = document.createElement('span'); sp.className = 'spacer';
+    const ok = button('Confirm ↵', confirm, 'Enter'); ok.classList.add('primary');
+    row.append(back, skip, bad, tags, sp, ok);
+
+    const hint = document.createElement('div');
+    hint.className = 'hint';
+    hint.innerHTML = '<kbd>Enter</kbd> saves the box as this picture’s label and moves on · type one line, joining two rows with a space · punctuation is optional · <kbd>Alt+U</kbd> if you cannot make out the text';
+
+    card.append(shot, meta, list, box, row, hint);
+    stage.append(card);
+    box.focus();
+    box.setSelectionRange(box.value.length, box.value.length);
+  }
+
+  function button(text, onClick, title) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.textContent = text; b.title = title || '';
+    b.addEventListener('click', onClick);
+    return b;
+  }
+
+  function go(step) { at += step; if (at >= queue.length) { at = queue.length - 1; status('That was the last one in the list.'); } show(); }
+
+  async function confirm() {
+    if (!current) return;
+    const { item, start } = current;
+    const text = L.cleanLabel($('box').value);
+    if (!text) { status('The box is empty: type what the subtitle says, or press Unreadable.', true); return; }
+    try {
+      await store.write(item, `${item.base}.txt`, text + '\n');
+      if (item.unreadable) { await store.remove(item, item.unreadable); item.unreadable = null; }
+      const tags = $('tags').value.trim();
+      if (tags) await store.write(item, `${item.base}.tags`, tags + '\n');
+      item.label = text;
+      edits[item.id] = L.normalize(text) !== L.normalize(start.text) || start.from === 'none';
+      status('Saved.');
+      go(1);
+    } catch (e) { status('Could not save: ' + (e.message || e), true); }
+  }
+
+  async function markUnreadable() {
+    if (!current) return;
+    const { item } = current;
+    try {
+      await store.write(item, `${item.base}.unreadable`, '');
+      if (item.label != null) { await store.remove(item, `${item.base}.txt`); item.label = null; }
+      item.unreadable = `${item.base}.unreadable`;
+      status('Marked unreadable; it will not be used.');
+      go(1);
+    } catch (e) { status('Could not save: ' + (e.message || e), true); }
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (!current) return;
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); confirm(); }
+    else if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); go(1); }
+    else if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
+    else if (e.altKey && (e.key === 'u' || e.key === 'U')) { e.preventDefault(); markUnreadable(); }
+  });
+
+  $('open').addEventListener('click', open);
+  $('byDisagreement').addEventListener('change', rebuild);
+  $('onlyTodo').addEventListener('change', rebuild);
+  if (params.has('demo')) open();
+  window.__labelReview = { get queue() { return queue; }, get items() { return items; } }; // for the browser check only
+})();
+</script>
+</body>
+</html>

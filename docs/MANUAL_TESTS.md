@@ -154,6 +154,15 @@ set `lite = true` (or run with `MARU_LITE=1`) and check the footprint (smaller m
 **Bring:** the folder's file count against the number of lines you saw, one sample picture with its `.json`, and any frame drops you noticed.
 **Why unverified:** tested against a fake screen and fake reader only (pictures and drafts match the reported lines); not run on the real PC or with a real game.
 
+## M-16 Labelling saved pictures (the review page)
+**Needs:** a folder of pictures from M-15 on the real PC, Edge or Chrome, and (optional) PaddleOCR-VL installed (`maru setup ocr-vl`).
+**Steps:** `maru eval-ocr <data>\evalset\raw --engine paddle-vl --write-drafts`; open `tools\label_review.html`, press **Open the folder…**, pick `evalset\raw`
+(allow editing when the browser asks); label ten pictures with Enter, mark one with Alt+U, close the tab, reopen the folder.
+**Expect:** pictures where the readers differ come first; after reopening, the ones you did are counted as done and `.txt`, `.unreadable` files sit beside the pictures;
+the Korean typing box takes IME input without Enter confirming half a syllable; `maru eval-ocr <data>\evalset\raw --engine paddle` scores the labelled ones.
+**Bring:** the count line at the top of the page after ten pictures, and anything that was awkward to type or read.
+**Why unverified:** checked in Chromium on Linux against a stand-in for the folder picker (reading, writing and removing real files) and its `?demo` mode; the real folder picker, Windows paths and IME typing were not run.
+
 ## M-14 Does enlarging the subtitle picture help PP-OCR on your game?
 **Needs:** a recording (a minute or two is plenty) of a cutscene with Korean subtitles, `ffmpeg`, and the PP-OCR models (`maru setup ocr`).
 **Steps:** write `truth.txt` (`start_seconds end_seconds the text`, one subtitle per line); find the subtitle area's `x:y:width:height` in the

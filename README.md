@@ -143,7 +143,16 @@ Each action accepts several keys separated by `|` in `config.toml` (e.g. `transl
 To find out whether an OCR change really helps *your* games, you need a few hundred subtitles with their true text. Turn on
 Settings → Live subtitles → Advanced → **Save the subtitles it reads** (`[continuous] save_reads = true`), restart live mode and play: every line
 the watcher reads is saved as a picture plus the reader's draft text under `<data folder>\evalset\raw\<game>\` (`maru doctor` prints the data folder).
-Nothing leaves your PC and nothing is saved while the setting is off. The pictures are the raw material; the true text is still written by you.
+Nothing leaves your PC and nothing is saved while the setting is off. The pictures are the raw material; the true text is still written by you:
+
+1. *(Optional, recommended)* Get a second opinion on every picture: `maru eval-ocr <data folder>\evalset\raw --engine paddle-vl --write-drafts`
+   (needs `maru setup ocr-vl`; it writes `name.paddle-vl.txt` beside each unlabelled picture and scores nothing).
+2. Open `tools\label_review.html` in Edge or Chrome, press **Open the folder…** and pick `evalset\raw`. For each picture the box starts with the
+   strongest reading; fix it so it says exactly what is on screen and press **Enter**. Pictures where the readers disagree come first, because
+   that is where a draft is most likely to be wrong. **Alt+U** marks a picture you cannot read. Labels are saved as `name.txt` next to the picture.
+3. Score on it: `maru eval-ocr <data folder>\evalset\raw --engine paddle` (it reads the game folders below it).
+
+`tools/sample_subtitle_frames.py` makes the same kind of pictures from a screen recording (and covers subtitles the watcher never noticed).
 
 ## Game menus: screen labels
 
