@@ -22,10 +22,12 @@ use std::time::{Duration, Instant};
 use maru_core::config::ContinuousConfig;
 use maru_core::{Capture, CaptureSource, Rect};
 use maru_ocr::{OcrEngine, OcrOutput};
+use image::RgbImage;
 use maru_platform::ScreenGrabber;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 
+use crate::harvest::{Harvest, Read};
 use crate::change::{Signature, changed_fraction, signature, similarity, text_jumped, text_presence, text_score};
 
 /// Cells must brighten/darken by more than this (0..255) to count as changed.
@@ -62,10 +64,13 @@ struct Pending {
     text: String,
     out: OcrOutput,
     ocr_ms: u32,
+    /// The picture that was read, kept only when `save_reads` is on.
+    frame: Option<RgbImage>,
 }
 
-fn line_of(p: Pending, appeared: Instant, screen: &dyn ScreenGrabber) -> LiveLine {
-    LiveLine {
+fn line_of(mut p: Pending, appeared: Instant, screen: &dyn ScreenGrabber, harvest: Option<&Arc<Harvest>>) -> LiveLine {
+    let frame = p.frame.take();
+    let line = LiveLine {
         ready_ms: appeared.elapsed().as_millis().min(u128::from(u32::MAX)) as u32,
         ocr_ms: p.ocr_ms,
         appeared,
@@ -78,7 +83,18 @@ fn line_of(p: Pending, appeared: Instant, screen: &dyn ScreenGrabber) -> LiveLin
             app: screen.foreground_app(),
             confidence: Some(p.out.confidence()),
         },
+    };
+    if let (Some(harvest), Some(frame)) = (harvest, frame) {
+        // On its own thread: encoding a picture must not hold up the next subtitle.
+        let (harvest, line) = (harvest.clone(), line.clone());
+        tokio::task::spawn_blocking(move || {
+            let read = Read { draft: &line.capture.text, app: line.capture.app.as_ref(), confidence: line.capture.confidence, ready_ms: line.ready_ms, ocr_ms: line.ocr_ms };
+            if let Err(e) = harvest.save(&frame, &read) {
+                tracing::warn!("could not save the line that was read: {e}");
+            }
+        });
     }
+    line
 }
 
 pub struct ContinuousHandle {
@@ -110,13 +126,18 @@ impl Drop for ContinuousHandle {
 /// from a window-event callback, which is not a Tokio thread: `tokio::spawn` there panics, and a
 /// panic inside a native callback aborts the whole process.
 pub fn spawn(runtime: &tokio::runtime::Handle, screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: ContinuousConfig, region: Rect) -> ContinuousHandle {
+    spawn_with(runtime, screen, ocr, cfg, region, None)
+}
+
+/// [`spawn`], also saving each line that is read (picture and draft text) when `harvest` is given.
+pub fn spawn_with(runtime: &tokio::runtime::Handle, screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: ContinuousConfig, region: Rect, harvest: Option<Arc<Harvest>>) -> ContinuousHandle {
     let (tx, rx) = mpsc::channel(8);
     let stop = CancellationToken::new();
-    runtime.spawn(watch(screen, ocr, cfg, region, tx, stop.clone()));
+    runtime.spawn(watch(screen, ocr, cfg, region, harvest, tx, stop.clone()));
     ContinuousHandle { rx, stop }
 }
 
-async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: ContinuousConfig, region: Rect, tx: mpsc::Sender<LiveEvent>, stop: CancellationToken) {
+async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: ContinuousConfig, region: Rect, harvest: Option<Arc<Harvest>>, tx: mpsc::Sender<LiveEvent>, stop: CancellationToken) {
     let interval = Duration::from_millis(cfg.interval_ms.max(10));
     let stable = Duration::from_millis(cfg.stable_ms);
     // A scene that keeps moving without any text in it is read at this slower rate.
@@ -197,7 +218,7 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
                 let appeared = burst.unwrap_or(now);
                 shown = p.text.clone();
                 score_shown = score;
-                if tx.send(LiveEvent::Line(Box::new(line_of(p, appeared, screen.as_ref())))).await.is_err() {
+                if tx.send(LiveEvent::Line(Box::new(line_of(p, appeared, screen.as_ref(), harvest.as_ref())))).await.is_err() {
                     return;
                 }
             }
@@ -218,6 +239,7 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
             continue;
         }
 
+        let kept = harvest.is_some().then(|| frame.clone());
         let ocr_started = Instant::now();
         let ocr = ocr.clone();
         let scale = cfg.ocr_scale;
@@ -256,7 +278,7 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
             continue;
         }
         let agrees = pending.as_ref().is_some_and(|c| similarity(&c.text, &text) >= AGREE);
-        let read = Pending { text, out, ocr_ms };
+        let read = Pending { text, out, ocr_ms, frame: kept };
         // Lettering that was there, and did not change while the OCR ran, is a finished line: one read is enough.
         let settled = !(still || agrees) && present && (text_still || text_settled(&screen, region, score, area).await);
         if !(still || agrees || settled) {
@@ -268,7 +290,7 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
         pending = None;
         shown = read.text.clone();
         score_shown = score;
-        if tx.send(LiveEvent::Line(Box::new(line_of(read, appeared, screen.as_ref())))).await.is_err() {
+        if tx.send(LiveEvent::Line(Box::new(line_of(read, appeared, screen.as_ref(), harvest.as_ref())))).await.is_err() {
             return;
         }
     }
@@ -449,6 +471,40 @@ mod tests {
         fn recognize(&self, _: &RgbImage) -> maru_ocr::Result<OcrOutput> {
             Ok(OcrOutput { lines: vec![line("안녕하세요 여러분", 5.0, 5.0, 200.0)] })
         }
+    }
+
+    #[tokio::test]
+    async fn with_saving_on_each_line_that_is_read_is_kept_as_a_picture_and_a_draft() {
+        let root = std::env::temp_dir().join(format!("maru-live-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut frames = vec![frame(0, 20); 3];
+        frames.extend(vec![frame(10, 120); 12]);
+        frames.extend(vec![frame(20, 200); 40]);
+        let mut screen = FakeScreen::new(frames);
+        screen.app = Some(maru_core::AppInfo { exe: "Yuzu.exe".into(), title: "Xenoblade".into() });
+        let ocr = Arc::new(FakeOcr::new(pages()));
+        let region = Rect::new(100.0, 800.0, 400.0, 80.0);
+        let mut h = spawn_with(&tokio::runtime::Handle::current(), Arc::new(screen), ocr, cfg(), region, Some(Arc::new(Harvest::new(root.clone()))));
+        let first = next_line(&mut h, 1500).await.expect("a line");
+        let second = next_line(&mut h, 1500).await.expect("another line");
+        h.stop();
+        // saving is done on a worker thread; give it a moment
+        let dir = root.join("yuzu");
+        let mut drafts = Vec::new();
+        for _ in 0..50 {
+            drafts = std::fs::read_dir(&dir).map(|d| d.flatten().filter(|e| e.path().extension().is_some_and(|x| x == "json")).collect()).unwrap_or_default();
+            if drafts.len() >= 2 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let mut texts: Vec<String> = drafts.iter().map(|e| serde_json::from_str::<serde_json::Value>(&std::fs::read_to_string(e.path()).unwrap()).unwrap()["draft"].as_str().unwrap().to_string()).collect();
+        texts.sort();
+        let mut want = vec![first.capture.text, second.capture.text];
+        want.sort();
+        assert_eq!(texts, want, "one saved draft per line that was reported");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "png")).count(), 2);
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// Remembers every enlargement the watcher asked for (a plain `recognize` counts as 1).

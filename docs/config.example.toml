@@ -84,6 +84,7 @@ ocr_scale = 1.0       # experimental: PP-OCR reads the area enlarged this many t
 linger_ms = 1500      # how long a translation stays after the original line is gone
 context_lines = 4     # earlier lines the model sees, for pronouns and names
 history_len = 300     # lines kept for review after a cutscene
+save_reads = false    # keep a picture + draft text of every line read, in <data>/evalset/raw/<game>/, to build a test set of your own games (nothing leaves the PC)
 # region = { x = 480.0, y = 900.0, w = 960.0, h = 120.0 }   # saved automatically if you set it from the tray
 
 # Per-application behaviour. `exe` is the program's file name.

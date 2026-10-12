@@ -216,7 +216,11 @@ UI state (selection, pending joins, the chip) is in `scan.js`; the commands are 
 * **UI:** `live.js` (+ `live-core.js`: `chooseSide`/`bandStyle`/`fitFont` put the band above or below the original, never over it; the `createBand` state machine; `latencyText`), `live.html`, `live.css`.
   The window is created hidden, click-through, never focused, and excluded from screen capture so OCR never reads the translation back.
   `live_idle` hides it after the fade. History → Live subtitles (`hub.js`) shows the lines in order with latency.
-* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`, `ocr_scale`).
+* **Save what you read** (`harvest.rs`, `continuous::spawn_with`): with `[continuous] save_reads` the watcher keeps, for every line it reports, the exact
+  picture the reader got (cloned before the read, only when the switch is on) and a `.json` with the draft text, program, title, confidence and timings,
+  under `<data>/evalset/raw/<game>/` (`Engine::set_harvest_dir`, set at boot). Written on a blocking thread so the next subtitle is not delayed. It is the
+  raw material for a labelled test set (`maru eval-ocr`); it only sees lines the watcher noticed, so it cannot measure missed subtitles.
+* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`, `ocr_scale`, `save_reads`).
 * **Tests:** `continuous.rs`, `change.rs`, `pipeline.rs` (live lane tests), `logic.rs`, `live.test.mjs`, `prompts.rs`.
 * **Real-PC check:** M-3.
 
@@ -323,6 +327,7 @@ slot that would cancel a scan (joins are detached; live lines have their own lan
 | `models/` | installers | OCR, reading model, TTS models; GGUF models are cached by `llama-server` |
 | `bin/` | `setup llm` | llama.cpp (**loose files only**; `kiwi/` and `tts/` are subfolders and must never be mixed in — their DLLs would replace llama.cpp's) |
 | `tts-cache/` | `maru-tts` | spoken sentences |
+| `evalset/raw/<game>/` | `maru-engine::harvest` | with `[continuous] save_reads`: `<secs>-<n>.png` (the picture the reader saw) + `.json` (draft text, program, window title, timings). Labels (`.txt`) are written by a person, never by Maru |
 | `maru-app.log` | `app/src-tauri/main.rs` | the overlay's log (previous run in `maru-app.previous.log`) |
 
 `MARU_HOME` relocates everything (`config.toml`, `data`, `models`, `bin`); tests and `--home` use `Paths::under`.

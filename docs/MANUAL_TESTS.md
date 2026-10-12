@@ -145,6 +145,15 @@ set `lite = true` (or run with `MARU_LITE=1`) and check the footprint (smaller m
 **Expect:** invalid values are refused with a reason; comments in `config.toml` survive saves; the restart notice appears only when needed.
 **Bring:** anything that was saved wrongly (the before/after of `config.toml`).
 
+## M-15 Save what you read (raw material for a test set)
+**Needs:** live subtitles working (M-3) and a cutscene with Korean subtitles.
+**Steps:** Settings → Live subtitles → Advanced → **Save the subtitles it reads**, restart live mode, watch a minute or two of a cutscene, then open
+`<data folder>\evalset\raw\<program name>\`.
+**Expect:** one `.png` and one `.json` per subtitle line the band showed (no repeats of the same line); the picture is the subtitle strip; the `.json`
+`draft` is what the band translated from; with the setting off, nothing new appears; playback does not stutter more than without it.
+**Bring:** the folder's file count against the number of lines you saw, one sample picture with its `.json`, and any frame drops you noticed.
+**Why unverified:** tested against a fake screen and fake reader only (pictures and drafts match the reported lines); not run on the real PC or with a real game.
+
 ## M-14 Does enlarging the subtitle picture help PP-OCR on your game?
 **Needs:** a recording (a minute or two is plenty) of a cutscene with Korean subtitles, `ffmpeg`, and the PP-OCR models (`maru setup ocr`).
 **Steps:** write `truth.txt` (`start_seconds end_seconds the text`, one subtitle per line); find the subtitle area's `x:y:width:height` in the

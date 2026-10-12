@@ -138,6 +138,13 @@ Each action accepts several keys separated by `|` in `config.toml` (e.g. `transl
 
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
 
+## Building a test set from your own games
+
+To find out whether an OCR change really helps *your* games, you need a few hundred subtitles with their true text. Turn on
+Settings → Live subtitles → Advanced → **Save the subtitles it reads** (`[continuous] save_reads = true`), restart live mode and play: every line
+the watcher reads is saved as a picture plus the reader's draft text under `<data folder>\evalset\raw\<game>\` (`maru doctor` prints the data folder).
+Nothing leaves your PC and nothing is saved while the setting is off. The pictures are the raw material; the true text is still written by you.
+
 ## Game menus: screen labels
 
 Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless-windowed games; an exclusive-fullscreen game cannot be drawn over), finds every piece of Korean text, and puts a short English label beside each.

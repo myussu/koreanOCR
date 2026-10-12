@@ -420,11 +420,15 @@ pub struct ContinuousConfig {
     /// Experimental: on one cutscene 2 helped or did nothing depending on how the picture was resized, so measure it on
     /// your own game (`maru eval-ocr <folder> --scale 2`) before turning it on.
     pub ocr_scale: f32,
+    /// Keep a picture and a draft text file of every line the watcher reads, under `<data>/evalset/raw/<game>/`, so you can
+    /// write down what the subtitles really say and score OCR changes on your own games. Off by default; nothing leaves the
+    /// PC. See docs/MANUAL_TESTS.md (M-14).
+    pub save_reads: bool,
 }
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, ocr_scale: 1.0 }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, ocr_scale: 1.0, save_reads: false }
     }
 }
 

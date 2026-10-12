@@ -105,6 +105,8 @@ pub(crate) struct Inner {
     pub history: Mutex<History>,
     /// Earlier live-subtitle lines, `(source, translation)`, sent to the model as chat turns.
     pub live_turns: Mutex<Vec<(String, String)>>,
+    /// Where `[continuous] save_reads` keeps its pictures; set once at boot (the engine does not otherwise know the data folder).
+    pub harvest_dir: Mutex<Option<std::path::PathBuf>>,
     pub next_id: AtomicU64,
     pub translate_task: Mutex<Option<JoinHandle<()>>>,
     pub deep_task: Mutex<Option<JoinHandle<()>>>,
@@ -163,6 +165,7 @@ impl Engine {
             memory: Mutex::new(Memory::new(cfg.llm.context_lines)),
             history: Mutex::new(History::new(cfg.continuous.history_len)),
             live_turns: Mutex::new(Vec::new()),
+            harvest_dir: Mutex::new(None),
             next_id: AtomicU64::new(1),
             translate_task: Mutex::new(None),
             deep_task: Mutex::new(None),
@@ -230,7 +233,17 @@ impl Engine {
     pub fn start_continuous(&self, region: Rect) -> Result<ContinuousHandle> {
         let ocr = self.inner.ocr.clone().ok_or(CaptureError::NoOcr)?;
         lock(&self.inner.live_turns).clear(); // a new session is a new scene
-        Ok(continuous::spawn(&self.inner.runtime, self.inner.platform.screen.clone(), ocr, self.inner.cfg.continuous.clone(), region))
+        let harvest = if self.inner.cfg.continuous.save_reads {
+            lock(&self.inner.harvest_dir).clone().map(|dir| Arc::new(crate::harvest::Harvest::new(dir)))
+        } else {
+            None
+        };
+        Ok(continuous::spawn_with(&self.inner.runtime, self.inner.platform.screen.clone(), ocr, self.inner.cfg.continuous.clone(), region, harvest))
+    }
+
+    /// Where `[continuous] save_reads` keeps what the live watcher read (see [`crate::harvest`]).
+    pub fn set_harvest_dir(&self, dir: std::path::PathBuf) {
+        *lock(&self.inner.harvest_dir) = Some(dir);
     }
 
     // ───────────── translation ─────────────

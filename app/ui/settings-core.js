@@ -82,6 +82,7 @@ export const SECTIONS = [
       { path: 'continuous.context_lines', label: 'Earlier lines the model sees', help: 'Keeps pronouns and names consistent', type: 'number', min: 0, max: 20, step: 1 },
       { path: 'continuous.ocr_scale', label: 'Read the subtitles enlarged (experimental)', help: '1 reads the area as it is. 2 reads it at twice its size: on a test cutscene that helped a little or not at all, and it is slower. Compare on your own game with `maru eval-ocr --scale 2` first', type: 'number', min: 1, max: 3, step: 0.5, advanced: true },
       { path: 'continuous.diff_threshold', label: 'How much must change to count', type: 'number', min: 0.001, max: 0.2, step: 0.001, advanced: true },
+      { path: 'continuous.save_reads', label: 'Save the subtitles it reads (for testing)', help: 'Keeps a picture and the reader\'s draft text of every live line in the Maru data folder (evalset/raw), so you can write down what they really say and measure the reader on your own games. Nothing leaves this PC. Needs a restart of live mode', type: 'toggle', advanced: true },
       { path: 'continuous.history_len', label: 'Lines kept in the history', type: 'number', min: 10, max: 2000, step: 10, advanced: true },
     ],
   },

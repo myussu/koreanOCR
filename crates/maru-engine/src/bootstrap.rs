@@ -424,6 +424,7 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         scan_ocr,
         labels: Some(labels),
     });
+    engine.set_harvest_dir(paths.data_dir.join("evalset").join("raw"));
 
     if opts.start_llm && cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart {
         let (engine, cfg, paths, server) = (engine.clone(), cfg.clone(), paths.clone(), server.clone());
