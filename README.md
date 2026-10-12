@@ -172,7 +172,7 @@ Supply existing local files; the command never downloads them. It uses the insta
 loads Gemma / candidate / Gemma one at a time, excludes a separate warm-up, and sends the same bundled 40 Korean lines
 (30 normalized lines from the supplied cutscene transcript and 10 authored meaning checks).
 The candidate defaults to the user-only translation prompts in [Tencent's HY-MT model card](https://huggingface.co/tencent/HY-MT1.5-1.8B); `--candidate-prompt maru` tests the existing live prompt
-instead. Both use temperature `0.1` and the live output cap; other sampling parameters are llama-server defaults, so this is not
+instead. By default both use temperature `0.1` and the live output cap; other sampling parameters are llama-server defaults, so this is not
 Tencent's recommended sampling preset. Context resets between scenes and runs. By default preceding reference translations are
 identical for both models; `--rolling-context` instead uses each model's preceding answers. `--file PATH` accepts a JSONL corpus
 with the fields shown in `crates/maru-cli/testdata/live-dialogue.jsonl`. References are review aids, not certified answers.
@@ -185,6 +185,15 @@ If PowerShell blocks scripts, invoke it with a process-only bypass:
 `powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\compare_live_models.ps1 ...` (replace `...` with those arguments).
 Use a new report path each time. Compare latency **and** translation meaning; then follow
 [M-15](docs/MANUAL_TESTS.md#m-15-live-translation-model-comparison) before judging another game's subtitle quality.
+
+For an existing local [HY-MT2 GGUF](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF), add `--candidate-prompt hy-mt2`
+to use its published English translation/context templates. Sampling remains matched by default. Add
+`--candidate-sampling tencent` to use temperature `0.7`, top-p `0.6`, top-k `20`, and repetition penalty `1.05` for the
+HY-MT candidate only; both Gemma passes retain their existing live settings. Other sampler parameters remain llama-server
+defaults, and the subtitle output cap is retained instead of the model card's 4,096-token allowance. Each pass records its
+sampling, temperature and server arguments. The wrapper accepts `-CandidatePrompt hy-mt2 -CandidateSampling tencent`.
+Run matched and Tencent settings into separate new folders to distinguish a model improvement from a sampling effect.
+The Tencent option also supports the MT1.5 prompt for a fair follow-up; it refuses the Maru candidate prompt.
 
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
 

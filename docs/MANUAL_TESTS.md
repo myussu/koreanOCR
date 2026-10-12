@@ -198,6 +198,10 @@ the game was idle, and case IDs with incorrect translations and the intended mea
 **Why unverified:** scripted tests establish benchmark behavior. Real model-only runs exclude capture, OCR, other app models and
 the overlay; neither proves end-to-end subtitle latency or quality in another game. An overlay trial needs a separate live-only
 model selection change and a real cutscene after the model comparison has been reviewed.
+**MT2 follow-up:** use an independently approved/downloaded local MT2 Q8 file with `--candidate-prompt hy-mt2`. Compare
+separate matched and `--candidate-sampling tencent` runs on the same corpus/context; the latter changes only the HY-MT
+candidate's core sampling parameters and retains the live output cap. Review the MT1.5 failure cases explicitly. The installed
+llama-server must load the new GGUF successfully before making compatibility claims. Neither profile is an overlay selection.
 **Automated observation (2026-10-11):** with Maru closed and the game left open on the RTX 5070 Ti, two local A/B/A comparisons
 completed 480 requests without execution errors. The three-repetition native-prompt run had median first text/done of 22/81 ms
 for HY-MT Q8 and 167–170/340–341 ms for Gemma. Total GPU memory, including the game, was about 5 GiB lower with HY-MT.
@@ -205,6 +209,16 @@ Text inspection found changed meanings, including World Tree → World Water and
 Maru-prompt follow-up also changed dismissal into appointment. Keep the installed model for now. These are model-only automated
 observations with fixed reference context, not a human overlay quality result; game activity was unspecified and rolling context
 was only unit-tested. The reports distinguish startup/warm-up from steady requests. This does not add a human results-log entry.
+**Automated MT2 follow-up (2026-10-11):** with Maru and the game closed on the same RTX 5070 Ti, three three-repetition A/B/A
+comparisons tested MT2 Q8 with matched and Tencent core sampling, then MT1.5 Q8 with Tencent sampling. A one-repetition
+MT2 zero-context probe followed. All 1,200 measured requests completed without execution errors; installed llama.cpp loaded
+MT2, the official model checksum matched, and the installed config hash was unchanged. Median MT2 first text/done was
+18/63 ms matched and 20/68 ms Tencent, versus Gemma's 139–149/268–285 ms with dialogue context. Total GPU memory was
+about 4.6–5.0 GiB lower in MT2 passes. MT2 retained changed meanings (dismissal → promotion; World Tree → waterfall/mountains)
+and echoed prompt/background text in 38/120 matched and 34/120 Tencent answers. Removing context stopped those echoes but
+did not fix the meaning errors. MT2 improved the climbing sentence over MT1.5; neither candidate passed text review across
+the corpus. Keep Gemma selected. Full local artifacts: `data/live-diagnostics/model-comparison/MT2-REPORT.md`. These are
+agent text inspections and model-only timings, not a certified quality score, game-open MT2 test or human overlay result.
 
 ## Results log
 

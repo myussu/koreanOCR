@@ -194,11 +194,14 @@ UI state (selection, pending joins, the chip) is in `scan.js`; the commands are 
   explicit local GGUFs, fresh Gemma/candidate/Gemma servers on a separate loopback port, sequential requests and untimed warm-up.
   The existing live task is the Gemma baseline; a user-only HY-MT prompt is confined to the diagnostic module. Fixed reference
   context allows identical inputs; optional rolling context uses each model's answers. Scenes/runs reset context; no answer cache,
-  OCR, TTS, overlay or application databases. Temperature/cap match; this compares model and prompt, not model weights alone.
+  OCR, TTS, overlay or application databases. Temperature/cap match by default; this compares model and prompt, not model weights alone.
   Records preserve errors and distinct answers; percentiles include successes only. Corpus: `maru-cli/testdata/live-dialogue.jsonl`.
   Tests in `live_bench.rs` exercise real streaming against the scripted server, context, failures/timeouts and report semantics;
   the CLI test checks corpus coverage. `tools/compare_live_models.ps1` can record total GPU pressure while the game remains open.
   Real game/quality check: M-15. This adds a diagnostic CLI command, with no changes to existing engine, config or event contracts.
+  `hy-mt2` adds MT2's English user/context templates. Opt-in `candidate-sampling tencent` applies the published core HY-MT
+  sampling parameters only to the candidate's cloned server/request configuration; baseline passes and installed settings
+  keep their existing behavior. Reports include per-pass sampling and effective arguments; matched sampling stays the default.
 * **Watcher** (`continuous.rs`, `change.rs`): looks at a fixed region every `interval_ms` and reads it with OCR only when the picture
   differs from the last one read. A line is reported when two reads agree, the picture holds still (`stable_ms`), or — new — the
   **text signal** vouches for it. A moving scene without text is polled slowly; one-character OCR jitter is ignored. It emits
@@ -333,6 +336,7 @@ history display. Neither queued jobs nor history are durable across app exit.
 Visual duplicate confirmation is opt-in and only applies before a live capture is submitted. It adds no events or persistence;
 normal translation, scan OCR, the model prompt and pending live requests are unchanged.
 The isolated model comparison adds only `bench-live-models`; it does not replace the application's translation model or live task.
+Its MT2 prompt and Tencent sampling flags are opt-in additions; existing CLI defaults remain unchanged.
 
 ### 6.3 Shell ↔ pages
 * **Windows** (labels in `windows.rs`): `panel` (`index.html`), `picker`, `hub`, `scan`, `live`. Adding one needs a capability entry in
@@ -356,7 +360,7 @@ The isolated model comparison adds only `bench-live-models`; it does not replace
 | `bin/` | `setup llm` | llama.cpp (**loose files only**; `kiwi/` and `tts/` are subfolders and must never be mixed in — their DLLs would replace llama.cpp's) |
 | `tts-cache/` | `maru-tts` | spoken sentences |
 | `maru-app.log` | `app/src-tauri/main.rs` | the overlay's log (previous run in `maru-app.previous.log`); live request phases/counts and optional model prompt/decode timings |
-| comparison `--out` (user-chosen folder) | `maru-llm::live_bench` | new folder with `records.jsonl`, `report.json`, `review.md` and server log tails; wrapper adds sibling GPU/full log files; no existing reports overwritten |
+| comparison `--out` (user-chosen folder) | `maru-llm::live_bench` | new folder with `records.jsonl`, `report.json`, `review.md` and server log tails; records/passes include prompt profile and sampling; wrapper adds sibling GPU/full log files; no existing reports overwritten |
 
 `MARU_HOME` relocates everything (`config.toml`, `data`, `models`, `bin`); tests and `--home` use `Paths::under`.
 Live pending jobs, context turns, timings and history (including appearance timestamps) stay in memory; no database migration is added.

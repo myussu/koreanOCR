@@ -16,6 +16,28 @@ use crate::{ChatOpts, LlamaServer, LiveRequest, LlmChunk, LlmClient, LlmError, M
 pub enum Profile {
     Maru,
     HyMt,
+    HyMt2,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Sampling {
+    #[default]
+    Matched,
+    Tencent,
+}
+
+impl Sampling {
+    fn temperature(self) -> f32 {
+        match self { Self::Matched => 0.1, Self::Tencent => 0.7 }
+    }
+
+    fn server_args(self) -> Vec<String> {
+        match self {
+            Self::Matched => Vec::new(),
+            Self::Tencent => ["--top-p", "0.6", "--top-k", "20", "--repeat-penalty", "1.05"].into_iter().map(str::to_owned).collect(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -76,7 +98,22 @@ fn hy_messages(source: &str, turns: &[(String, String)]) -> Vec<Message> {
     vec![Message::user(prompt)]
 }
 
+fn hy2_messages(source: &str, turns: &[(String, String)]) -> Vec<Message> {
+    // MT2 has a published English context template distinct from MT1.5's.
+    let prompt = if turns.is_empty() {
+        format!("Translate the following text into English. Note that you should only output the translated result without any additional explanation:\n{source}")
+    } else {
+        let context = turns.iter().map(|(ko, en)| format!("Korean: {ko}\nEnglish: {en}\n")).collect::<String>();
+        format!("[Background Information]\n{context}\nPlease translate the following text into English, taking the provided background information into consideration.\n[Source Text]\n{source}")
+    };
+    vec![Message::user(prompt)]
+}
+
 pub async fn measure(client: &LlmClient, profile: Profile, source: &str, turns: &[(String, String)], timeout: Duration) -> Measurement {
+    measure_with_sampling(client, profile, Sampling::Matched, source, turns, timeout).await
+}
+
+async fn measure_with_sampling(client: &LlmClient, profile: Profile, sampling: Sampling, source: &str, turns: &[(String, String)], timeout: Duration) -> Measurement {
     let started_unix_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
     let started = Instant::now();
     let mut first_text_ms = None;
@@ -97,14 +134,15 @@ pub async fn measure(client: &LlmClient, profile: Profile, source: &str, turns: 
                     }
                 }).await
             }
-            Profile::HyMt => {
+            Profile::HyMt | Profile::HyMt2 => {
                 let opts = ChatOpts {
                     max_tokens: Some((source.chars().count() as u32 * 2 + 40).min(256)),
-                    temperature: Some(0.1),
+                    temperature: Some(sampling.temperature()),
                     log_timings: true,
                     ..Default::default()
                 };
-                client.stream_chat(&hy_messages(source, turns), &opts, &mut delta).await.map(|s| crate::tasks::clean_text(&s))
+                let messages = match profile { Profile::HyMt2 => hy2_messages(source, turns), _ => hy_messages(source, turns) };
+                client.stream_chat(&messages, &opts, &mut delta).await.map(|s| crate::tasks::clean_text(&s))
             }
         }
     };
@@ -125,6 +163,7 @@ pub struct Record {
     pub case: Case,
     pub context: Vec<(String, String)>,
     pub profile: Profile,
+    pub sampling: Sampling,
     pub measurement: Measurement,
 }
 
@@ -173,6 +212,7 @@ pub struct Options {
     pub context_lines: usize,
     pub rolling_context: bool,
     pub candidate_profile: Profile,
+    pub candidate_sampling: Sampling,
     pub port: u16,
     pub game_state: String,
 }
@@ -186,6 +226,7 @@ struct Report<'a> {
     context_lines: usize,
     runs: usize,
     temperature: f32,
+    candidate_sampling: Sampling,
     token_cap: &'a str,
     config: &'a LlmConfig,
     corpus: &'a [Case],
@@ -257,6 +298,9 @@ fn review(cases: &[Case], records: &[Record]) -> String {
 /// A/B/A, sequential requests, separate warm-up and no application services or answer cache.
 /// The output directory must be new. Completed records survive a later server failure.
 pub async fn compare(cfg: &LlmConfig, paths: &Paths, cases: &[Case], options: &Options, progress: &mut (dyn FnMut(&str) + Send)) -> Result<Vec<PassSummary>> {
+    if options.candidate_sampling == Sampling::Tencent && matches!(options.candidate_profile, Profile::Maru) {
+        return Err(LlmError::Api("Tencent sampling requires an HY-MT candidate prompt".into()));
+    }
     if options.runs == 0 || options.port == 0 || cases.is_empty() {
         return Err(LlmError::Api("runs, port and corpus must be nonzero".into()));
     }
@@ -290,6 +334,8 @@ pub async fn compare(cfg: &LlmConfig, paths: &Paths, cases: &[Case], options: &O
         ("candidate", &options.candidate, options.candidate_profile),
         ("baseline_after", &options.baseline, Profile::Maru),
     ] {
+        let sampling = if pass == "candidate" { options.candidate_sampling } else { Sampling::Matched };
+        config.extra_args = sampling.server_args();
         config.model_path = Some(model.clone());
         progress(&format!("{pass}: loading {}", model.display()));
         let start = Instant::now();
@@ -300,8 +346,8 @@ pub async fn compare(cfg: &LlmConfig, paths: &Paths, cases: &[Case], options: &O
         let load_ms = start.elapsed().as_secs_f64() * 1000.0;
         std::fs::write(options.out.join(format!("{pass}-startup.log")), server.log_tail()).map_err(io_error)?;
         let client = server.client();
-        let warmup = measure(&client, profile, "준비가 되면 시작하겠습니다.", &[], timeout).await;
-        passes.push(serde_json::json!({ "pass": pass, "model": model, "model_bytes": std::fs::metadata(model).map_err(io_error)?.len(), "profile": profile, "load_ms": load_ms, "warmup": warmup, "args": crate::build_args(&config, &crate::ModelSource::File(model.clone())) }));
+        let warmup = measure_with_sampling(&client, profile, sampling, "준비가 되면 시작하겠습니다.", &[], timeout).await;
+        passes.push(serde_json::json!({ "pass": pass, "model": model, "model_bytes": std::fs::metadata(model).map_err(io_error)?.len(), "profile": profile, "sampling": sampling, "temperature": sampling.temperature(), "load_ms": load_ms, "warmup": warmup, "args": crate::build_args(&config, &crate::ModelSource::File(model.clone())) }));
         if let Some(error) = warmup.error {
             failure = Some(format!("{pass} warm-up failed: {error}"));
             drop(server);
@@ -316,8 +362,8 @@ pub async fn compare(cfg: &LlmConfig, paths: &Paths, cases: &[Case], options: &O
                     turns.clear();
                     scene = &case.scene;
                 }
-                let measurement = measure(&client, profile, &case.source, &turns, timeout).await;
-                let record = Record { pass: pass.into(), run, case: case.clone(), context: turns.clone(), profile, measurement };
+                let measurement = measure_with_sampling(&client, profile, sampling, &case.source, &turns, timeout).await;
+                let record = Record { pass: pass.into(), run, case: case.clone(), context: turns.clone(), profile, sampling, measurement };
                 advance(&mut turns, case, &record.measurement, options);
                 serde_json::to_writer(&mut raw, &record).map_err(io_error)?;
                 writeln!(raw).map_err(io_error)?;
@@ -340,9 +386,9 @@ pub async fn compare(cfg: &LlmConfig, paths: &Paths, cases: &[Case], options: &O
     let status = if failure.is_some() { "incomplete" } else if summaries.iter().any(|s| s.errors > 0) { "completed_with_errors" } else { "completed" };
     config.model_path = None;
     let report = Report {
-        status, limitation: "Model and prompt comparison only: no screen capture, OCR, overlay, vision reader or TTS. Warm-up excluded. Success-only latency summaries. No automatic quality score. Sampling temperature 0.1 for both, other sampling defaults from the installed llama-server; this is not Tencent's recommended sampling preset. Draft model and extra server arguments disabled for both.",
+        status, limitation: "Model and prompt comparison only: no screen capture, OCR, overlay, vision reader or TTS. Warm-up excluded. Success-only latency summaries. No automatic quality score. The top-level temperature is the baseline/matched setting; per-pass sampling and temperature identify candidate overrides. Tencent sets temperature 0.7, top_p 0.6, top_k 20 and repeat penalty 1.05; unspecified samplers remain llama-server defaults. All profiles retain the live output cap. Draft model and application extra server arguments disabled for all passes.",
         game_state: &options.game_state, context_mode: if options.rolling_context { "rolling_model_outputs" } else { "fixed_reference_translations" },
-        context_lines: options.context_lines, runs: options.runs, temperature: 0.1, token_cap: "min(source characters * 2 + 40, 256)",
+        context_lines: options.context_lines, runs: options.runs, temperature: 0.1, candidate_sampling: options.candidate_sampling, token_cap: "min(source characters * 2 + 40, 256)",
         config: &config, corpus: cases, passes: &passes, summaries: &summaries, failure: &failure,
     };
     std::fs::write(options.out.join("report.json"), serde_json::to_vec_pretty(&report).map_err(io_error)?).map_err(io_error)?;
@@ -363,7 +409,7 @@ mod tests {
     }
 
     fn options() -> Options {
-        Options { baseline: "a.gguf".into(), candidate: "b.gguf".into(), out: "unused".into(), runs: 1, context_lines: 1, rolling_context: false, candidate_profile: Profile::HyMt, port: 19180, game_state: "unspecified".into() }
+        Options { baseline: "a.gguf".into(), candidate: "b.gguf".into(), out: "unused".into(), runs: 1, context_lines: 1, rolling_context: false, candidate_profile: Profile::HyMt, candidate_sampling: Sampling::Matched, port: 19180, game_state: "unspecified".into() }
     }
 
     fn measurement(error: bool) -> Measurement {
@@ -409,7 +455,7 @@ mod tests {
 
     #[test]
     fn failed_requests_never_make_the_success_latency_distribution_look_better() {
-        let records = vec![false, true].into_iter().map(|error| Record { pass: "candidate".into(), run: 1, case: case("1", "a"), context: vec![], profile: Profile::HyMt, measurement: measurement(error) }).collect::<Vec<_>>();
+        let records = vec![false, true].into_iter().map(|error| Record { pass: "candidate".into(), run: 1, case: case("1", "a"), context: vec![], profile: Profile::HyMt, sampling: Sampling::Matched, measurement: measurement(error) }).collect::<Vec<_>>();
         let summary = summarize("candidate", &records);
         assert_eq!((summary.attempted, summary.errors), (2, 1));
         assert_eq!(summary.done.unwrap().n, 1);
@@ -421,7 +467,7 @@ mod tests {
         let mock = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&[" ", "Do not", " go."]), delay_ms: 15 }).await;
         let client = LlmClient::new(&mock.url, &LlmConfig::default());
         let turns = vec![("가도 되나요?".into(), "May I go?".into())];
-        for profile in [Profile::Maru, Profile::HyMt] {
+        for profile in [Profile::Maru, Profile::HyMt, Profile::HyMt2] {
             let result = measure(&client, profile, "가지 마세요.", &turns, Duration::from_secs(2)).await;
             assert!(result.error.is_none());
             assert_eq!(result.translation, "Do not go.");
@@ -436,6 +482,37 @@ mod tests {
         assert_eq!(b["messages"][0]["role"], "user");
         assert!(b["messages"][0]["content"].as_str().unwrap().contains("May I go?"));
         assert!(!b["messages"][0]["content"].as_str().unwrap().contains("without additional explanation"));
+    }
+
+    #[tokio::test]
+    async fn mt2_uses_its_native_prompt_and_tencent_sampling_only_when_requested() {
+        let mock = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["Don't go."]), delay_ms: 0 }).await;
+        let client = LlmClient::new(&mock.url, &LlmConfig::default());
+        let turns = vec![("가도 되나요?".into(), "May I go?".into())];
+        for (sampling, context) in [(Sampling::Matched, &[][..]), (Sampling::Tencent, turns.as_slice())] {
+            let result = measure_with_sampling(&client, Profile::HyMt2, sampling, "가지 마세요.", context, Duration::from_secs(2)).await;
+            assert!(result.error.is_none());
+        }
+        let requests = mock.requests.lock().unwrap();
+        let bodies: Vec<serde_json::Value> = requests.iter().map(|r| serde_json::from_str(&r.1).unwrap()).collect();
+        assert_eq!(bodies[0]["temperature"], serde_json::json!(0.1_f32));
+        assert_eq!(bodies[1]["temperature"], serde_json::json!(0.7_f32));
+        assert_eq!(bodies[0]["max_tokens"], bodies[1]["max_tokens"]);
+        assert_eq!(bodies[1]["messages"].as_array().unwrap().len(), 1);
+        assert!(bodies[0]["messages"][0]["content"].as_str().unwrap().starts_with("Translate the following text into English."));
+        let prompt = bodies[1]["messages"][0]["content"].as_str().unwrap();
+        assert!(prompt.starts_with("[Background Information]\n"));
+        assert!(prompt.contains("English: May I go?"));
+        assert!(prompt.ends_with("[Source Text]\n가지 마세요."));
+        assert!(Sampling::Matched.server_args().is_empty());
+        assert_eq!(Sampling::Tencent.server_args(), ["--top-p", "0.6", "--top-k", "20", "--repeat-penalty", "1.05"]);
+    }
+
+    #[tokio::test]
+    async fn tencent_sampling_cannot_silently_change_the_existing_maru_live_task() {
+        let options = Options { candidate_profile: Profile::Maru, candidate_sampling: Sampling::Tencent, ..options() };
+        let result = compare(&LlmConfig::default(), &Paths::under(Path::new("unused")), &[case("1", "a")], &options, &mut |_| {}).await;
+        assert!(result.unwrap_err().to_string().contains("requires an HY-MT"));
     }
 
     #[tokio::test]
@@ -454,7 +531,7 @@ mod tests {
     #[test]
     fn review_keeps_distinct_answers_and_escapes_table_and_html_characters() {
         assert_eq!(cell("<a>|b\nc"), "&lt;a&gt;&#124;b c");
-        let records = [false, true].into_iter().map(|error| Record { pass: "candidate".into(), run: 1, case: case("1", "a"), context: vec![], profile: Profile::HyMt, measurement: measurement(error) }).collect::<Vec<_>>();
+        let records = [false, true].into_iter().map(|error| Record { pass: "candidate".into(), run: 1, case: case("1", "a"), context: vec![], profile: Profile::HyMt, sampling: Sampling::Matched, measurement: measurement(error) }).collect::<Vec<_>>();
         let text = review(&[case("1", "a")], &records);
         assert!(text.contains("Don't leave.<br>ERROR: HTTP 500"));
     }

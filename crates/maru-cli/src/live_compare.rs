@@ -6,12 +6,19 @@ use anyhow::{Context, Result};
 use clap::{Args as ClapArgs, ValueEnum};
 use maru_core::Paths;
 use maru_core::config::LlmConfig;
-use maru_llm::live_bench::{self, Options, Profile};
+use maru_llm::live_bench::{self, Options, Profile, Sampling};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 pub enum CandidatePrompt {
     HyMt,
     Maru,
+    HyMt2,
+}
+
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CandidateSampling {
+    Matched,
+    Tencent,
 }
 
 #[derive(ClapArgs)]
@@ -42,6 +49,9 @@ pub struct Args {
     rolling_context: bool,
     #[arg(long, value_enum, default_value_t = CandidatePrompt::HyMt)]
     candidate_prompt: CandidatePrompt,
+    /// Matched: temperature 0.1; Tencent: HY-MT's recommended core sampling parameters.
+    #[arg(long, value_enum, default_value_t = CandidateSampling::Matched)]
+    candidate_sampling: CandidateSampling,
     /// A note in the report; this command never starts or stops your game.
     #[arg(long, default_value = "unspecified")]
     game_state: String,
@@ -60,7 +70,8 @@ pub async fn run(args: Args, cfg: &LlmConfig, paths: &Paths) -> Result<i32> {
     let options = Options {
         baseline: args.baseline, candidate: args.candidate, out: args.out, runs: args.runs as usize,
         context_lines: args.context_lines, rolling_context: args.rolling_context,
-        candidate_profile: match args.candidate_prompt { CandidatePrompt::HyMt => Profile::HyMt, CandidatePrompt::Maru => Profile::Maru },
+        candidate_profile: match args.candidate_prompt { CandidatePrompt::HyMt => Profile::HyMt, CandidatePrompt::Maru => Profile::Maru, CandidatePrompt::HyMt2 => Profile::HyMt2 },
+        candidate_sampling: match args.candidate_sampling { CandidateSampling::Matched => Sampling::Matched, CandidateSampling::Tencent => Sampling::Tencent },
         port: args.port, game_state: args.game_state,
     };
     println!("Model-only A/B/A: {} lines x {} runs per pass; warm-up excluded. Quit Maru before running.", cases.len(), options.runs);

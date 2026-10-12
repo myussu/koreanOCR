@@ -7,7 +7,8 @@ param(
     [string]$Server,
     [ValidateRange(1, 100)][int]$Runs = 3,
     [string]$GameState = 'unspecified',
-    [ValidateSet('hy-mt', 'maru')][string]$CandidatePrompt = 'hy-mt',
+    [ValidateSet('hy-mt', 'maru', 'hy-mt2')][string]$CandidatePrompt = 'hy-mt',
+    [ValidateSet('matched', 'tencent')][string]$CandidateSampling = 'matched',
     [switch]$RollingContext,
     [string]$File
 )
@@ -27,7 +28,7 @@ foreach ($path in @($reportPath, "$reportPath.gpu.csv", "$reportPath.console.log
 }
 $parent = Split-Path $reportPath -Parent
 [IO.Directory]::CreateDirectory($parent) | Out-Null
-$cliArgs = @('--verbose', 'bench-live-models', '--baseline', $Baseline, '--candidate', $Candidate, '--out', $reportPath, '-n', "$Runs", '--game-state', $GameState, '--candidate-prompt', $CandidatePrompt)
+$cliArgs = @('--verbose', 'bench-live-models', '--baseline', $Baseline, '--candidate', $Candidate, '--out', $reportPath, '-n', "$Runs", '--game-state', $GameState, '--candidate-prompt', $CandidatePrompt, '--candidate-sampling', $CandidateSampling)
 if ($Server) { $cliArgs += @('--server', $Server) }
 if ($RollingContext) { $cliArgs += '--rolling-context' }
 if ($File) { $cliArgs += @('--file', $File) }
