@@ -17,6 +17,7 @@ pub mod engine;
 pub mod memory;
 mod pipeline;
 mod live_lane;
+mod live_text;
 mod scan;
 pub mod respace;
 pub mod vision;

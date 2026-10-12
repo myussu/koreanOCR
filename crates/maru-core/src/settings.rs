@@ -254,12 +254,14 @@ font_size_px = 18
 
     #[test]
     fn the_live_experiment_is_saved_without_changing_other_ocr_settings() {
-        let patched = patch(FILE, &changes(json!({"continuous.cpu_ocr": true, "continuous.max_in_flight": 1}))).unwrap();
+        let patched = patch(FILE, &changes(json!({"continuous.cpu_ocr": true, "continuous.max_in_flight": 1, "continuous.filter_ocr_jitter": true}))).unwrap();
         let cfg: Config = toml::from_str(&patched.text).unwrap();
         assert!(cfg.continuous.cpu_ocr);
         assert_eq!(cfg.continuous.max_in_flight, 1);
+        assert!(cfg.continuous.filter_ocr_jitter);
         assert_eq!(cfg.ocr, Config::default().ocr);
         assert!(!applies_live("continuous.cpu_ocr"));
+        assert!(!applies_live("continuous.filter_ocr_jitter"));
         assert!(patch(FILE, &changes(json!({"continuous.max_in_flight": 3}))).is_err());
     }
 }

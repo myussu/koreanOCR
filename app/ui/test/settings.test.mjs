@@ -7,12 +7,13 @@ const defaults = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_
 
 test('live OCR and request experiments need a restart and do not edit the general OCR reader', () => {
   const fields = SECTIONS.find((s) => s.id === 'live').fields;
-  for (const path of ['continuous.cpu_ocr', 'continuous.max_in_flight']) {
+  for (const path of ['continuous.cpu_ocr', 'continuous.max_in_flight', 'continuous.filter_ocr_jitter']) {
     assert.ok(fields.some((f) => f.path === path));
     assert.equal(appliesLive(path), false);
   }
   const edited = withEdit({}, { continuous: { cpu_ocr: false } }, 'continuous.cpu_ocr', true);
   assert.deepEqual(edited, { 'continuous.cpu_ocr': true });
+  assert.deepEqual(withEdit({}, { continuous: { filter_ocr_jitter: false } }, 'continuous.filter_ocr_jitter', true), { 'continuous.filter_ocr_jitter': true });
 });
 
 test('every field has a unique path, a label and a known type', () => {

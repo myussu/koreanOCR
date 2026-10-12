@@ -247,7 +247,8 @@ impl Engine {
             self.inner.ocr.clone().ok_or(CaptureError::NoOcr)?
         };
         tracing::info!(ocr = ocr.name(), cpu_ocr = self.inner.cfg.continuous.cpu_ocr,
-            max_in_flight = self.inner.cfg.continuous.max_in_flight, "live session started");
+            max_in_flight = self.inner.cfg.continuous.max_in_flight,
+            filter_ocr_jitter = self.inner.cfg.continuous.filter_ocr_jitter, "live session started");
         lock(&self.inner.live_turns).clear(); // a new session is a new scene
         Ok(continuous::spawn(&self.inner.runtime, self.inner.platform.screen.clone(), ocr, self.inner.cfg.continuous.clone(), region))
     }

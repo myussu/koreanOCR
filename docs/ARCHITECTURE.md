@@ -219,18 +219,22 @@ UI state (selection, pending joins, the chip) is in `scan.js`; the commands are 
   completed dialogue context; `2` overlaps requests and may lack an unfinished preceding turn. Queued lines are not superseded.
   Request timing logs separate admission/model wait from first text and generation; live HTTP requests ask for usage metadata so
   llama.cpp prompt/decode timings can be logged. Normal model requests do not enable this option.
+  `continuous.filter_ocr_jitter` opts into `live_text.rs`: positions of contrasting pixels confirm changing OCR readings. Changed
+  Korean/numbers require identical lettering; Latin-only noise allows at most two changed pixels per 16×16 tile and 1% overall.
+  An empty read cannot clear unchanged lettering, but a real disappearance resets the filter. Without clear contrast, uncertain
+  changed readings are retained instead of rejected on similarity. The watcher and recognizers otherwise retain their existing timing.
 * **Shell** (`flow::start_continuous`): builds the band window geometry (`logic::band_window`: the subtitle area plus room above and below, and which side to prefer; `band_cover`: the original line's box the band must stay clear of), keeps only the
   newest line drawn (`AppState::live_latest`), emits `maru-live` (a `LiveBand`), `maru-live-clear`, `maru-live-off` to the live window.
 * **UI:** `live.js` (+ `live-core.js`: `chooseSide`/`bandStyle`/`fitFont` put the band above or below the original, never over it; the `createBand` state machine; `latencyText`), `live.html`, `live.css`.
   The window is created hidden, click-through, never focused, and excluded from screen capture so OCR never reads the translation back.
   `live_idle` hides it after the fade. History → Live subtitles (`hub.js`, `live-core::liveHistory`) sorts by capture ID with latency,
   even when requests finish out of order. Other history views retain their existing ordering.
-* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`, `cpu_ocr`, `max_in_flight`).
+* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`, `cpu_ocr`, `max_in_flight`, `filter_ocr_jitter`).
   New fields default to `false`/`0`, preserving existing files and behavior, and require restart.
-* **Tests:** `continuous.rs`, `change.rs`, `live_lane.rs`, `pipeline.rs` (live lane, bounded admission, failure recovery, isolated OCR),
+* **Tests:** `continuous.rs`, `change.rs`, `live_text.rs`, `live_lane.rs`, `pipeline.rs` (live lane, bounded admission, failure recovery, isolated OCR),
   `logic.rs`, `live.test.mjs`, `settings.test.mjs`, `prompts.rs`, `client.rs`. Optional `tests/live_recording.rs` runs the real watcher,
   OCR and translation against a recording, with installed local models and speech resources; it writes raw results, never asserts speed.
-* **Real-PC check:** M-3, M-11.
+* **Real-PC check:** M-3, M-11, M-12.
 
 ### 4.8 Speech (TTS)
 `maru-tts` (`Tts`: split into sentences → disk cache → provider → remember). Providers: the local `tts-server`
@@ -316,6 +320,8 @@ slot that would cancel a scan (joins are detached; live lines have their own lan
 Live request scheduling is opt-in; it does not cancel pending lines or change per-request event order. `history` adds nullable
 `appeared_at` for live entries; the existing `at` keeps its meaning. Capture IDs, rather than completion order, determine the live
 history display. Neither queued jobs nor history are durable across app exit.
+Visual duplicate confirmation is opt-in and only applies before a live capture is submitted. It adds no events or persistence;
+normal translation, scan OCR, the model prompt and pending live requests are unchanged.
 
 ### 6.3 Shell ↔ pages
 * **Windows** (labels in `windows.rs`): `panel` (`index.html`), `picker`, `hub`, `scan`, `live`. Adding one needs a capability entry in
@@ -342,6 +348,7 @@ history display. Neither queued jobs nor history are durable across app exit.
 
 `MARU_HOME` relocates everything (`config.toml`, `data`, `models`, `bin`); tests and `--home` use `Paths::under`.
 Live pending jobs, context turns, timings and history (including appearance timestamps) stay in memory; no database migration is added.
+The live lettering snapshot also stays in memory and is reset when the subtitle clears or live mode stops.
 
 ## 7. Concurrency, cancellation, speed
 * The engine runs on a Tokio runtime owned by the front end; blocking work (GDI, ONNX, SQLite) goes through `spawn_blocking`.

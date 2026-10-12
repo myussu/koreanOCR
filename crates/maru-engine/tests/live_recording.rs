@@ -99,12 +99,13 @@ async fn compare_live_settings_with_real_ocr_and_translation_on_a_recording() {
     let mut results = Vec::new();
     // Repeat the baseline last to expose drift from temperature, game load or server caches.
     let selected = std::env::var("MARU_REAL_CASES").ok();
-    for (name, cpu_ocr, max_in_flight) in [("baseline", false, 0), ("hybrid-one", false, 1), ("cpu-unbounded", true, 0), ("cpu-one", true, 1), ("cpu-two", true, 2), ("baseline-repeat", false, 0)] {
+    for (name, cpu_ocr, max_in_flight, filter_ocr_jitter) in [("baseline", false, 0, false), ("hybrid-one", false, 1, false), ("hybrid-filtered", false, 1, true), ("cpu-unbounded", true, 0, false), ("cpu-one", true, 1, false), ("cpu-two", true, 2, false), ("baseline-repeat", false, 0, false), ("hybrid-one-repeat", false, 1, false)] {
         if selected.as_ref().is_some_and(|s| !s.split(',').any(|v| v.trim() == name)) { continue; }
         println!("recording comparison: {name} ({length:.1} seconds)");
         let mut config = base.clone();
         config.continuous.cpu_ocr = cpu_ocr;
         config.continuous.max_in_flight = max_in_flight;
+        config.continuous.filter_ocr_jitter = filter_ocr_jitter;
         let began = Instant::now();
         let engine = Engine::new(EngineParts {
             config: config.clone(), analyzer: analyzer.clone(), dict: None,
@@ -149,7 +150,7 @@ async fn compare_live_settings_with_real_ocr_and_translation_on_a_recording() {
         }).await.expect("pending translations finish within 90 seconds");
         lines.sort_by_key(|v| v["id"].as_u64());
         let errors = lines.iter().map(|v| v["errors"].as_array().unwrap().len()).sum::<usize>();
-        let summary = json!({ "name": name, "cpu_ocr": cpu_ocr, "max_in_flight": max_in_flight, "lines": lines.len(), "errors": errors,
+        let summary = json!({ "name": name, "cpu_ocr": cpu_ocr, "max_in_flight": max_in_flight, "filter_ocr_jitter": filter_ocr_jitter, "lines": lines.len(), "errors": errors,
             "first_p50_ms": percentile(&lines, "first_ms", 0.5), "first_p95_ms": percentile(&lines, "first_ms", 0.95),
             "total_p50_ms": percentile(&lines, "total_ms", 0.5), "total_p95_ms": percentile(&lines, "total_ms", 0.95),
             "read_p50_ms": percentile(&lines, "read_ms", 0.5), "ocr_p50_ms": percentile(&lines, "ocr_ms", 0.5) });

@@ -59,9 +59,14 @@ const REACH: usize = 2;
 /// anything is read. It is the same cheap kind of signal as [`signature`] (a few milliseconds for a subtitle
 /// strip), and it is only ever used to decide *when to look*, never what the text says.
 pub fn text_score(img: &RgbImage) -> u32 {
+    text_mask(img).into_iter().filter(|p| *p).count() as u32
+}
+
+/// Positions of the contrasting pixels, so live OCR can distinguish changed letters from a changed reading.
+pub(crate) fn text_mask(img: &RgbImage) -> Vec<bool> {
     let (w, h) = (img.width() as usize, img.height() as usize);
     if w < 2 * REACH + 1 || h < 2 * REACH + 1 {
-        return 0;
+        return vec![false; w * h];
     }
     // 1 = bright, 2 = dark, 0 = neither
     let mut class = vec![0u8; w * h];
@@ -77,13 +82,7 @@ pub fn text_score(img: &RgbImage) -> u32 {
     }
     let near_bright = dilate(&class, w, h, 1);
     let near_dark = dilate(&class, w, h, 2);
-    let mut score = 0u32;
-    for i in 0..w * h {
-        if (class[i] == 1 && near_dark[i]) || (class[i] == 2 && near_bright[i]) {
-            score += 1;
-        }
-    }
-    score
+    (0..w * h).map(|i| (class[i] == 1 && near_dark[i]) || (class[i] == 2 && near_bright[i])).collect()
 }
 
 /// For every pixel: is there a pixel of `wanted` class within [`REACH`] of it (a square neighbourhood)?

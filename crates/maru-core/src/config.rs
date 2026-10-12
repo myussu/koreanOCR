@@ -421,11 +421,14 @@ pub struct ContinuousConfig {
     /// Active live translations; zero preserves the detached-request behaviour.
     #[serde(default)]
     pub max_in_flight: usize,
+    /// Confirm live OCR jitter against the original lettering before discarding a changed reading.
+    #[serde(default)]
+    pub filter_ocr_jitter: bool,
 }
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0 }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false }
     }
 }
 
@@ -667,6 +670,7 @@ mod tests {
         let cfg: Config = toml::from_str("[continuous]\ncontext_lines = 3").unwrap();
         assert!(!cfg.continuous.cpu_ocr);
         assert_eq!(cfg.continuous.max_in_flight, 0);
+        assert!(!cfg.continuous.filter_ocr_jitter);
         assert_eq!(cfg.continuous.context_lines, 3);
     }
 }

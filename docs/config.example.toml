@@ -79,6 +79,7 @@ show_pronunciation = true
 [continuous]
 cpu_ocr = false       # experimental CPU PP-OCR for live only; skips the vision reader but leaves other features alone
 max_in_flight = 0     # 0 = existing behavior, 1 = ordered translations, 2 = at most two active; pending lines are retained
+filter_ocr_jitter = false # experimental: compare changed OCR readings with subtitle lettering; save and restart
 # Live subtitles: translation only, drawn just above or below the original line (never over it). Word breakdowns come from the history.
 interval_ms = 100     # how often the area is looked at
 stable_ms = 150       # a picture this still is a finished line and is read at once (a fading line is read sooner)

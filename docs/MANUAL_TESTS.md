@@ -162,6 +162,22 @@ timings on that video, but neither exercises physical-screen capture, the overla
 
 ---
 
+## M-12 Live OCR duplicates and subtitle area
+**Needs:** a build with `continuous.filter_ocr_jitter`, Korean subtitles, CPU PP-OCR off and active live translations `1`.
+**Steps:** play the same 2–3 minute cutscene with **Check subtitle lettering for OCR duplicates** off, then on (save/restart).
+Keep the model, context, resolution and selected area fixed. Include two-line dialogue, a fade, a repeated sentence after a gap,
+short answers, changed numbers and negation. Compare History → Live subtitles with the actual Korean frames: `SP`/`IOY` variants of
+one visible line should not create extra requests, and genuine dialogue changes must still appear. Then keep the filter on and select
+a tighter subtitle box with `Ctrl+Alt+Shift+C`, leaving a margin for both rows and excluding nearby controls. Repeat in another game.
+**Expect:** fewer extra translations where lettering confirms OCR jitter, no lost dialogue, and every genuine repeat after a visible
+gap still captured. Low-contrast fonts may yield extra readings; the visual check is conservative and does not promise a speed gain.
+**Bring:** `maru-app.log` from each run (copy before restarting), History → Live subtitles, game name/resolution, the chosen box,
+and timestamps/screenshots or a short recording of any missed line, duplicate, or bad translation. Report whether delay grows over time.
+**Why unverified:** synthetic frames establish the guards and a recording replay can measure that clip, but neither establishes
+physical-screen capture, live overlay behavior, or recognition quality across other games and fonts.
+
+---
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.

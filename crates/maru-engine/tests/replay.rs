@@ -11,6 +11,7 @@
 //! * `MARU_CLIP_CROP`: `x:y:w:h` of the subtitle band in the video (default `160:545:960:130`, for 1280×720).
 //! * `MARU_CLIP_START` / `MARU_CLIP_END`: seconds of the clip to play (default 9 to the end).
 //! * `MARU_OCR_MS`: how long the stand-in OCR takes (default 350, about PP-OCR on a CPU).
+//! * `MARU_FILTER_OCR_JITTER=1`: enable visual duplicate confirmation (off by default).
 //!
 //! The stand-in OCR knows the truth: it answers with that subtitle's text if one is on screen when the frame was
 //! taken, and with nothing otherwise. So what is measured is the watcher's timing, not recognition quality.
@@ -129,7 +130,8 @@ async fn replay_a_recorded_clip_through_the_live_watcher() {
     let length = frames.len() as f64 / FPS;
     let replay = Arc::new(Replay { frames, truth: truth.clone(), start, began: Instant::now() });
 
-    let mut handle = spawn(&tokio::runtime::Handle::current(), replay.clone(), Arc::new(StandIn { ms: ocr_ms }), ContinuousConfig::default(), Rect::new(0.0, 0.0, w as f32, h as f32));
+    let cfg = ContinuousConfig { filter_ocr_jitter: std::env::var("MARU_FILTER_OCR_JITTER").is_ok_and(|v| v == "1"), ..Default::default() };
+    let mut handle = spawn(&tokio::runtime::Handle::current(), replay.clone(), Arc::new(StandIn { ms: ocr_ms }), cfg, Rect::new(0.0, 0.0, w as f32, h as f32));
     let mut lines: Vec<(f64, String, u32)> = Vec::new(); // (video time received, text, ready_ms as the watcher measured it)
     let mut cleared: Vec<f64> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs_f64(length + 1.0);

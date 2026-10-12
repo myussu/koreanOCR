@@ -136,7 +136,7 @@ Each action accepts several keys separated by `|` in `config.toml` (e.g. `transl
 
 **Live subtitles** draw the English in a dark band next to the original line — above it or below it, on the side with room, never over it — stay while it is on screen and for a moment after (`continuous.linger_ms`), and every line goes into **History → Live subtitles** in order, with how long it took, so you can read a cutscene afterwards; click a line for its word-by-word breakdown. Each line is logged in `maru-app.log` (`live line: on screen → read … → first word … → done …`).
 
-For live speed comparisons, **Settings → Live subtitles** has two experimental options (save and restart Maru):
+For live speed comparisons, **Settings → Live subtitles** has experimental options (save and restart Maru):
 
 * **Use CPU PP-OCR for live subtitles** (`continuous.cpu_ocr = true`) skips PaddleOCR-VL requests for the live area. Manual translation,
   hover and scans keep their configured OCR. The reading model stays loaded for those features; this option does not free its VRAM.
@@ -144,8 +144,16 @@ For live speed comparisons, **Settings → Live subtitles** has two experimental
 * **Active live translations** (`continuous.max_in_flight`): `0` keeps the existing detached requests, `1` queues lines in capture order
   so each can see the previous completed answer, and `2` permits two overlapping translations. Waiting lines are retained for history,
   rather than discarded. With `2`, a request can start before the preceding answer is available as context.
+* **Check subtitle lettering for OCR duplicates** (`continuous.filter_ocr_jitter = true`) checks changed OCR readings against the
+  lettering at the subtitle's position. It can ignore an added `SP` or a changed OCR character when the lettering stayed the same,
+  and an empty OCR reading cannot clear a subtitle whose lettering is still there. Changed Korean or numbers require identical
+  lettering to count as duplicates. A real gap still allows the same dialogue again. Fonts without clear contrast can produce more
+  repeated readings: the filter keeps uncertain changes rather than discarding them on text similarity alone.
 
-Both options default to the existing behavior (`false`, `0`). They keep the translation model, prompt and context settings.
+These options default to the existing behavior (`false`, `0`, `false`). They keep the translation model, prompt and context settings.
+For the duplicate experiment, keep CPU PP-OCR off and active translations at `1`. First use the same subtitle area, then try a tighter
+box with `Ctrl+Alt+Shift+C`: include all dialogue rows and a little margin, excluding interface buttons. Compare missed and misread
+dialogue as well as latency. See [M-12](docs/MANUAL_TESTS.md#m-12-live-ocr-duplicates-and-subtitle-area).
 The log adds request IDs, waiting/active counts, time before the model call, time to response headers/first text, and llama.cpp's
 prompt/decode timings when the server supplies them. **History → Live subtitles** uses capture order and the estimated appearance time;
 other history views keep completion order. `maru bench --live` tests the model alone, so use the same cutscene for a full OCR-to-English
