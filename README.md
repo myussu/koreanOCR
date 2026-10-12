@@ -161,6 +161,31 @@ prompt/decode timings when the server supplies them. **History → Live subtitle
 other history views keep completion order. `maru bench --live` tests the model alone, so use the same cutscene for a full OCR-to-English
 comparison; see M-11 in [manual tests](docs/MANUAL_TESTS.md).
 
+To compare a lighter model **without replacing any app model**, build the diagnostic CLI with
+`cargo build --release --locked -p maru-cli`, quit Maru from the tray, and run:
+
+```powershell
+.\target\release\maru.exe bench-live-models --baseline "C:\models\gemma.gguf" --candidate "C:\models\HY-MT1.5-1.8B-Q8_0.gguf" --out "data\live-diagnostics\comparison-1" --game-state open -n 3
+```
+
+Supply existing local files; the command never downloads them. It uses the installed llama-server (or `--server PATH`),
+loads Gemma / candidate / Gemma one at a time, excludes a separate warm-up, and sends the same bundled 40 Korean lines
+(30 normalized lines from the supplied cutscene transcript and 10 authored meaning checks).
+The candidate defaults to the user-only translation prompts in [Tencent's HY-MT model card](https://huggingface.co/tencent/HY-MT1.5-1.8B); `--candidate-prompt maru` tests the existing live prompt
+instead. Both use temperature `0.1` and the live output cap; other sampling parameters are llama-server defaults, so this is not
+Tencent's recommended sampling preset. Context resets between scenes and runs. By default preceding reference translations are
+identical for both models; `--rolling-context` instead uses each model's preceding answers. `--file PATH` accepts a JSONL corpus
+with the fields shown in `crates/maru-cli/testdata/live-dialogue.jsonl`. References are review aids, not certified answers.
+The new output folder contains every input, exact context, translation, first-text/total latency and error in `records.jsonl`,
+success-only percentiles in `report.json`, and distinct answers side by side in `review.md`. Errors produce a nonzero exit status.
+No installed settings or model choice change; screen capture, OCR, vision reader, speech and overlay are absent from this test.
+For GPU telemetry and full server logs, use `tools/compare_live_models.ps1` with `-Baseline`, `-Candidate`, `-Out`, `-Runs 3`
+and `-GameState open`; it calls the release CLI and records `nvidia-smi` alongside the report when available.
+If PowerShell blocks scripts, invoke it with a process-only bypass:
+`powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\tools\compare_live_models.ps1 ...` (replace `...` with those arguments).
+Use a new report path each time. Compare latency **and** translation meaning; then follow
+[M-15](docs/MANUAL_TESTS.md#m-15-live-translation-model-comparison) before judging another game's subtitle quality.
+
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
 
 ## Game menus: screen labels

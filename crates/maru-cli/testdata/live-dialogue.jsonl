@@ -1,0 +1,40 @@
+{"id":"court01","scene":"court","source":"폐하, 어제 제47구가 봉쇄됐습니다.","reference":"Your Majesty, Sector 47 was sealed off yesterday.","origin":"user_cutscene_transcript","tags":["numbers","honorific"]}
+{"id":"court02","scene":"court","source":"현재 황도 주변에서도 급격한 지열 상승이 관측되고 있습니다.","reference":"Rapid rises in geothermal heat are also being observed around the Imperial Capital.","origin":"user_cutscene_transcript","tags":["long"]}
+{"id":"court03","scene":"court","source":"그렇습니까… 국토 조사원의 예측보다 빠르군요.","reference":"I see... That is faster than the land surveyor predicted.","origin":"user_cutscene_transcript","tags":["context"]}
+{"id":"court04","scene":"court","source":"여기도 얼마 버티지 못하겠군요.","reference":"This place will not hold out much longer either.","origin":"user_cutscene_transcript","tags":["negation","pronoun"]}
+{"id":"court05","scene":"court","source":"아르스의 수명이 다해 갈수록 그 혈액인 에테르류의 온도가 상승하니.","reference":"As Ars's lifespan draws to an end, the temperature of the Ether flow, its blood, rises.","origin":"user_cutscene_transcript","tags":["names","fragment","long"]}
+{"id":"court06","scene":"court","source":"국라로 천도하시려던 계획을 앞당기시는 게 어떨지요?","reference":"How about bringing forward your plan to move the capital to Gukra?","origin":"user_cutscene_transcript","tags":["names","honorific"]}
+{"id":"court07","scene":"court","source":"영사를 경질한 지 얼마 되지 않았습니다.","reference":"It has not been long since we dismissed the consul.","origin":"user_cutscene_transcript","tags":["negation"]}
+{"id":"court08","scene":"court","source":"국라 주민들에게 한 설명도 충분치 못했지요.","reference":"The explanation we gave the residents of Gukra was not sufficient either.","origin":"user_cutscene_transcript","tags":["names","negation"]}
+{"id":"court09","scene":"court","source":"괜한 반감을 사는 건 피하고 싶습니다만.","reference":"I would like to avoid causing unnecessary resentment, though.","origin":"user_cutscene_transcript","tags":["fragment"]}
+{"id":"court10","scene":"court","source":"유예가 얼마 남지 않았습니다.","reference":"There is little time left for a reprieve.","origin":"user_cutscene_transcript","tags":["negation"]}
+{"id":"court11","scene":"court","source":"그건 우리뿐만이 아니에요.","reference":"It is not just us.","origin":"user_cutscene_transcript","tags":["pronoun","negation"]}
+{"id":"court12","scene":"court","source":"비옥한 땅인 굴라조차.","reference":"Even Gula, with its fertile land...","origin":"user_cutscene_transcript","tags":["names","fragment"]}
+{"id":"court13","scene":"court","source":"곡물 수확량이 해마다 줄고 있어요.","reference":"The grain harvest is decreasing every year.","origin":"user_cutscene_transcript","tags":["context"]}
+{"id":"court14","scene":"court","source":"이 세계 전체가 비명을 지르고 있죠…","reference":"The entire world is screaming...","origin":"user_cutscene_transcript","tags":["context"]}
+{"id":"court15","scene":"court","source":"폐하? 왜 그러시죠?","reference":"Your Majesty? What is wrong?","origin":"user_cutscene_transcript","tags":["short","honorific"]}
+{"id":"court16","scene":"court","source":"아뇨… 기분 탓인 것 같군요.","reference":"No... I think it is just my imagination.","origin":"user_cutscene_transcript","tags":["short"]}
+{"id":"court17","scene":"court","source":"누님… 대체 어디 계십니까…","reference":"Sister... Where on earth are you...","origin":"user_cutscene_transcript","tags":["honorific"]}
+{"id":"tree01","scene":"tree","source":"대공동이 거의 사라졌어.","reference":"The great hollow has almost disappeared.","origin":"user_cutscene_transcript","tags":["names"]}
+{"id":"tree02","scene":"tree","source":"대공동은 서펀트가 만든 거니까요.","reference":"The great hollow was created by the Serpent, after all.","origin":"user_cutscene_transcript","tags":["names"]}
+{"id":"tree03","scene":"tree","source":"그런 거였군.","reference":"So that is how it was.","origin":"user_cutscene_transcript","tags":["short","context"]}
+{"id":"tree04","scene":"tree","source":"그 서펀트가 사라졌으니 대공동도 사라진 건가?","reference":"Since the Serpent disappeared, did the great hollow disappear too?","origin":"user_cutscene_transcript","tags":["names","context"]}
+{"id":"tree05","scene":"tree","source":"못 오를 건 없어 보이지만.","reference":"It looks climbable, but...","origin":"user_cutscene_transcript","tags":["negation","fragment"]}
+{"id":"tree06","scene":"tree","source":"평범한 등산 수준이 아닐 것 같은데.","reference":"I doubt this will be an ordinary hike, though.","origin":"user_cutscene_transcript","tags":["negation","fragment"]}
+{"id":"tree07","scene":"tree","source":"여러분, 이쪽이에요.","reference":"Everyone, this way.","origin":"user_cutscene_transcript","tags":["short"]}
+{"id":"tree08","scene":"tree","source":"호무라?","reference":"Homura?","origin":"user_cutscene_transcript","tags":["names","short"]}
+{"id":"tree09","scene":"tree","source":"세계수 내부가 이런 모습이라니.","reference":"I cannot believe the inside of the World Tree looks like this.","origin":"user_cutscene_transcript","tags":["names"]}
+{"id":"tree10","scene":"tree","source":"인공적인 탑 주위에 거대한 식물이 엉켜 있는 것 같군요.","reference":"It looks as though huge plants are tangled around the artificial tower.","origin":"user_cutscene_transcript","tags":["long"]}
+{"id":"tree11","scene":"tree","source":"이걸 타면 위로 갈 수 있을 거예요.","reference":"We should be able to go up if we ride this.","origin":"user_cutscene_transcript","tags":["pronoun","context"]}
+{"id":"tree12","scene":"tree","source":"위로? 근데 호무라, 방금 뭘 한 거야?","reference":"Up? But Homura, what did you just do?","origin":"user_cutscene_transcript","tags":["names","context"]}
+{"id":"tree13","scene":"tree","source":"저도 잘 모르겠어요.","reference":"I do not really know either.","origin":"user_cutscene_transcript","tags":["negation","short"]}
+{"id":"checks01","scene":"checks","source":"제47구는 봉쇄됐지만 제48구는 아직 열려 있습니다.","reference":"Sector 47 is sealed off, but Sector 48 is still open.","origin":"authored_diagnostic","tags":["numbers"]}
+{"id":"checks02","scene":"checks","source":"문을 열어도 됩니다.","reference":"You may open the door.","origin":"authored_diagnostic","tags":["permission"]}
+{"id":"checks03","scene":"checks","source":"문을 열면 안 됩니다.","reference":"You must not open the door.","origin":"authored_diagnostic","tags":["negation"]}
+{"id":"checks04","scene":"checks","source":"제가 왕자를 구했어요. 왕자가 저를 구한 게 아니에요.","reference":"I saved the prince. The prince did not save me.","origin":"authored_diagnostic","tags":["pronoun","negation"]}
+{"id":"checks05","scene":"checks","source":"한 명도 남기지 말고 모두 데려오세요.","reference":"Bring everyone back without leaving a single person behind.","origin":"authored_diagnostic","tags":["negation","numbers"]}
+{"id":"checks06","scene":"checks","source":"독이 든 건 이 잔이 아니라 저 잔입니다.","reference":"The poisoned cup is that one, not this one.","origin":"authored_diagnostic","tags":["negation","pronoun"]}
+{"id":"checks07","scene":"checks","source":"호무라가 메츠에게 열쇠를 건넸습니다.","reference":"Homura handed the key to Mets.","origin":"authored_diagnostic","tags":["names","pronoun"]}
+{"id":"checks08","scene":"checks","source":"그는 그것을 받자마자 달아났어요.","reference":"He ran away as soon as he received it.","origin":"authored_diagnostic","tags":["pronoun","context"]}
+{"id":"checks09","scene":"checks","source":"아직 끝난 게 아니야.","reference":"It is not over yet.","origin":"authored_diagnostic","tags":["negation","short"]}
+{"id":"checks10","scene":"checks","source":"네, 하지만 지금은 안 돼요.","reference":"Yes, but not right now.","origin":"authored_diagnostic","tags":["negation","short"]}

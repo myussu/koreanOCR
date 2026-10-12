@@ -1,6 +1,7 @@
 //! `maru` — the command-line front end to the same engine the overlay uses.
 
 mod render;
+mod live_compare;
 mod setup;
 mod tools;
 mod tts;
@@ -32,6 +33,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Compare two local GGUF models for live subtitles, with an isolated A/B/A test and review files.
+    BenchLiveModels(live_compare::Args),
     /// Translate text (Korean → English with a word breakdown, or English → Korean). Use `-` to read stdin.
     Translate {
         text: Vec<String>,
@@ -411,6 +414,7 @@ fn main() -> Result<()> {
 async fn run(cli: Cli, paths: Paths) -> Result<i32> {
     let mut cfg = Config::load(&paths.config_file).with_context(|| format!("reading {}", paths.config_file.display()))?;
     match cli.command {
+        Command::BenchLiveModels(args) => live_compare::run(args, &cfg.llm, &paths).await,
         Command::Translate { text, register, no_llm, json } => {
             let text = read_text(&text)?;
             if no_llm {

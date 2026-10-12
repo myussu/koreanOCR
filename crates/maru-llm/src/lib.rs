@@ -8,6 +8,7 @@
 
 pub mod client;
 pub mod demux;
+pub mod live_bench;
 pub mod prompts;
 pub mod server;
 pub mod tasks;

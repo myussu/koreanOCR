@@ -184,6 +184,28 @@ timing, not OCR correctness or translation quality. These are automated checks, 
 
 ---
 
+## M-15 Live translation model comparison
+**Needs:** existing Gemma GGUF, an independently approved/downloaded HY-MT1.5-1.8B Q8 GGUF, installed llama-server and the
+diagnostic CLI build. Quit Maru from its tray to unload its models. Leave the game open for the game-load condition.
+**Steps:** run `bench-live-models` as documented in the README (or `tools/compare_live_models.ps1` for GPU telemetry), first with
+the game open, then closed using a new output path. Keep server, context and corpus fixed. Compare both Gemma passes to detect
+drift. Read `review.md` with the Korean; mark changed meaning, numbers, negation, names, pronouns or extra explanations. Re-run with
+`--rolling-context` to check whether a bad prior answer propagates; include a custom JSONL corpus from a second game.
+**Expect:** three passes, zero errors, first-text and done percentiles for successful translations, and every output available for
+review. Faster completion alone is not a quality pass. This command does not select the candidate for the overlay.
+**Bring:** report folder, sibling GPU/full log files if using the wrapper, game name/resolution, whether a cutscene was playing or
+the game was idle, and case IDs with incorrect translations and the intended meaning.
+**Why unverified:** scripted tests establish benchmark behavior. Real model-only runs exclude capture, OCR, other app models and
+the overlay; neither proves end-to-end subtitle latency or quality in another game. An overlay trial needs a separate live-only
+model selection change and a real cutscene after the model comparison has been reviewed.
+**Automated observation (2026-10-11):** with Maru closed and the game left open on the RTX 5070 Ti, two local A/B/A comparisons
+completed 480 requests without execution errors. The three-repetition native-prompt run had median first text/done of 22/81 ms
+for HY-MT Q8 and 167–170/340–341 ms for Gemma. Total GPU memory, including the game, was about 5 GiB lower with HY-MT.
+Text inspection found changed meanings, including World Tree → World Water and a reversed climbing meaning; a one-repetition
+Maru-prompt follow-up also changed dismissal into appointment. Keep the installed model for now. These are model-only automated
+observations with fixed reference context, not a human overlay quality result; game activity was unspecified and rolling context
+was only unit-tested. The reports distinguish startup/warm-up from steady requests. This does not add a human results-log entry.
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.
