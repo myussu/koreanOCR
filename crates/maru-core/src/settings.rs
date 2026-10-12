@@ -148,6 +148,7 @@ pub fn validate(cfg: &Config) -> Result<()> {
     check((0.0..=1.0).contains(&cfg.continuous.diff_threshold), "change threshold must be between 0 and 1");
     check(cfg.continuous.linger_ms <= 10_000, "a live translation can stay at most 10 seconds after its line is gone");
     check(cfg.continuous.context_lines <= 20, "live mode can show the model at most 20 earlier lines");
+    check((1.0..=3.0).contains(&cfg.continuous.ocr_scale), "the subtitle area can be read at 1 to 3 times its size");
     check((1024..=65535).contains(&cfg.tts.port), "speech server port must be between 1024 and 65535");
     check(cfg.tts.speed >= 0.25 && cfg.tts.speed <= 4.0, "speech speed must be between 0.25 and 4");
     check(cfg.tts.timeout_secs >= 5, "speech timeout must be at least 5 seconds");
@@ -242,6 +243,22 @@ font_size_px = 18
         for restart in ["llm.hf_repo", "lite", "ocr.vision_reader", "learning.gloss_mode", "continuous.interval_ms", "capture.use_ocr_fallback"] {
             assert!(!applies_live(restart), "{restart}");
         }
+    }
+
+    #[test]
+    fn the_subtitle_enlargement_is_limited_to_a_sensible_range_and_old_files_get_the_default() {
+        let mut cfg = Config::default();
+        assert_eq!(cfg.continuous.ocr_scale, 1.0, "off unless asked for");
+        for ok in [1.0, 1.5, 3.0] {
+            cfg.continuous.ocr_scale = ok;
+            validate(&cfg).unwrap();
+        }
+        for bad in [0.5, 4.0, f32::NAN] {
+            cfg.continuous.ocr_scale = bad;
+            assert!(validate(&cfg).is_err(), "{bad}");
+        }
+        let old: Config = toml::from_str("[continuous]\ncontext_lines = 3").unwrap();
+        assert_eq!(old.continuous.ocr_scale, 1.0);
     }
 
     #[test]

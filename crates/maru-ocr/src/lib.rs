@@ -112,12 +112,27 @@ impl OcrEngine for LazyOcr {
             Err(why) => Err(OcrError::Init(why.clone())),
         }
     }
+
+    fn recognize_scaled(&self, image: &RgbImage, min_scale: f32) -> Result<OcrOutput> {
+        match self.engine.get_or_init(|| (self.build)()) {
+            Ok(engine) => engine.recognize_scaled(image, min_scale),
+            Err(why) => Err(OcrError::Init(why.clone())),
+        }
+    }
 }
 
 pub trait OcrEngine: Send + Sync {
     fn name(&self) -> &'static str;
     /// Recognise text in `image`. Coordinates in the result are image pixels.
     fn recognize(&self, image: &RgbImage) -> Result<OcrOutput>;
+    /// Like [`recognize`](Self::recognize), but asks a detector to enlarge the picture to at least `min_scale` times its size
+    /// first (coordinates in the result are still in `image` pixels). A hint: an engine that cannot use it ignores it.
+    /// Live subtitles use it, because a tight strip around a subtitle is tall enough to escape the automatic enlargement
+    /// that small crops get while its lettering is still small.
+    fn recognize_scaled(&self, image: &RgbImage, min_scale: f32) -> Result<OcrOutput> {
+        let _ = min_scale;
+        self.recognize(image)
+    }
 }
 
 #[cfg(test)]
@@ -147,6 +162,40 @@ mod tests {
         assert_eq!(built.load(std::sync::atomic::Ordering::SeqCst), 1);
         let broken = LazyOcr::new(|| Err("no models".into()));
         assert!(broken.recognize(&img).is_err() && broken.recognize(&img).is_err());
+    }
+
+    #[test]
+    fn the_enlargement_hint_reaches_the_engine_behind_a_lazy_one_and_is_ignored_by_engines_without_it() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        struct Records(std::sync::Arc<AtomicU32>);
+        impl OcrEngine for Records {
+            fn name(&self) -> &'static str {
+                "records"
+            }
+            fn recognize(&self, _: &RgbImage) -> Result<OcrOutput> {
+                Ok(OcrOutput::default())
+            }
+            fn recognize_scaled(&self, _: &RgbImage, min_scale: f32) -> Result<OcrOutput> {
+                self.0.store((min_scale * 10.0) as u32, Ordering::SeqCst);
+                Ok(OcrOutput::default())
+            }
+        }
+        let seen = std::sync::Arc::new(AtomicU32::new(0));
+        let inner = seen.clone();
+        let lazy = LazyOcr::new(move || Ok(std::sync::Arc::new(Records(inner.clone())) as std::sync::Arc<dyn OcrEngine>));
+        lazy.recognize_scaled(&RgbImage::new(4, 4), 2.0).unwrap();
+        assert_eq!(seen.load(Ordering::SeqCst), 20);
+
+        struct Plain;
+        impl OcrEngine for Plain {
+            fn name(&self) -> &'static str {
+                "plain"
+            }
+            fn recognize(&self, _: &RgbImage) -> Result<OcrOutput> {
+                Ok(OcrOutput { lines: vec![line("안녕", 0.9, 0.0)] })
+            }
+        }
+        assert_eq!(Plain.recognize_scaled(&RgbImage::new(4, 4), 2.0).unwrap().lines.len(), 1, "falls back to recognize");
     }
 
     fn line(text: &str, conf: f32, x: f32) -> OcrLine {

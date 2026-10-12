@@ -47,6 +47,12 @@ impl OcrEngine for RespacingOcr {
         out.lines.iter_mut().for_each(|l| self.fix(l));
         Ok(out)
     }
+
+    fn recognize_scaled(&self, image: &RgbImage, min_scale: f32) -> Result<OcrOutput> {
+        let mut out = self.inner.recognize_scaled(image, min_scale)?;
+        out.lines.iter_mut().for_each(|l| self.fix(l));
+        Ok(out)
+    }
 }
 
 #[cfg(test)]

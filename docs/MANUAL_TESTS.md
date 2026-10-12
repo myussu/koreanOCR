@@ -145,6 +145,17 @@ set `lite = true` (or run with `MARU_LITE=1`) and check the footprint (smaller m
 **Expect:** invalid values are refused with a reason; comments in `config.toml` survive saves; the restart notice appears only when needed.
 **Bring:** anything that was saved wrongly (the before/after of `config.toml`).
 
+## M-14 Does enlarging the subtitle picture help PP-OCR on your game?
+**Needs:** a recording (a minute or two is plenty) of a cutscene with Korean subtitles, `ffmpeg`, and the PP-OCR models (`maru setup ocr`).
+**Steps:** write `truth.txt` (`start_seconds end_seconds the text`, one subtitle per line); find the subtitle area's `x:y:width:height` in the
+video; `python3 tools/sample_subtitle_frames.py clip.mp4 truth.txt --crop x:y:w:h --out evalset`; then `maru eval-ocr evalset --engine paddle`
+and `maru eval-ocr evalset --engine paddle --scale 2` (also `--scale 1.5`). Run each twice: a tiny line can flip between runs.
+**Expect:** a lower mean CER with `--scale 2` on your game, by more than the run-to-run spread, before you set `[continuous] ocr_scale = 2`.
+**Bring:** both tables and what the game and its subtitle font look like (outlined, shadowed, plain).
+**Why unverified:** Claude measured it on one recorded cutscene (13 subtitles, Linux CPU, ONNX Runtime 1.31, the pictures enlarged with an
+outside tool): 4.5–5.1% error without, 3.9% with 2× cubic, 4.0% Lanczos, 4.4% linear, 4.8% nearest, and 4.5% when Maru's own enlargement did it.
+The gain depends on the resize method, so it is not established. Not run on Windows, a real game or the live path end to end.
+
 ---
 
 ## Results log

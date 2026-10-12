@@ -118,10 +118,14 @@ impl OcrEngine for PaddleOcr {
     }
 
     fn recognize(&self, image: &RgbImage) -> Result<OcrOutput> {
+        self.recognize_scaled(image, 1.0)
+    }
+
+    fn recognize_scaled(&self, image: &RgbImage, min_scale: f32) -> Result<OcrOutput> {
         if image.width() == 0 || image.height() == 0 {
             return Ok(OcrOutput::default());
         }
-        let (prepared, p) = prep::prepare(image);
+        let (prepared, p) = prep::prepare_at_least(image, min_scale);
         let mut results = self.ocr.predict(vec![prepared]).map_err(|e| OcrError::Run(e.to_string()))?;
         let Some(result) = results.pop() else { return Ok(OcrOutput::default()) };
 

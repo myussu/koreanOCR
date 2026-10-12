@@ -104,6 +104,9 @@ enum Command {
         /// Instruction sent to the `endpoint` engine (default: the PaddleOCR-VL `OCR:` prompt).
         #[arg(long)]
         vlm_prompt: Option<String>,
+        /// Ask PP-OCR to enlarge each picture this many times first, as live subtitles do (`[continuous] ocr_scale`).
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
     },
     /// Speak text with the voice from your settings (sentence by sentence) into a WAV file.
     Tts {
@@ -489,7 +492,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             // Nothing read *because* something is wrong is a failure; an honestly empty screen is not.
             Ok(if report.items.is_empty() && !report.errors.is_empty() { 1 } else { 0 })
         }
-        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt } => {
+        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, scale } => {
             use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};
             let s = services(&paths, cfg, false).await;
             let cases = tools::load_cases(&dir)?;
@@ -576,7 +579,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 };
                 // Recognition is blocking (and for vision models waits on HTTP): keep the runtime free.
                 let (task_name, cases) = (name.clone(), cases.clone());
-                let result = tokio::task::spawn_blocking(move || tools::eval_engine(&task_name, ocr.as_ref(), &cases)).await?;
+                let result = tokio::task::spawn_blocking(move || tools::eval_engine(&task_name, ocr.as_ref(), &cases, scale)).await?;
                 match result {
                     Ok(score) => scores.push(score),
                     Err(err) => eprintln!("({name} failed: {err:#})\n"),

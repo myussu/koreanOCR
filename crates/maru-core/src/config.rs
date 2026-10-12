@@ -415,11 +415,16 @@ pub struct ContinuousConfig {
     pub linger_ms: u64,
     /// Earlier lines the model sees, so pronouns and names stay consistent.
     pub context_lines: usize,
+    /// PP-OCR reads the subtitle area at this many times its size (1 = as it is, the default). A tight strip around a
+    /// subtitle is tall enough to escape the automatic enlargement small crops get, while its lettering is still small.
+    /// Experimental: on one cutscene 2 helped or did nothing depending on how the picture was resized, so measure it on
+    /// your own game (`maru eval-ocr <folder> --scale 2`) before turning it on.
+    pub ocr_scale: f32,
 }
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4 }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, ocr_scale: 1.0 }
     }
 }
 

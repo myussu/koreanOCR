@@ -389,16 +389,19 @@ pub fn load_cases(dir: &Path) -> Result<Vec<(std::path::PathBuf, std::path::Path
 ///
 /// One untimed warm-up run comes first: the first call of any engine pays for model and
 /// runtime start-up, which says nothing about how it feels in use.
-pub fn eval_engine(name: &str, engine: &dyn maru_ocr::OcrEngine, cases: &[(std::path::PathBuf, std::path::PathBuf)]) -> Result<EngineScore> {
+///
+/// `scale` is the enlargement live subtitles ask PP-OCR for (`[continuous] ocr_scale`; 1 = none), so a folder of
+/// subtitle strips can be scored the way live mode reads them.
+pub fn eval_engine(name: &str, engine: &dyn maru_ocr::OcrEngine, cases: &[(std::path::PathBuf, std::path::PathBuf)], scale: f32) -> Result<EngineScore> {
     let (mut total_cer, mut total_found, mut total_extra, mut times) = (0.0, 0.0, 0.0, Vec::new());
     println!("{name}:");
     let first = image::open(&cases[0].0)?.to_rgb8();
-    engine.recognize(&first).map_err(|e| anyhow::anyhow!("{e}"))?;
+    engine.recognize_scaled(&first, scale).map_err(|e| anyhow::anyhow!("{e}"))?;
     for (img_path, truth_path) in cases {
         let img = image::open(img_path)?.to_rgb8();
         let truth = std::fs::read_to_string(truth_path)?;
         let t = Instant::now();
-        let out = engine.recognize(&img).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let out = engine.recognize_scaled(&img, scale).map_err(|e| anyhow::anyhow!("{e}"))?;
         let ms = t.elapsed().as_millis() as u32;
         let got = out.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ");
         let c = cer(&truth, &got);

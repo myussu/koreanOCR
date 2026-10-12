@@ -220,7 +220,8 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
 
         let ocr_started = Instant::now();
         let ocr = ocr.clone();
-        let Ok(Ok(out)) = tokio::task::spawn_blocking(move || ocr.recognize(&frame)).await else { continue };
+        let scale = cfg.ocr_scale;
+        let Ok(Ok(out)) = tokio::task::spawn_blocking(move || ocr.recognize_scaled(&frame, scale)).await else { continue };
         let ocr_ms = ocr_started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
         read_sig = Some(sig);
         read_at = Some(Instant::now());
@@ -448,6 +449,44 @@ mod tests {
         fn recognize(&self, _: &RgbImage) -> maru_ocr::Result<OcrOutput> {
             Ok(OcrOutput { lines: vec![line("안녕하세요 여러분", 5.0, 5.0, 200.0)] })
         }
+    }
+
+    /// Remembers every enlargement the watcher asked for (a plain `recognize` counts as 1).
+    struct ScaleNotes(std::sync::Mutex<Vec<f32>>);
+
+    impl OcrEngine for ScaleNotes {
+        fn name(&self) -> &'static str {
+            "scale-notes"
+        }
+        fn recognize(&self, image: &RgbImage) -> maru_ocr::Result<OcrOutput> {
+            self.recognize_scaled(image, 1.0)
+        }
+        fn recognize_scaled(&self, image: &RgbImage, min_scale: f32) -> maru_ocr::Result<OcrOutput> {
+            self.0.lock().unwrap().push(min_scale);
+            if image.get_pixel(0, 0)[0] == 0 {
+                return Ok(OcrOutput::default());
+            }
+            Ok(OcrOutput { lines: vec![line("안녕하세요 여러분", 5.0, 5.0, 200.0)] })
+        }
+    }
+
+    #[tokio::test]
+    async fn the_watcher_asks_the_reader_to_enlarge_the_subtitle_area_only_by_the_configured_amount() {
+        let frames: Vec<RgbImage> = (0..300).map(|i| lettered(10, i)).collect();
+        let region = Rect::new(100.0, 800.0, 400.0, 80.0);
+        let notes = Arc::new(ScaleNotes(Default::default()));
+        let config = ContinuousConfig { ocr_scale: 2.0, ..cfg() };
+        let mut h = spawn(&tokio::runtime::Handle::current(), Arc::new(FakeScreen::new(frames.clone())), notes.clone(), config, region);
+        assert!(next_line(&mut h, 1500).await.is_some());
+        h.stop();
+        let asked = notes.0.lock().unwrap().clone();
+        assert!(!asked.is_empty() && asked.iter().all(|s| *s == 2.0), "{asked:?}: twice the size when asked");
+
+        let notes = Arc::new(ScaleNotes(Default::default()));
+        let mut h = watch_with(frames, notes.clone());
+        assert!(next_line(&mut h, 1500).await.is_some());
+        h.stop();
+        assert!(notes.0.lock().unwrap().iter().all(|s| *s == 1.0), "the default reads the area as it is");
     }
 
     fn watch_with(frames: Vec<RgbImage>, ocr: Arc<dyn OcrEngine>) -> ContinuousHandle {

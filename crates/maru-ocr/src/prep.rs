@@ -47,13 +47,22 @@ fn background(img: &RgbImage) -> Rgb<u8> {
 }
 
 pub fn prepare(img: &RgbImage) -> (RgbImage, Prepared) {
+    prepare_at_least(img, 1.0)
+}
+
+/// [`prepare`], but never enlarging by less than `min_scale` (up to [`MAX_UPSCALE`], and still within [`MAX_SIDE`]).
+/// A subtitle strip is tall (the image is not small) yet its lettering is, so the automatic enlargement skips it. Whether
+/// enlarging it helps is unproven: on one recorded cutscene it did or did not, depending on the resize method.
+pub fn prepare_at_least(img: &RgbImage, min_scale: f32) -> (RgbImage, Prepared) {
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {
         return (img.clone(), Prepared { scale: 1.0, pad: 0 });
     }
 
     // Single-line crops are the common case for selections: enlarge by height.
-    let mut scale = if h < TARGET_MIN_HEIGHT { (TARGET_MIN_HEIGHT as f32 / h as f32).min(MAX_UPSCALE) } else { 1.0 };
+    let by_height = if h < TARGET_MIN_HEIGHT { (TARGET_MIN_HEIGHT as f32 / h as f32).min(MAX_UPSCALE) } else { 1.0 };
+    let hint = if min_scale.is_finite() { min_scale.clamp(1.0, MAX_UPSCALE) } else { 1.0 };
+    let mut scale = by_height.max(hint);
     let long = w.max(h) as f32 * scale;
     if long > MAX_SIDE as f32 {
         scale *= MAX_SIDE as f32 / long;
@@ -115,6 +124,34 @@ mod tests {
             img.put_pixel(x, 25, Rgb([255, 255, 255]));
         }
         assert_eq!(background(&img), Rgb([10, 20, 30]));
+    }
+
+    #[test]
+    fn a_tall_strip_is_enlarged_when_asked_and_not_otherwise() {
+        let strip = RgbImage::from_pixel(960, 130, Rgb([20, 20, 20]));
+        assert_eq!(prepare(&strip).1.scale, 1.0);
+        let (out, p) = prepare_at_least(&strip, 2.0);
+        assert_eq!(p.scale, 2.0);
+        assert_eq!(out.dimensions(), (960 * 2 + 24, 130 * 2 + 24));
+        assert_eq!(p.to_original(12.0 + 200.0), 100.0, "a position in the enlarged picture maps back to the strip");
+    }
+
+    #[test]
+    fn asking_for_less_than_the_automatic_enlargement_changes_nothing() {
+        let small = RgbImage::from_pixel(120, 20, Rgb([30, 30, 30]));
+        assert!((prepare_at_least(&small, 1.0).1.scale - 3.0).abs() < 0.01, "20 px is still enlarged to the cap");
+        assert!((prepare_at_least(&small, 2.0).1.scale - 3.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_requested_enlargement_is_limited_and_never_shrinks() {
+        let strip = RgbImage::from_pixel(600, 130, Rgb([20, 20, 20]));
+        assert_eq!(prepare_at_least(&strip, 10.0).1.scale, MAX_UPSCALE, "no more than the usual cap");
+        assert_eq!(prepare_at_least(&strip, 0.2).1.scale, 1.0);
+        assert_eq!(prepare_at_least(&strip, f32::NAN).1.scale, 1.0);
+        let wide = RgbImage::from_pixel(1600, 130, Rgb([20, 20, 20]));
+        let (out, p) = prepare_at_least(&wide, 2.0);
+        assert!(p.scale < 2.0 && out.width() <= MAX_SIDE + 2 * PAD, "a wide strip stops at the size limit");
     }
 
     #[test]

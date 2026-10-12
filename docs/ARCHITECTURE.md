@@ -216,7 +216,7 @@ UI state (selection, pending joins, the chip) is in `scan.js`; the commands are 
 * **UI:** `live.js` (+ `live-core.js`: `chooseSide`/`bandStyle`/`fitFont` put the band above or below the original, never over it; the `createBand` state machine; `latencyText`), `live.html`, `live.css`.
   The window is created hidden, click-through, never focused, and excluded from screen capture so OCR never reads the translation back.
   `live_idle` hides it after the fade. History → Live subtitles (`hub.js`) shows the lines in order with latency.
-* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`).
+* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`, `ocr_scale`).
 * **Tests:** `continuous.rs`, `change.rs`, `pipeline.rs` (live lane tests), `logic.rs`, `live.test.mjs`, `prompts.rs`.
 * **Real-PC check:** M-3.
 
@@ -251,7 +251,8 @@ schema of fields by dotted config path) and drawn by `settings.js`. **Adding a s
 * **Real-PC check:** M-1, M-2.
 
 ### 4.11 OCR tiers and the lite profile
-`maru-ocr::OcrEngine` has PP-OCR (`paddle.rs`), Windows OCR (platform crate) and, in the engine, a vision reader
+`maru-ocr::OcrEngine` (`recognize`, plus the defaulted hint `recognize_scaled(image, min_scale)`: a detector may enlarge the picture first; live
+subtitles pass `[continuous] ocr_scale`, default 1 = no change; `HybridOcr` forwards it to the detector only, never to the reading model) has PP-OCR (`paddle.rs`), Windows OCR (platform crate) and, in the engine, a vision reader
 (`vlm_ocr.rs`, `vision.rs`: PaddleOCR-VL through its own `llama-server`) combined with PP-OCR by `hybrid_ocr.rs`
 (PP-OCR gives lines and positions, the reader gives better letters; matched by text). `respace.rs` restores dropped spaces.
 `lite = true` (`Config::effective`, also `MARU_LITE=1`) turns the reading model off and swaps in the smaller translation model
