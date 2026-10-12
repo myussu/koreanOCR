@@ -151,9 +151,11 @@ For live speed comparisons, **Settings → Live subtitles** has experimental opt
   repeated readings: the filter keeps uncertain changes rather than discarding them on text similarity alone.
 
 These options default to the existing behavior (`false`, `0`, `false`). They keep the translation model, prompt and context settings.
-For the duplicate experiment, keep CPU PP-OCR off and active translations at `1`. First use the same subtitle area, then try a tighter
-box with `Ctrl+Alt+Shift+C`: include all dialogue rows and a little margin, excluding interface buttons. Compare missed and misread
-dialogue as well as latency. See [M-12](docs/MANUAL_TESTS.md#m-12-live-ocr-duplicates-and-subtitle-area).
+For the duplicate experiment, keep CPU PP-OCR off and active translations at `1`. A recording comparison found fewer noisy readings
+with a tighter subtitle area, but no consistent speed or duplicate reduction from the visual filter after warming the model.
+Start with the filter off and try a tighter box with `Ctrl+Alt+Shift+C`: include all dialogue rows and a little margin, excluding
+interface buttons. Then compare the filter off/on with that area fixed. Compare missed and misread dialogue as well as latency;
+these recording results do not establish performance with a game running. See [M-12](docs/MANUAL_TESTS.md#m-12-live-ocr-duplicates-and-subtitle-area).
 The log adds request IDs, waiting/active counts, time before the model call, time to response headers/first text, and llama.cpp's
 prompt/decode timings when the server supplies them. **History → Live subtitles** uses capture order and the estimated appearance time;
 other history views keep completion order. `maru bench --live` tests the model alone, so use the same cutscene for a full OCR-to-English
