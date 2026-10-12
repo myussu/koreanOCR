@@ -80,7 +80,7 @@ show_pronunciation = true
 # Live subtitles: translation only, drawn just above or below the original line (never over it). Word breakdowns come from the history.
 interval_ms = 100     # how often the area is looked at
 stable_ms = 150       # a picture this still is a finished line and is read at once (a fading line is read sooner)
-ocr_scale = 1.0       # experimental: PP-OCR reads the area enlarged this many times (1 = as it is, up to 3); test with `maru eval-ocr <folder> --scale 2`
+ocr_scale = 1.0       # experimental, not shown to help (1 = as it is, up to 3): PP-OCR reads the area enlarged this many times; test with `maru eval-ocr <folder> --scale 2 --compare <report>`
 linger_ms = 1500      # how long a translation stays after the original line is gone
 context_lines = 4     # earlier lines the model sees, for pronouns and names
 history_len = 300     # lines kept for review after a cutscene

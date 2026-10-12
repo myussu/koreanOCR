@@ -361,10 +361,8 @@ pub fn overlap(truth: &str, got: &str) -> (f64, f64) {
 #[derive(Debug, Clone)]
 pub struct EngineScore {
     pub name: String,
-    pub cer: f64,
-    pub found: f64,
-    pub extra: f64,
-    pub p50_ms: u32,
+    pub scale: f32,
+    pub results: Vec<crate::evalreport::CaseResult>,
 }
 
 /// Every picture in `dir` and the folders below it (a test set is one folder per game), sorted by path.
@@ -422,58 +420,66 @@ pub fn write_drafts(tag: &str, engine: &dyn maru_ocr::OcrEngine, images: &[std::
     Ok(written)
 }
 
-/// Score one engine on every case and print the per-image lines.
+/// The labelled pictures of a test set with what is known about each, restricted to one half when asked.
+pub fn load_case_infos(dir: &Path, split: Option<crate::evalreport::Split>) -> Result<Vec<crate::evalreport::CaseInfo>> {
+    let mut infos = Vec::new();
+    for (img, truth) in load_cases(dir)? {
+        let info = crate::evalreport::case_info(dir, &img, &truth).with_context(|| format!("reading {}", truth.display()))?;
+        if split.is_none_or(|s| s == info.split) {
+            infos.push(info);
+        }
+    }
+    if infos.is_empty() {
+        bail!("no pictures are in that half of the test set");
+    }
+    Ok(infos)
+}
+
+/// Score one engine on every case and print the pictures it got wrong, then the summary.
 ///
 /// One untimed warm-up run comes first: the first call of any engine pays for model and
 /// runtime start-up, which says nothing about how it feels in use.
 ///
 /// `scale` is the enlargement live subtitles ask PP-OCR for (`[continuous] ocr_scale`; 1 = none), so a folder of
 /// subtitle strips can be scored the way live mode reads them.
-pub fn eval_engine(name: &str, engine: &dyn maru_ocr::OcrEngine, cases: &[(std::path::PathBuf, std::path::PathBuf)], scale: f32) -> Result<EngineScore> {
-    let (mut total_cer, mut total_found, mut total_extra, mut times) = (0.0, 0.0, 0.0, Vec::new());
+pub fn eval_engine(name: &str, engine: &dyn maru_ocr::OcrEngine, cases: &[crate::evalreport::CaseInfo], scale: f32) -> Result<EngineScore> {
     println!("{name}:");
-    let first = image::open(&cases[0].0)?.to_rgb8();
+    let first = image::open(&cases[0].img)?.to_rgb8();
     engine.recognize_scaled(&first, scale).map_err(|e| anyhow::anyhow!("{e}"))?;
-    for (img_path, truth_path) in cases {
-        let img = image::open(img_path)?.to_rgb8();
-        let truth = std::fs::read_to_string(truth_path)?;
+    let mut results = Vec::new();
+    for case in cases {
+        let img = image::open(&case.img)?.to_rgb8();
         let t = Instant::now();
         let out = engine.recognize_scaled(&img, scale).map_err(|e| anyhow::anyhow!("{e}"))?;
         let ms = t.elapsed().as_millis() as u32;
         let got = out.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ");
-        let c = cer(&truth, &got);
-        let (found, extra) = overlap(&truth, &got);
-        total_cer += c;
-        total_found += found;
-        total_extra += extra;
-        times.push(ms);
-        // Folder and file: a test set keeps one folder per game.
-        let file = format!("{}/{}", img_path.parent().and_then(|p| p.file_name()).and_then(|n| n.to_str()).unwrap_or(""), img_path.file_name().and_then(|n| n.to_str()).unwrap_or("?"));
-        println!("  {file:<28} CER {:>5.1}%  found {:>5.1}%  extra {:>5.1}%  {ms:>5} ms", c * 100.0, found * 100.0, extra * 100.0);
-        if c > 0.0 {
-            println!("      expected: {}\n      got:      {got}", truth.trim());
+        let r = crate::evalreport::score_case(case, &got, ms);
+        if r.cer > 0.0 {
+            println!("  {:<40} letter error {:>5.1}%  {ms:>5} ms\n      expected: {}\n      got:      {}", r.rel, r.cer * 100.0, r.truth, r.got);
         }
+        results.push(r);
     }
-    let n = cases.len() as f64;
-    println!("  mean CER {:.1}%   found {:.1}%   extra {:.1}%\n{}\n", 100.0 * total_cer / n, 100.0 * total_found / n, 100.0 * total_extra / n, summarize("latency", times.clone()));
-    times.sort_unstable();
-    Ok(EngineScore {
-        name: name.to_string(),
-        cer: total_cer / n,
-        found: total_found / n,
-        extra: total_extra / n,
-        p50_ms: times.get(times.len() / 2).copied().unwrap_or(0),
-    })
+    println!();
+    crate::evalreport::print_summary(&results);
+    let times: Vec<u32> = results.iter().map(|r| r.ms).collect();
+    println!("{}\n", summarize("latency", times));
+    Ok(EngineScore { name: name.to_string(), scale, results })
 }
 
-/// Side-by-side comparison, best (lowest CER) first.
+/// Side-by-side comparison, best (lowest letter error) first.
 pub fn print_scores(scores: &[EngineScore]) {
-    let mut sorted = scores.to_vec();
-    sorted.sort_by(|a, b| a.cer.total_cmp(&b.cer));
-    println!("Summary (lower CER and extra, higher found, is better):");
-    println!("  {:<34} {:>8} {:>8} {:>8} {:>9}", "engine", "CER", "found", "extra", "median");
-    for s in sorted {
-        println!("  {:<34} {:>7.1}% {:>7.1}% {:>7.1}% {:>6} ms", s.name, s.cer * 100.0, s.found * 100.0, s.extra * 100.0, s.p50_ms);
+    let mut rows: Vec<(String, crate::evalreport::Summary)> = scores
+        .iter()
+        .map(|s| {
+            let all: Vec<&crate::evalreport::CaseResult> = s.results.iter().collect();
+            (s.name.clone(), crate::evalreport::summarize(&all))
+        })
+        .collect();
+    rows.sort_by(|a, b| a.1.cer.total_cmp(&b.1.cer));
+    println!("Summary (lower letter error and extra, higher exact and found, is better; spaces and punctuation are ignored):");
+    println!("  {:<34} {:>8} {:>8} {:>8} {:>8} {:>9}", "engine", "letters", "exact", "found", "extra", "median");
+    for (name, s) in rows {
+        println!("  {:<34} {:>7.1}% {:>7.1}% {:>7.1}% {:>7.1}% {:>6} ms", name, s.cer * 100.0, s.exact * 100.0, s.found * 100.0, s.extra * 100.0, s.p50_ms);
     }
 }
 

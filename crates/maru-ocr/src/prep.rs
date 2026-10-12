@@ -52,7 +52,7 @@ pub fn prepare(img: &RgbImage) -> (RgbImage, Prepared) {
 
 /// [`prepare`], but never enlarging by less than `min_scale` (up to [`MAX_UPSCALE`], and still within [`MAX_SIDE`]).
 /// A subtitle strip is tall (the image is not small) yet its lettering is, so the automatic enlargement skips it. Whether
-/// enlarging it helps is unproven: on one recorded cutscene it did or did not, depending on the resize method.
+/// enlarging it helps is unproven: on one recorded cutscene, scored without spaces and punctuation, it did not.
 pub fn prepare_at_least(img: &RgbImage, min_scale: f32) -> (RgbImage, Prepared) {
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {

@@ -417,8 +417,9 @@ pub struct ContinuousConfig {
     pub context_lines: usize,
     /// PP-OCR reads the subtitle area at this many times its size (1 = as it is, the default). A tight strip around a
     /// subtitle is tall enough to escape the automatic enlargement small crops get, while its lettering is still small.
-    /// Experimental: on one cutscene 2 helped or did nothing depending on how the picture was resized, so measure it on
-    /// your own game (`maru eval-ocr <folder> --scale 2`) before turning it on.
+    /// Experimental and not shown to help: on one cutscene, scored without spaces and punctuation, 2 was better on 2 subtitles and
+    /// worse on 4 of 13 (an earlier "gain" was punctuation). Measure it on your own game (`maru eval-ocr <folder> --scale 2
+    /// --compare <report>`) before turning it on.
     pub ocr_scale: f32,
     /// Keep a picture and a draft text file of every line the watcher reads, under `<data>/evalset/raw/<game>/`, so you can
     /// write down what the subtitles really say and score OCR changes on your own games. Off by default; nothing leaves the

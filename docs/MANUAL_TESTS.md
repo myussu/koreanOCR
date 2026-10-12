@@ -164,15 +164,14 @@ the Korean typing box takes IME input without Enter confirming half a syllable; 
 **Why unverified:** checked in Chromium on Linux against a stand-in for the folder picker (reading, writing and removing real files) and its `?demo` mode; the real folder picker, Windows paths and IME typing were not run.
 
 ## M-14 Does enlarging the subtitle picture help PP-OCR on your game?
-**Needs:** a recording (a minute or two is plenty) of a cutscene with Korean subtitles, `ffmpeg`, and the PP-OCR models (`maru setup ocr`).
-**Steps:** write `truth.txt` (`start_seconds end_seconds the text`, one subtitle per line); find the subtitle area's `x:y:width:height` in the
-video; `python3 tools/sample_subtitle_frames.py clip.mp4 truth.txt --crop x:y:w:h --out evalset`; then `maru eval-ocr evalset --engine paddle`
-and `maru eval-ocr evalset --engine paddle --scale 2` (also `--scale 1.5`). Run each twice: a tiny line can flip between runs.
-**Expect:** a lower mean CER with `--scale 2` on your game, by more than the run-to-run spread, before you set `[continuous] ocr_scale = 2`.
-**Bring:** both tables and what the game and its subtitle font look like (outlined, shadowed, plain).
-**Why unverified:** Claude measured it on one recorded cutscene (13 subtitles, Linux CPU, ONNX Runtime 1.31, the pictures enlarged with an
-outside tool): 4.5–5.1% error without, 3.9% with 2× cubic, 4.0% Lanczos, 4.4% linear, 4.8% nearest, and 4.5% when Maru's own enlargement did it.
-The gain depends on the resize method, so it is not established. Not run on Windows, a real game or the live path end to end.
+**Needs:** labelled pictures of your game's subtitles (M-15 and M-16, or `tools/sample_subtitle_frames.py` on a recording), and the PP-OCR models.
+**Steps:** `maru eval-ocr <set> --engine paddle --save-report base.json`, then `maru eval-ocr <set> --engine paddle --scale 2 --compare base.json`
+(also `--scale 1.5`). Use `--split dev` to try things and `--split held-out` to judge.
+**Expect:** the comparison says "better on" clearly more subtitles than "worse on", with a sign-test p below 0.05, before you set `[continuous] ocr_scale = 2`.
+**Bring:** both summaries, the comparison, and what the game and its subtitle font look like (outlined, shadowed, plain).
+**Why unverified:** Claude measured it once, on one recorded cutscene (13 distinct subtitles, 49 pictures, Linux CPU, ONNX Runtime 1.31): letter error
+1.4% at scale 1 and 1.8% at scale 2 (better on 2 subtitles, worse on 4, the same on 7; p = 0.69). Earlier numbers that looked like a gain (4.5% down to
+3.9%) counted missing commas and question marks as reading errors and moved with the resize method; they are withdrawn. Not run on Windows, a real game or the live path.
 
 ---
 

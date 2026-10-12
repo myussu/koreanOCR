@@ -224,7 +224,9 @@ UI state (selection, pending joins, the chip) is in `scan.js`; the commands are 
   `app/ui/test/label-review-core.test.mjs`) is an offline page that uses the File System Access API (Edge/Chrome) to label saved pictures; it writes `name.txt` (the label),
   `name.unreadable` and `name.tags` beside each picture and reads `name.json` (live draft) and `name.<engine>.txt` (drafts from `maru eval-ocr --write-drafts`).
   `sample_subtitle_frames.py` cuts the same kind of pictures from a recording with ffmpeg. `maru eval-ocr` reads the folders below the one it is given and skips
-  `.unreadable` pictures (`tools::load_images`, `load_cases`, `write_drafts`).
+  `.unreadable` pictures (`tools::load_images`, `load_cases`, `write_drafts`). Scoring is in `maru-cli/src/evalreport.rs` (pure, tested): letter error ignoring spaces
+  and punctuation (the old rate is shown as "with punctuation"), means over distinct subtitles, per game / tag / dev-held-out split (a scene never straddles it; FNV hash
+  of the scene key), digit and negation counts, `--save-report` / `--compare` (subtitle-by-subtitle better/worse with a sign test).
 * **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`, `ocr_scale`, `save_reads`).
 * **Tests:** `continuous.rs`, `change.rs`, `pipeline.rs` (live lane tests), `logic.rs`, `live.test.mjs`, `prompts.rs`.
 * **Real-PC check:** M-3.

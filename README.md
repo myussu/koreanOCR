@@ -179,11 +179,17 @@ blocks of text; a general chat model (Gemma 4) "corrected" clean text into diffe
 `hybrid` runs PP-OCR (lines and positions) and PaddleOCR-VL (whole-image reading) together and matches them by text.
 (Feeding the vision model one crop per line was tried and was much worse: crops carry pieces of neighbouring lines.)
 
-To score PP-OCR on **your game's subtitles** (the kind of picture live mode reads), cut test pictures out of a recording with
-`python3 tools/sample_subtitle_frames.py clip.mp4 truth.txt --crop x:y:w:h --out evalset` (`truth.txt`: `start end text` per
-subtitle; needs `ffmpeg`), then `maru eval-ocr evalset --engine paddle`. Add `--scale 2` to have PP-OCR enlarge each picture first, as the
-experimental `[continuous] ocr_scale = 2` does for live subtitles (default `1`, off). On one cutscene enlarging helped a little or not at
-all depending on the resize method, so it is off until a test on your own games shows a clear gain.
+To score PP-OCR on **your game's subtitles** (the kind of picture live mode reads), build a labelled set (see *Building a test set* below), then:
+
+* `maru eval-ocr <set> --engine paddle` prints the pictures it got wrong and a summary: **letter error** (spaces and punctuation ignored, because a
+  missing comma does not change a translation; the rate with punctuation is shown beside it), exact lines, missed lines, lost digits, and lines where a
+  negation was lost or added. Several frames of one subtitle count once, and the result is broken down by game (one folder each), by the tags you gave
+  pictures, and by a fixed dev / held-out split that keeps a whole scene on one side (`--split dev` to experiment, `--split held-out` to judge).
+* To see whether a change helps: `--save-report before.json` first, make the change, then `--compare before.json`. It counts how many *subtitles* got
+  better and worse and gives a sign test, because a lower average alone can be a few lucky lines. Several engines in one run are compared the same way.
+* `--scale 2` makes PP-OCR enlarge each picture first, as the experimental `[continuous] ocr_scale = 2` does for live subtitles (default `1`, off). On the
+  one cutscene tried it made no real difference (slightly worse), so it stays off until a test on your own games shows a clear gain.
+
 If a model will not start, run it yourself and use `--engine endpoint --vlm-endpoint http://127.0.0.1:8080`
 (`--vlm-args "…"` passes extra flags such as `--jinja --chat-template-file …`). Vision models return text only, no word
 positions, so they are a candidate for a "double-check" mode rather than a replacement for PP-OCR's geometry.
