@@ -22,16 +22,21 @@ function h(tag, props = {}, ...kids) {
 }
 
 let tab = location.hash.slice(1) || 'review';
+let showRevision = 0;
 
 async function show(name) {
   if(view.firstElementChild?.canLeave && !view.firstElementChild.canLeave())return;
+  const revision=++showRevision;
   view.firstElementChild?.dispose?.();
   tab = name;
   for (const b of tabs) b.setAttribute('aria-selected', String(b.dataset.tab === name));
   view.replaceChildren(h('p', { class: 'center', text: 'Loading…' }));
   try {
-    view.replaceChildren(...(await { review, history, status, settings: settingsView, resources: resourcesView, reading: readingView }[name]()));
+    const children=await { review, history, status, settings: settingsView, resources: resourcesView, reading: readingView }[name]();
+    if(revision!==showRevision){for(const child of children)child?.dispose?.();return;}
+    view.replaceChildren(...children);
   } catch (e) {
+    if(revision!==showRevision)return;
     view.replaceChildren(h('div', { class: 'err', text: String(e) }));
   }
 }
@@ -137,8 +142,11 @@ async function status() {
 // Toggles can change from a hotkey while this window is open: keep the status tab current.
 setInterval(async () => {
   if (tab !== 'status' || document.hidden) return;
+  const revision=showRevision;
   try {
-    view.replaceChildren(...(await status()));
+    const children=await status();
+    if(revision!==showRevision||tab!=='status'){for(const child of children)child?.dispose?.();return;}
+    view.replaceChildren(...children);
   } catch {
     /* keep what is showing */
   }

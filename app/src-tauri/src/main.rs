@@ -22,6 +22,7 @@ mod reading;
 mod wheel;
 mod input_session;
 mod picker_session;
+mod reading_feedback;
 
 use std::sync::{Arc, Mutex};
 
@@ -148,6 +149,7 @@ fn main() {
             let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region, live_latest: Default::default(), live_error_shown: Default::default(), scan: Mutex::default(), live: std::sync::RwLock::new(booted.clone()), booted });
             app.manage(input_session::InputState::default());
             app.manage(picker_session::PickerSessionState::default());
+            app.manage(reading_feedback::FeedbackState::default());
             app.manage(wheel::WheelState::default());
 
             let width = state.cfg().ui.max_width_px as f32;
@@ -166,10 +168,12 @@ fn main() {
             watch::spawn_anki_refresh(state.clone());
             watch::spawn_scan_hits(app.handle().clone(), state.clone());
             reading::spawn(app.handle().clone(), state.clone());
+            reading_feedback::spawn(app.handle().clone(),state.clone());
             app.manage(state);
             Ok(())
         })
         .on_window_event(|window,event| {
+            if window.label()==windows::HUB && matches!(event,tauri::WindowEvent::Focused(false)) && let Some(hub)=window.app_handle().get_webview_window(windows::HUB) { input_session::hub_focus_lost(&hub); }
             if !matches!(window.label(),"wheel"|"picker") { return; }
             if matches!(event,tauri::WindowEvent::Focused(false)) { input_session::focus_changed(window.app_handle()); }
             if let tauri::WindowEvent::CloseRequested { api,.. } = event {
@@ -185,6 +189,8 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            reading_feedback::reading_progress_ready,
+            reading_feedback::reading_progress_status,
             picker_session::picker_session,
             picker_session::picker_ready,
             wheel::wheel_status,

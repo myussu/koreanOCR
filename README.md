@@ -139,7 +139,7 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 | `Ctrl+Alt+Shift+C` | choose a different live-mode area (and start it there) |
 | `Ctrl+Alt+S` | label every Korean text on the screen (game menus, HUDs); press again to rescan |
 | `Ctrl+Alt+L` | history, review and status |
-| `Ctrl+Alt+Esc` | hide the panel and all screen labels |
+| `Ctrl+Alt+Esc` | hide the panel, screen labels and saved-reading indicator |
 | `Ctrl+Alt+Q` | open the focused controls wheel at the pointer; mouse or keyboard navigation |
 
 Each action accepts several keys separated by `|` in `config.toml` (e.g. `translate = "Ctrl+Alt+T | F6"`), which helps in games that use Ctrl/Shift/Alt. A registered key is taken from every program while Maru runs, so pick ones you don't use (see `docs/config.example.toml`). `Status` shows which toggles are on, and the tray icon's tooltip lists them too.
@@ -282,6 +282,9 @@ Maru takes focus and shows a pointer for this interaction. Choose with the mouse
 **Esc** closes it. **8 / More controls**, **Page Up/Down**, or **[ / ]** move between its three pages.
 **Save an area** opens the Reading areas manager, where you name the area and start selection; **Snapshot region**
 opens the picker directly. The wheel also offers labels, Join words, live controls, settings and a cached VRAM bar.
+Manager actions hand focus directly from the wheel to Maru. The manager stays above the game while focused;
+switching back to the game or another application removes that temporary priority. Games can continue receiving
+controller input while Maru has focus, so pause the game before naming an area or inspecting its translation.
 Change or disable **Controls wheel** in **Settings → Shortcuts**. A shortcut used by another app must be changed.
 Opening these controls can pause a game on focus loss. Maru returns focus and prior pointer confinement only while
 the interaction still owns focus and the original game window is unchanged; switching apps preserves that choice.
@@ -295,6 +298,12 @@ executable, such as different games inside one emulator, should have distinct na
 **Read again** captures the selected area without drawing another rectangle. For a keyboard button, assign
 **Read saved area again** in **Settings → Shortcuts**; it starts unassigned so existing keys keep working.
 The tray also offers Read saved area again and Saved reading areas. Ordinary region snapshots keep their existing controls.
+Read again immediately shows a small indicator beside the saved area: **Reading saved area**, **Waiting to translate**,
+**Translating and explaining**, then **Reading ready**. It shows errors with a retry message. It ignores mouse input,
+keeps game focus and is excluded from Maru's captures. Ready feedback clears after six seconds; errors stay until
+you retry or use **Dismiss** / **Ctrl+Alt+Esc**. Dismiss hides feedback without canceling OCR or translation already underway.
+The translation panel is protected from idle hiding while reading and briefly after completion. Use its pin button
+to keep it open for longer inspection.
 
 **Auto-read** is a separate, explicit toggle. It waits for matching OCR readings of settled text, reads the whole
 paragraph through the normal snapshot pipeline, and keeps only the latest pending paragraph while one translation
@@ -306,6 +315,9 @@ it uses the configured snapshot OCR, including the vision reader if enabled, and
 **Hold** keeps an answer available; **Resume** reads the current settled dialogue. Opening a word's deep dive,
 correcting a snapshot or opening another snapshot automatically holds Auto-read. Blank dialogue is normal and
 leaves the previous reading available. Status text distinguishes settling/queued new text from the previous answer.
+An explicit Read again takes priority over automatic capture and also works while Auto-read is held. Its capture,
+translation and error states stay visible during Hold.
+Opening Maru's controls lets the current reading finish; watching waits until you return to the game.
 Saved areas and each executable's selected area survive restart; Auto-read starts off. Switching away from the
 selected game pauses capture. Moving the window moves the crop; resizing or changing resolution requires a check.
 In Reading areas, **Check scaled area** / **Reposition** shows its outline: Enter keeps it, dragging replaces it,
@@ -315,6 +327,8 @@ See [M-30](docs/MANUAL_TESTS.md#m-30-saved-game-reading-areas) for the real-game
 The picker refreshes the game's current geometry before selection, including after switching to borderless,
 and validates that exact window afterward. It still refuses a window moved, resized or closed during selection.
 See [M-31](docs/MANUAL_TESTS.md#m-31-borderless-controls-wheel-and-saved-area-registration) for the input checks.
+See [M-32](docs/MANUAL_TESTS.md#m-32-wheel-manager-handoff-and-manual-reading-feedback) for manager focus,
+controller behavior and manual-reading feedback checks.
 
 ## Game menus: screen labels
 

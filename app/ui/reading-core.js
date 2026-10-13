@@ -8,8 +8,9 @@ export function readingText(s) {
 }
 export function readingControls(s, busy = false) {
   const selected = !!selectedArea(s), blocked = busy || s?.phase === 'choosing';
-  return { readDisabled:!selected||blocked, autoDisabled:!selected||blocked, holdDisabled:!s?.automatic||blocked, createDisabled:!s?.can_create||blocked, automatic:!!s?.automatic, held:!!s?.held };
+  return { readDisabled:!selected||blocked||s?.phase==='capturing', autoDisabled:!selected||blocked, holdDisabled:!s?.automatic||blocked, createDisabled:!s?.can_create||blocked, automatic:!!s?.automatic, held:!!s?.held };
 }
+export function acceptsReadingStatus(current, request) { return current === request; }
 export function readingBannerVisible(s) { return !!selectedArea(s) && (!!s.automatic || !!s.busy || !!s.pending || ['capturing','error'].includes(s.phase)); }
 export function pickerArea(rect,origin,dpr=1) {
   if(!rect||![rect.x,rect.y,rect.w,rect.h,origin?.x,origin?.y,dpr].every(Number.isFinite)||dpr<=0||rect.w<=0||rect.h<=0)return null;

@@ -158,6 +158,11 @@ For every feature: how it starts, where it flows, what it persists, how it is co
   retaining model routing, exact OCR corrections, cache, breakdown, glosses and per-word deep dives.
 * **State:** one active translation and one replaceable latest pending capture. Generations reject superseded results
   and older errors; returning from another app resets confirmation before capturing. Manual capture calls are gated.
+  Manual capture and pending manual text take priority over automatic observation, including while Maru owns focus.
+  While Maru controls own focus, an active manual or automatic answer finishes without observing/capturing controls;
+  new game paragraphs can still replace pending text after game focus returns. Unrelated-app focus rules remain unchanged.
+  Hold status exposes actual manual capture/queue/translation/error phases; canceling a capture through Hold or a word
+  interaction clears its discarded phase so Resume can watch again. `busy` continues to mean an active translation.
   Hold pauses watching and retains the current stream through completion; deep dive/editor interactions hold it.
   Another snapshot explicitly supersedes it. Empty confirmed text
   retains the last answer. Automatic mode and all pending/active/status state are transient and start off.
@@ -172,9 +177,16 @@ For every feature: how it starts, where it flows, what it persists, how it is co
   no Win32 call enters the engine/shell.
 * **UI:** `reading.js`, `reading-core.js`, `reading.css`, `reading-demo.js` add the hub manager, floating selector/buttons
   and snapshot status/hold banner. Floating rectangles include these controls through the existing menu rectangle.
+  Shell `reading_feedback.rs` and `reading-progress{,-core}.js` / `reading-progress.html/css` show manual acknowledgement
+  before OCR finishes: capturing, queued, reading, done or error. The protected, noninteractive `reading-progress` window
+  uses `Engine::reading_area_rect` to anchor against the known game, never another same-executable helper. Operation IDs
+  reject stale updates; readiness gates first show. Done expires after six seconds; errors persist until retry/Dismiss.
+  Existing Dismiss hides this feedback without canceling the reading. The manual answer is protected from panel idle-hide
+  while the operation and its brief completion feedback remain active; the existing pin provides longer retention.
 * **Tests:** `tests/pipeline.rs` includes `support/reading_areas.rs` (scripted model and fake windows/OCR);
   `reading_change.rs` tests text settling; `app/ui/test/reading.test.mjs` covers controls, stale selection and DPI preview.
-  Chromium demos check layout and interaction. Real Windows/game/capture quality check: M-30.
+  Slow-OCR regressions cover manual/automatic overlap and held progress. Shell/UI tests cover progress IDs and phases.
+  Chromium demos check layout and interaction. Real Windows/game/capture quality checks: M-30 and M-32.
 
 ### 4.2 Hover lookup (`Ctrl+Alt+H`)
 `watch.rs` detects a pointer resting on a word (`logic.rs::Dwell`) → `Engine::capture_hover` → `Engine::lookup_word`
@@ -459,6 +471,9 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
   owns snapshots/leases behind a trait; `windows/input.rs` owns activation, client/desktop identity and ClipCursor.
   Capture happens before showing/changing cursor state. Activation is verified without synthetic key presses,
   confinement is released, and Tauri shows its owning window's cursor. Wheel-to-picker transfer retains the source.
+  Wheel-to-hub actions hand focus straight to the manager without activating the game between windows. The hub is raised
+  while focused and loses that temporary topmost state on focus loss; failure releases the raise and reports the error.
+  Controller input may continue reaching the game, so the user pauses it before inspecting Maru. Real handoff is M-32.
   Completion consumes the lease; focus loss, closed/minimized/reused/moved windows, changed desktop or a new clip
   prevent unsafe restoration. A source game that reapplies its clip on activation retains that clip. Dropping a token
   performs no OS action. Portable backend tests cover those decisions and failures; real game input is M-31.
@@ -571,6 +586,8 @@ follow-up work ends when its translation request ends, even without the requeste
 ### 6.2 Engine ↔ front end
 Saved reading areas add engine methods for storage, selection, capture, observation, hold and generation-checked
 jobs. `ScreenGrabber::app_window(exe)` defaults to `None` for older/unsupported sources; `AppWindow` is additive.
+`Engine::reading_area_rect()` adds a nullable current physical rectangle for presentation without capture/OCR/model work;
+it prefers the known matching game window by identity, as do status, reselect, reposition and size confirmation.
 They reuse the ordinary translate event stream and cancellation slot. No existing event/config/database meaning changes.
 `hotkeys.reading_again` is additive, defaults to empty, and applies live with other shortcuts.
 `ScreenGrabber::app_window_by_id` is additive, with a filtered legacy default. `InputControl` is a separate optional
@@ -622,10 +639,13 @@ No config key, event variant order, existing column meaning or command name is r
   opens the manager. Existing commands and window labels remain registered. SQLite mutations run off the UI thread.
   Additive `picker_session` / `picker_ready(sessionId)` synchronize picker startup; `picker_done(rect,sessionId?)`
   accepts an optional token to reject stale pages. Legacy callers without a token still require a current selection.
+  `reading_progress_ready` acknowledges indicator startup; `reading_progress_status` returns nullable
+  `{id,area,phase,message}`. `maru-reading-progress` carries this shell operation state; `maru-reading-status` carries
+  changed `ReadingStatus` for immediate control updates. These are additive shell events, not engine event variants.
 * **Reversible joins:** additive `scan_join_items(scanId,item,items,asWord)`, `scan_separate(scanId,item)` and
   `scan_open_item(scanId,item)` check current visible scans. Old command names remain registered. Joining/separation
   acknowledge errors through command results before changing the display; engine events replace successful labels.
-* **Windows** (labels in `windows.rs`, or the feature's module): `panel` (`index.html`), `picker`, `hub`, `scan`, `live`, `launcher` (`launcher.html`), `correction` (`correction.html`), `wheel` (`wheel.html`). Adding one needs a capability entry in
+* **Windows** (labels in `windows.rs`, or the feature's module): `panel` (`index.html`), `picker`, `hub`, `scan`, `live`, `launcher` (`launcher.html`), `correction` (`correction.html`), `wheel` (`wheel.html`), `reading-progress` (`reading-progress.html`). Adding one needs a capability entry in
   `app/src-tauri/capabilities/default.json`.
 * **OCR editor:** `correction_open_snapshot(requestId)`, `correction_open_scan(scanId,item)`, `correction_view`,
   `correction_apply(target,text,remember)`, `correction_forget(target)`, `correction_cancel`; `maru-correction` refreshes
@@ -665,6 +685,8 @@ No config key, event variant order, existing column meaning or command name is r
 
 The controls wheel and input lease are transient. Only the additive `hotkeys.wheel` shortcut persists in `config.toml`;
 cursor confinement, native handles, page/selection and resource readings are never saved.
+Manager focus/topmost state and manual-reading operation IDs, progress, readiness and expiry are transient. Reading
+feedback adds no setting or database field; normal translation cache/history retain their existing behavior.
 | File (under the data dir unless noted) | Owner | Content |
 |---|---|---|
 | `config.toml` (config dir) | `maru-core::config`, `settings.rs` | every setting; comments are preserved on edit |

@@ -1,10 +1,11 @@
-use windows::Win32::Foundation::{HWND, POINT, RECT};
+use windows::Win32::Foundation::{HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::System::Threading::{GetCurrentProcessId, GetCurrentThreadId};
 use windows::Win32::UI::WindowsAndMessaging::{
     ClipCursor, GetClientRect, GetClipCursor, GetForegroundWindow, GetSystemMetrics,
     GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, SM_CXVIRTUALSCREEN,
-    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SetForegroundWindow,
+    SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+    SMTO_ERRORONEXIT, SendMessageTimeoutW, SetForegroundWindow, WM_NULL,
 };
 
 use crate::input::{Backend, Bounds, Window};
@@ -119,7 +120,28 @@ impl Backend for WindowsInput {
         // SAFETY: the lease checks a live visible HWND before activation. This deliberately
         // uses no synthetic keypress or input-queue attachment to bypass Windows restrictions.
         let activated = unsafe { SetForegroundWindow(hwnd(handle)).as_bool() };
-        if activated && self.foreground() == handle {
+        if self.foreground() == handle {
+            return Ok(());
+        }
+        if activated {
+            // A different input queue activates asynchronously. Give it one bounded chance
+            // to process that notification before treating an accepted return as a failure.
+            // SAFETY: WM_NULL carries no data pointers; the wait never attaches input queues.
+            unsafe {
+                if GetWindowThreadProcessId(hwnd(handle), None) != GetCurrentThreadId() {
+                    let _ = SendMessageTimeoutW(
+                        hwnd(handle),
+                        WM_NULL,
+                        WPARAM(0),
+                        LPARAM(0),
+                        SMTO_ABORTIFHUNG | SMTO_ERRORONEXIT | SMTO_BLOCK,
+                        200,
+                        None,
+                    );
+                }
+            }
+        }
+        if self.foreground() == handle {
             Ok(())
         } else {
             Err(PlatformError::Failed(

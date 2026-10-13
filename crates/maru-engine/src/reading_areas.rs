@@ -201,7 +201,13 @@ impl Engine {
             .unwrap_or(false);
         let phase = if state.picker.is_some() {
             "choosing"
-        } else if state.held && state.automatic {
+        } else if state.held
+            && state.automatic
+            && matches!(
+                state.phase,
+                "" | "ready" | "watching" | "empty" | "settling"
+            )
+        {
             "held"
         } else if state.phase.is_empty() {
             "ready"
@@ -228,6 +234,13 @@ impl Engine {
             can_create: state.store.is_some() && state.target.is_some(),
             position_check,
         }
+    }
+
+    pub fn reading_area_rect(&self) -> Option<Rect> {
+        let state = lock(&self.inner.reading_areas);
+        let area = state.area()?;
+        let window = self.reading_target_window(&area.exe, state.target.as_ref())?;
+        Some(area.rectangle(window.rect))
     }
 
     pub fn select_reading_area(&self, id: i64) -> Result<()> {
@@ -417,6 +430,15 @@ impl Engine {
             }
             state.retained = state.active;
             state.pending = None;
+            if matches!(state.phase, "capturing" | "queued") {
+                state.phase = if state.active.is_some() {
+                    "reading"
+                } else if state.automatic {
+                    "watching"
+                } else {
+                    "ready"
+                };
+            }
         } else {
             state.change.reset();
             state.frame = None;
@@ -435,6 +457,13 @@ impl Engine {
             }
             state.retained = state.active;
             state.pending = None;
+            if matches!(state.phase, "capturing" | "queued") {
+                state.phase = if state.active.is_some() {
+                    "reading"
+                } else {
+                    "watching"
+                };
+            }
         }
     }
     /// A different snapshot replaces the panel; its newer events must own the display.
@@ -628,16 +657,48 @@ impl Engine {
     /// One inexpensive poll, with OCR only after a visual change or a periodic check.
     pub async fn observe_reading(&self) {
         self.reading_context();
-        {
+        let (active, observed_serial) = {
             let state = lock(&self.inner.reading_areas);
-            if !state.automatic || state.held || state.picker.is_some() {
+            if !state.automatic
+                || state.held
+                || state.picker.is_some()
+                || state.phase == "capturing"
+                || state.pending.as_ref().is_some_and(|pending| pending.manual)
+            {
                 return;
             }
+            (state.active.is_some(), state.serial)
+        };
+        if active
+            && self
+                .inner
+                .platform
+                .screen
+                .foreground_app()
+                .is_some_and(|app| own_app(&app.exe))
+        {
+            return;
         }
         let (area, window) = match self.reading_window(false, None) {
             Ok(pair) => pair,
             Err(e) => {
+                let maru_foreground = self
+                    .inner
+                    .platform
+                    .screen
+                    .foreground_app()
+                    .is_some_and(|app| own_app(&app.exe));
                 let mut state = lock(&self.inner.reading_areas);
+                if state.serial != observed_serial
+                    || !state.automatic
+                    || state.held
+                    || state.picker.is_some()
+                    || state.phase == "capturing"
+                    || state.pending.as_ref().is_some_and(|pending| pending.manual)
+                    || state.active.is_some() && maru_foreground
+                {
+                    return;
+                }
                 if !state.suspended {
                     state.reset();
                     state.suspended = true;

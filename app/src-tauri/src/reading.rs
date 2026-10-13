@@ -20,7 +20,7 @@ pub async fn picked(app: AppHandle, state: Arc<AppState>, rect: Option<maru_core
     let engine = state.engine().clone();
     match blocking(move || engine.finish_reading_pick(rect)).await {
         Ok(Some(_)) => {
-            let _ = windows::open_hub(&app, "reading");
+            if let Err(error)=windows::open_hub_from_controls(&app,"reading").await {tracing::warn!(%error,"saved reading manager");flow::notice(&app,&state,None,"info",error);}
         }
         Ok(None) => {}
         Err(e) => {
@@ -181,18 +181,39 @@ pub async fn reading_confirm_position(state: S<'_>) -> Result<(), String> {
 }
 
 pub async fn read_again(app: AppHandle, state: Arc<AppState>) -> Result<(), String> {
-    if let Some(hub) = app
-        .get_webview_window(windows::HUB)
-        .filter(|w| w.is_visible().unwrap_or(false))
-    {
-        hub.hide().map_err(|e| e.to_string())?;
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let feedback = app.state::<crate::reading_feedback::FeedbackState>();
+    let _capture = feedback.capture.try_lock().map_err(|_| {
+        "A reading is already being captured. Wait for it to finish.".to_string()
+    })?;
+    let operation = crate::reading_feedback::begin(&app, &state);
+    let started = std::time::Instant::now();
+    let result = async {
+        if let Some(hub) = app
+            .get_webview_window(windows::HUB)
+            .filter(|w| w.is_visible().unwrap_or(false))
+        {
+            hub.hide().map_err(|e| e.to_string())?;
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
+        state
+            .engine()
+            .request_reading()
+            .await
+            .map_err(|e| e.to_string())
     }
-    state
-        .engine()
-        .request_reading()
-        .await
-        .map_err(|e| e.to_string())
+    .await;
+    crate::reading_feedback::capture_finished(
+        &app,
+        operation,
+        &state.engine().reading_status(),
+        result.as_ref().err().map(String::as_str),
+    );
+    if let Err(error) = &result {
+        tracing::warn!(operation, %error, elapsed_ms = started.elapsed().as_millis(), "saved reading capture failed");
+    } else {
+        tracing::info!(operation, elapsed_ms = started.elapsed().as_millis(), "saved reading capture queued");
+    }
+    result
 }
 
 #[tauri::command]

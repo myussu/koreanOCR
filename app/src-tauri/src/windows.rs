@@ -251,3 +251,24 @@ pub fn open_hub(app: &AppHandle, tab: &str) -> tauri::Result<()> {
     WebviewWindowBuilder::new(app, HUB, WebviewUrl::App(url.into())).title("Maru").inner_size(940.0, 720.0).min_inner_size(640.0, 480.0).build()?;
     Ok(())
 }
+
+/// A focused Maru interaction hands straight to the manager instead of reactivating the game first.
+pub async fn open_hub_from_controls(app: &AppHandle,tab: &str) -> Result<(),String> {
+    let snapshot=crate::input_session::prepare(app).await?;
+    let existing=app.get_webview_window(HUB);
+    let reused=existing.is_some();
+    let win=if let Some(win)=existing {
+        win
+    } else {
+        WebviewWindowBuilder::new(app,HUB,WebviewUrl::App(format!("hub.html#{tab}").into()))
+            .title("Maru").inner_size(940.0,720.0).min_inner_size(640.0,480.0)
+            .focused(false).visible(false).build().map_err(|e|e.to_string())?
+    };
+    if let Err(error)=crate::input_session::handoff(app,&win,snapshot).await {
+        let _=crate::input_session::finish(app,&win).await;
+        crate::input_session::release_hub_raise(&win);
+        return Err(error);
+    }
+    if reused { tauri::Emitter::emit_to(app,HUB,"maru-tab",tab).map_err(|e|e.to_string())?; }
+    Ok(())
+}

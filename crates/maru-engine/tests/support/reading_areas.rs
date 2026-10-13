@@ -3,6 +3,7 @@ use image::{Rgb, RgbImage};
 use maru_core::{Point, Rect};
 use maru_ocr::{OcrEngine, OcrLine, OcrOutput};
 use maru_platform::{ScreenGrabber, app_window::AppWindow};
+use std::collections::VecDeque;
 use std::path::Path;
 use std::sync::{
     Mutex,
@@ -13,6 +14,7 @@ struct GameScreen {
     window: Mutex<Option<AppWindow>>,
     helper: Mutex<Option<AppWindow>>,
     foreground: Mutex<Option<AppInfo>>,
+    foreground_script: Mutex<VecDeque<AppInfo>>,
     page: Mutex<u8>,
     requests: Mutex<Vec<Rect>>,
 }
@@ -30,6 +32,7 @@ impl GameScreen {
             })),
             helper: Mutex::new(None),
             foreground: Mutex::new(Some(app)),
+            foreground_script: Mutex::new(VecDeque::new()),
             page: Mutex::new(1),
             requests: Mutex::new(Vec::new()),
         }
@@ -66,6 +69,9 @@ impl ScreenGrabber for GameScreen {
         None
     }
     fn foreground_app(&self) -> Option<AppInfo> {
+        if let Some(app) = self.foreground_script.lock().unwrap().pop_front() {
+            return Some(app);
+        }
         self.foreground.lock().unwrap().clone()
     }
     fn screen_bounds(&self) -> Rect {
@@ -108,6 +114,27 @@ struct ReadingOcr {
     switch_foreground: AtomicBool,
     show_helper: AtomicBool,
     screen: Arc<GameScreen>,
+    pause: Mutex<Option<OcrPause>>,
+}
+struct OcrPause {
+    entered: tokio::sync::oneshot::Sender<()>,
+    resume: std::sync::mpsc::Receiver<()>,
+}
+impl ReadingOcr {
+    fn pause_next(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let (entered, wait) = tokio::sync::oneshot::channel();
+        let (resume, release) = std::sync::mpsc::channel();
+        *self.pause.lock().unwrap() = Some(OcrPause {
+            entered,
+            resume: release,
+        });
+        (wait, resume)
+    }
 }
 impl OcrEngine for ReadingOcr {
     fn name(&self) -> &'static str {
@@ -115,6 +142,11 @@ impl OcrEngine for ReadingOcr {
     }
     fn recognize(&self, image: &RgbImage) -> maru_ocr::Result<OcrOutput> {
         self.calls.fetch_add(1, Ordering::Relaxed);
+        let pause = self.pause.lock().unwrap().take();
+        if let Some(pause) = pause {
+            let _ = pause.entered.send(());
+            pause.resume.recv_timeout(Duration::from_secs(15)).unwrap();
+        }
         if self.switch_foreground.swap(false, Ordering::Relaxed) {
             self.screen.foreground("other_game.exe");
         }
@@ -157,6 +189,7 @@ async fn reading_harness(path: &Path) -> ReadingHarness {
         switch_foreground: AtomicBool::new(false),
         show_helper: AtomicBool::new(false),
         screen: screen.clone(),
+        pause: Mutex::new(None),
     });
     let dict = Dictionary::open_in_memory().unwrap();
     dict.import_kaikki(Cursor::new(KAIKKI), |_| {}).unwrap();
@@ -425,6 +458,10 @@ async fn a_same_executable_helper_cannot_change_the_saved_areas_status_repositio
     h.screen.show_helper();
 
     assert!(!h.engine.reading_status().position_check);
+    assert_eq!(
+        h.engine.reading_area_rect(),
+        Some(Rect::new(200.0, 160.0, 600.0, 150.0))
+    );
     h.engine.select_reading_area(id).unwrap();
     assert!(!h.engine.reading_status().position_check);
     h.engine.request_reading().await.unwrap();
@@ -498,6 +535,186 @@ async fn repeated_requests_keep_only_the_latest_pending_paragraph_and_ignore_old
     assert_eq!(last.capture.text, "카메라 설정");
     assert!(h.engine.accepts_reading(last.serial));
     assert_eq!(h.engine.reading_status().message, None);
+}
+
+#[tokio::test]
+async fn automatic_polling_cannot_replace_a_manual_capture_or_its_pending_paragraph_while_maru_has_focus()
+ {
+    let h = reading_harness(Path::new(":memory:")).await;
+    save(&h, "Dialogue");
+    h.engine.set_reading_auto(true).unwrap();
+    h.engine.request_reading().await.unwrap();
+    let previous = h.engine.take_reading_job().unwrap();
+    h.screen.page(2);
+    let (entered, resume) = h.ocr.pause_next();
+    let engine = h.engine.clone();
+    let capture = tokio::spawn(async move { engine.request_reading().await });
+    tokio::time::timeout(Duration::from_secs(5), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    let started = h.engine.reading_status();
+
+    h.screen.foreground("maru-app.exe");
+    h.engine.observe_reading().await;
+    let after_poll = h.engine.reading_status();
+    resume.send(()).unwrap();
+    let result = capture.await.unwrap();
+
+    assert_eq!(started.phase, "capturing");
+    assert!(started.busy, "the previous translation is still active");
+    assert_eq!(after_poll.phase, "capturing");
+    result.unwrap();
+    h.engine.observe_reading().await;
+    let queued = h.engine.reading_status();
+    assert_eq!(queued.phase, "queued");
+    assert!(queued.pending && queued.busy);
+    assert!(h.engine.take_reading_job().is_none());
+    h.engine
+        .finish_reading(previous.serial, Some("previous failure".into()));
+    let latest = h.engine.take_reading_job().unwrap();
+    assert_eq!(latest.capture.text, "아직 여기 있어요");
+    assert!(h.engine.reading_status().message.is_none());
+}
+
+#[tokio::test]
+async fn opening_maru_keeps_the_manual_answer_finishing_without_capturing_controls_or_blocking_new_game_text()
+ {
+    let h = reading_harness(Path::new(":memory:")).await;
+    save(&h, "Dialogue");
+    h.engine.set_reading_auto(true).unwrap();
+    h.engine.request_reading().await.unwrap();
+    let current = h.engine.take_reading_job().unwrap();
+    let captures = h.screen.requests.lock().unwrap().len();
+    let ocr = h.ocr.calls.load(Ordering::Relaxed);
+    h.screen.foreground("maru-app.exe");
+    h.engine.observe_reading().await;
+    assert!(h.engine.accepts_reading(current.serial));
+    assert_eq!(h.engine.reading_status().phase, "reading");
+    assert_eq!(h.screen.requests.lock().unwrap().len(), captures);
+    assert_eq!(h.ocr.calls.load(Ordering::Relaxed), ocr);
+
+    h.screen.foreground("hollow_knight.exe");
+    h.screen.page(2);
+    settle(&h).await;
+    assert!(h.engine.reading_status().pending);
+    assert!(h.engine.take_reading_job().is_none());
+    h.engine.finish_reading(current.serial, None);
+    assert_eq!(
+        h.engine.take_reading_job().unwrap().capture.text,
+        "아직 여기 있어요"
+    );
+}
+
+#[tokio::test]
+async fn maru_taking_focus_between_the_observer_checks_cannot_cancel_an_active_manual_answer() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    save(&h, "Dialogue");
+    h.engine.set_reading_auto(true).unwrap();
+    h.engine.request_reading().await.unwrap();
+    let current = h.engine.take_reading_job().unwrap();
+    let captures = h.screen.requests.lock().unwrap().len();
+    h.screen.foreground("maru-app.exe");
+    *h.screen.foreground_script.lock().unwrap() =
+        ["hollow_knight.exe", "hollow_knight.exe", "maru-app.exe"]
+            .into_iter()
+            .map(|exe| AppInfo {
+                exe: exe.into(),
+                title: exe.into(),
+            })
+            .collect();
+
+    h.engine.observe_reading().await;
+    assert!(h.engine.accepts_reading(current.serial));
+    assert_eq!(h.engine.reading_status().phase, "reading");
+    assert_eq!(h.screen.requests.lock().unwrap().len(), captures);
+}
+
+#[tokio::test]
+async fn opening_maru_keeps_an_automatic_answer_finishing_then_pauses_further_captures() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    save(&h, "Dialogue");
+    h.engine.set_reading_auto(true).unwrap();
+    settle(&h).await;
+    let current = h.engine.take_reading_job().unwrap();
+    let captures = h.screen.requests.lock().unwrap().len();
+    h.screen.foreground("maru-app.exe");
+    h.engine.observe_reading().await;
+    assert!(h.engine.accepts_reading(current.serial));
+    assert_eq!(h.screen.requests.lock().unwrap().len(), captures);
+    h.engine.finish_reading(current.serial, None);
+    h.engine.observe_reading().await;
+    assert_eq!(h.engine.reading_status().phase, "paused");
+    assert_eq!(h.screen.requests.lock().unwrap().len(), captures);
+}
+
+#[tokio::test]
+async fn holding_automatic_reading_does_not_hide_manual_capture_progress_or_failure() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    save(&h, "Dialogue");
+    h.engine.set_reading_auto(true).unwrap();
+    h.engine.set_reading_hold(true);
+    assert_eq!(h.engine.reading_status().phase, "held");
+    let (entered, resume) = h.ocr.pause_next();
+    let engine = h.engine.clone();
+    let capture = tokio::spawn(async move { engine.request_reading().await });
+    tokio::time::timeout(Duration::from_secs(5), entered)
+        .await
+        .unwrap()
+        .unwrap();
+    let started = h.engine.reading_status();
+    resume.send(()).unwrap();
+    capture.await.unwrap().unwrap();
+
+    assert_eq!(started.phase, "capturing");
+    assert!(!started.busy, "capturing is not an active translation");
+    assert!(started.held);
+    assert_eq!(h.engine.reading_status().phase, "queued");
+    let job = h.engine.take_reading_job().unwrap();
+    let translating = h.engine.reading_status();
+    assert_eq!(translating.phase, "reading");
+    assert!(translating.busy && translating.held);
+    h.engine
+        .finish_reading(job.serial, Some("model failed".into()));
+    let failed = h.engine.reading_status();
+    assert_eq!(failed.phase, "error");
+    assert_eq!(failed.message.as_deref(), Some("model failed"));
+
+    h.engine.request_reading().await.unwrap();
+    h.screen.window.lock().unwrap().as_mut().unwrap().rect.x += 20.0;
+    assert!(h.engine.take_reading_job().is_none());
+    assert_eq!(h.engine.reading_status().phase, "paused");
+}
+
+#[tokio::test]
+async fn holding_or_opening_a_word_during_capture_cannot_leave_resumed_automatic_reading_stuck() {
+    for interaction in [false, true] {
+        let h = reading_harness(Path::new(":memory:")).await;
+        save(&h, "Dialogue");
+        h.engine.set_reading_auto(true).unwrap();
+        let (entered, resume) = h.ocr.pause_next();
+        let engine = h.engine.clone();
+        let capture = tokio::spawn(async move { engine.request_reading().await });
+        tokio::time::timeout(Duration::from_secs(5), entered)
+            .await
+            .unwrap()
+            .unwrap();
+        if interaction {
+            h.engine.hold_reading_for_interaction();
+        } else {
+            h.engine.set_reading_hold(true);
+        }
+        resume.send(()).unwrap();
+        assert!(
+            capture.await.unwrap().is_err(),
+            "the old capture was canceled by holding"
+        );
+        assert_eq!(h.engine.reading_status().phase, "held");
+        h.engine.set_reading_hold(false);
+        assert_eq!(h.engine.reading_status().phase, "watching");
+        settle(&h).await;
+        assert!(h.engine.take_reading_job().is_some());
+    }
 }
 
 #[tokio::test]

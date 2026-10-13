@@ -7,6 +7,7 @@ pub struct InputState {
     control: Arc<dyn InputControl>,
     lease: Mutex<Option<InputLease>>,
     picker_gate: Arc<tokio::sync::Mutex<()>>,
+    hub_raised: std::sync::atomic::AtomicBool,
 }
 impl Default for InputState {
     fn default() -> Self {
@@ -14,6 +15,7 @@ impl Default for InputState {
             control: maru_platform::input::native(),
             lease: Mutex::new(None),
             picker_gate: Arc::new(tokio::sync::Mutex::new(())),
+            hub_raised: std::sync::atomic::AtomicBool::new(false),
         }
     }
 }
@@ -71,6 +73,25 @@ pub async fn show(
     snapshot: InputSnapshot,
     crosshair: bool,
 ) -> Result<(), String> {
+    show_window(app, window, snapshot, crosshair, false).await
+}
+
+/// Keep Maru foreground during an explicit wheel-to-manager action.
+pub async fn handoff(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    snapshot: InputSnapshot,
+) -> Result<(), String> {
+    show_window(app, window, snapshot, false, true).await
+}
+
+async fn show_window(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    snapshot: InputSnapshot,
+    crosshair: bool,
+    normal: bool,
+) -> Result<(), String> {
     let window = window.clone();
     on_ui(app, move |app| {
         let state = app.state::<InputState>();
@@ -89,14 +110,33 @@ pub async fn show(
                 "The active window changed before Maru could open its controls. Try again.".into(),
             );
         }
-        window.show().map_err(|e| e.to_string())?;
-        let result = if let Some(current) = lease.as_mut() {
-            state.control.transfer(current, owner)
-        } else {
-            state.control.acquire(snapshot, owner).map(|token| {
-                *lease = Some(token);
-            })
-        };
+        let result = (|| -> Result<(), String> {
+            if normal {
+                window.unminimize().map_err(|e| e.to_string())?;
+                window.set_always_on_top(true).map_err(|e| e.to_string())?;
+                state
+                    .hub_raised
+                    .store(true, std::sync::atomic::Ordering::Release);
+            }
+            window.show().map_err(|e| e.to_string())?;
+            if let Some(current) = lease.as_mut() {
+                state.control.transfer(current, owner)
+            } else {
+                state.control.acquire(snapshot, owner).map(|token| {
+                    *lease = Some(token);
+                })
+            }
+            .map_err(|e| e.to_string())?;
+            window
+                .set_cursor_icon(if crosshair {
+                    tauri::CursorIcon::Crosshair
+                } else {
+                    tauri::CursorIcon::Default
+                })
+                .map_err(|e| e.to_string())?;
+            window.set_cursor_visible(true).map_err(|e| e.to_string())?;
+            Ok(())
+        })();
         if let Err(e) = result {
             if lease.as_ref().is_some_and(|token| token.owner() == owner)
                 && let Some(token) = lease.take()
@@ -104,19 +144,48 @@ pub async fn show(
                 let _ = state.control.finish(token);
             }
             let _ = window.hide();
-            return Err(e.to_string());
+            if normal {
+                state
+                    .hub_raised
+                    .store(false, std::sync::atomic::Ordering::Release);
+                let _ = window.set_always_on_top(false);
+            }
+            return Err(e);
         }
-        window
-            .set_cursor_icon(if crosshair {
-                tauri::CursorIcon::Crosshair
-            } else {
-                tauri::CursorIcon::Default
-            })
-            .map_err(|e| e.to_string())?;
-        window.set_cursor_visible(true).map_err(|e| e.to_string())?;
+        if normal {
+            let _ = lease.take();
+        }
         Ok(())
     })
     .await
+}
+
+pub fn release_hub_raise(window: &WebviewWindow) {
+    if let Some(state) = window.app_handle().try_state::<InputState>()
+        && state
+            .hub_raised
+            .swap(false, std::sync::atomic::Ordering::AcqRel)
+    {
+        let _ = window.set_always_on_top(false);
+    }
+}
+
+pub fn hub_focus_lost(window: &WebviewWindow) {
+    let Some(state) = window.app_handle().try_state::<InputState>() else {
+        return;
+    };
+    #[cfg(windows)]
+    if let Ok(handle) = window.hwnd()
+        && state
+            .control
+            .snapshot()
+            .is_ok_and(|snapshot| snapshot.foreground() == handle.0 as usize as u64)
+    {
+        return;
+    }
+    #[cfg(not(windows))]
+    let _ = &state;
+    release_hub_raise(window);
 }
 
 /// Consume the token while its window still exists and owns foreground focus.

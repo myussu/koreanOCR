@@ -149,7 +149,9 @@ pub async fn wheel_close(app: AppHandle) -> Result<(), String> {
     if let Some(window) = app.get_webview_window(LABEL) {
         let result = input_session::finish(&app, &window).await;
         window.hide().map_err(|e| e.to_string())?;
-        result?;
+        if let Err(error) = result {
+            tracing::warn!("controls wheel return: {error}");
+        }
     }
     Ok(())
 }
@@ -170,6 +172,12 @@ pub fn hotkey(app: AppHandle, state: Arc<AppState>) {
     });
 }
 
+pub fn invalidate_recovery(app: &AppHandle) {
+    if let Some(controls) = app.try_state::<WheelState>() {
+        controls.revision.fetch_add(1, Ordering::AcqRel);
+    }
+}
+
 #[tauri::command]
 pub async fn wheel_action(
     app: AppHandle,
@@ -178,34 +186,38 @@ pub async fn wheel_action(
 ) -> Result<(), String> {
     let shared = state.inner().clone();
     let picker = matches!(action.as_str(), "region" | "continuous_area");
+    let hub = hub_action(&action);
     let source = input_session::return_window(&app);
-    if !picker {
+    if !picker && hub.is_none() {
         wheel_close(app.clone()).await?;
     }
     let revision = app.state::<WheelState>().revision.load(Ordering::Acquire);
-    let result = match action.as_str() {
-        "reading_read" => {
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-            reading::read_again(app.clone(), shared.clone()).await
-        }
-        "reading_save" => {
-            shared.engine().reading_context();
-            windows::open_hub(&app, "reading").map_err(|e| e.to_string())
-        }
-        "reading_auto" => shared
-            .engine()
-            .set_reading_auto(!shared.engine().reading_status().automatic)
-            .map_err(|e| e.to_string()),
-        "reading_hold" => {
-            shared
+    let started = std::time::Instant::now();
+    tracing::info!(%action,"controls wheel action started");
+    let result = if let Some(tab) = hub {
+        shared.engine().reading_context();
+        windows::open_hub_from_controls(&app, tab).await
+    } else {
+        match action.as_str() {
+            "reading_read" => {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                reading::read_again(app.clone(), shared.clone()).await
+            }
+            "reading_auto" => shared
                 .engine()
-                .set_reading_hold(!shared.engine().reading_status().held);
-            Ok(())
+                .set_reading_auto(!shared.engine().reading_status().automatic)
+                .map_err(|e| e.to_string()),
+            "reading_hold" => {
+                shared
+                    .engine()
+                    .set_reading_hold(!shared.engine().reading_status().held);
+                Ok(())
+            }
+            _ => launcher::launcher_action(app.clone(), state, action.clone()).await,
         }
-        _ => launcher::launcher_action(app.clone(), state, action.clone()).await,
     };
     if result.is_ok() {
-        if picker
+        if (picker || hub.is_some())
             && app.state::<WheelState>().revision.load(Ordering::Acquire) == revision
             && let Some(window) = app.get_webview_window(LABEL)
         {
@@ -214,12 +226,50 @@ pub async fn wheel_action(
     } else if let Some(source) = source {
         let _ = show(&app, &shared, false, Some(revision), Some(source)).await;
     }
+    if let Err(error) = &result {
+        tracing::warn!(%action,%error,elapsed_ms=started.elapsed().as_millis(),"controls wheel action failed");
+    } else {
+        tracing::info!(%action,elapsed_ms=started.elapsed().as_millis(),"controls wheel action accepted");
+    }
     result
+}
+
+fn hub_action(action: &str) -> Option<&str> {
+    match action {
+        "reading" | "reading_save" => Some("reading"),
+        "settings" | "history" | "review" | "resources" | "status" => Some(action),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn manager_actions_keep_maru_focus_and_game_actions_return_to_the_game() {
+        for action in [
+            "reading",
+            "reading_save",
+            "settings",
+            "history",
+            "review",
+            "resources",
+            "status",
+        ] {
+            assert!(hub_action(action).is_some());
+        }
+        for action in [
+            "reading_read",
+            "region",
+            "continuous",
+            "scan",
+            "speak",
+            "hover",
+        ] {
+            assert!(hub_action(action).is_none());
+        }
+        assert_eq!(hub_action("reading_save"), Some("reading"));
+    }
     #[test]
     fn the_wheel_fits_the_pointer_monitor_including_negative_origins_and_scaled_edges() {
         for (monitor, pointer, scale) in [

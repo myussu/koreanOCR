@@ -196,7 +196,7 @@ pub fn resize_panel(app: AppHandle, state: S, width: f32, height: f32) {
     let max_w = state.cfg().ui.max_width_px as f32 * 1.6;
     state.panel().size = (width.clamp(160.0, max_w), height.clamp(40.0, 1400.0));
     let placement: Placement = state.cfg().ui.placement;
-    windows::place_and_show(&app, &state, placement);
+    if state.panel().visible { windows::place_and_show(&app, &state, placement); }
 }
 
 #[tauri::command]

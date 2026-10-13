@@ -61,6 +61,7 @@ pub fn show_translation(app: &AppHandle, state: &Arc<AppState>, capture: Capture
 /// content word as soon as the breakdown arrives (a click on a scan label that is one word). With
 /// `auto_speak` the panel reads the text aloud as soon as it has it.
 pub fn show_capture(app: &AppHandle, state: &Arc<AppState>, capture: Capture, word_only: bool, auto_deep: bool, auto_speak: bool) {
+    crate::reading_feedback::dismiss(app);
     state.engine().interrupt_reading();
     let cursor = state.engine().platform().screen.cursor();
     {
@@ -182,6 +183,7 @@ pub fn open_scan_item(app: AppHandle, state: Arc<AppState>, text: String, rect: 
 
 /// Hide the panel and every screen label.
 pub fn dismiss_all(app: &AppHandle, state: &Arc<AppState>) {
+    crate::reading_feedback::dismiss(app);
     windows::hide_panel(app, state);
     if state.scan().visible {
         windows::hide_scan(app, state);
@@ -431,11 +433,12 @@ pub async fn picked(app: AppHandle, state: Arc<AppState>, rect: Option<Rect>, se
     let _slot=crate::input_session::picker_slot(&app).await;
     if !crate::picker_session::accepts(&app,session_id) { return; }
     if app.get_webview_window(windows::PICKER).is_none() { return; }
-    windows::close_picker(&app).await;
     if state.engine().reading_picker_open() {
-        crate::reading::picked(app, state, rect).await;
+        crate::reading::picked(app.clone(), state, rect).await;
+        windows::close_picker(&app).await;
         return;
     }
+    windows::close_picker(&app).await;
     let awaiting = std::mem::take(&mut state.panel().awaiting_continuous_region);
     let Some(rect) = rect else { return };
     if awaiting {

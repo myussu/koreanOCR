@@ -28,7 +28,8 @@ scan       = "Ctrl+Alt+S"       # label every Korean text on the screen (game me
 # Floating Label screen toggles visibility; Refresh labels rescans, and Join words enables ordinary-click selection.
 speak      = "Ctrl+Alt+P"       # translate the selection and read it aloud (again while reading: stop). Needs [tts]
 history    = "Ctrl+Alt+L"
-dismiss    = "Ctrl+Alt+Escape"  # hides the panel and the screen labels (a bare Escape would be hijacked in every other app)
+dismiss    = "Ctrl+Alt+Escape"  # hides panel, screen labels and reading feedback; existing OCR/translation can finish
+# A bare Escape would be hijacked in every other app.
 launcher   = "Ctrl+Alt+M"       # show / hide floating quick controls
 reading_again = ""            # read the selected saved game area; assign a key in Settings → Shortcuts if wanted
 wheel = "Ctrl+Alt+Q"          # focused controls at the pointer; mouse or arrows / Enter / Esc; empty disables

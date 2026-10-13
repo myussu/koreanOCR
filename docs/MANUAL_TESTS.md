@@ -785,6 +785,39 @@ actual focus return, borderless registration and physical DPI behavior need this
 **Bring:** game/mode, shortcut, the exact save error, a short clip of opening the wheel/drawing/saving, DPI/resolution,
 and `maru-app.log`. Include whether the cursor/focus returned correctly. Do not send credentials.
 
+## M-32 Wheel manager handoff and manual-reading feedback
+
+1. Open Hollow Knight in borderless mode, then Ctrl+Alt+Q → Save an area / Reading areas, Settings, History and App status.
+   Each manager must appear in front on the first action, with a visible pointer, without returning briefly to the game.
+   Switch to the game or another application: the manager must lose its temporary topmost state. Retry after closing it.
+   Check keyboard/mouse and controller behavior separately; a controller may keep controlling the game while Maru has
+   focus. Pause the game before naming an area or inspecting a reading.
+2. From the wheel, manager and assigned Read saved area again shortcut, read a saved paragraph with cold OCR, then repeat
+   warm and cached reads. A small indicator must acknowledge the action immediately, show reading → waiting → translating
+   as those phases occur, and finish with Reading ready. Fast phases may pass quickly. Errors must show the actual reason.
+   The indicator must ignore clicks, keep game focus and stay out of captured Korean text. Check high DPI / another monitor.
+   Ready feedback clears after about six seconds. The panel must survive reading and that brief completion feedback;
+   use its pin button for longer inspection, and check normal idle hiding resumes when unpinned afterward.
+3. Enable Auto-read and explicitly Read again while Maru controls have focus. Repeat with Hold enabled and while an older
+   paragraph is translating: the manual capture must survive polling, display its real progress and retain only the latest
+   pending text. An older failure must not replace current feedback. Hold during capture, then Resume: watching must recover.
+   Reopen the wheel/manager while a manual or automatic answer is streaming: it must keep finishing without capturing
+   Maru's controls. Return to the game and change dialogue; the latest paragraph must still queue normally.
+4. Minimize the selected game before Read again to trigger an error. Restore it and retry once. Also test a changed window
+   size, blank OCR region and an unavailable configured model when practical. Feedback must settle into a clear error or ready
+   state; it must not stay on Reading or Waiting forever after a completed/failed operation. Do not change model quality settings.
+5. Use Dismiss / Ctrl+Alt+Esc during progress and after an error. It must hide the indicator, panel and labels; it does not
+   cancel OCR/model work already underway. Reopen controls and read again: a fresh indicator must work, and an older action
+   must not reopen its wheel or overwrite it. After reading, click each content word for its normal explanation.
+
+**Verification:** Slow-OCR engine regressions reproduce manual/automatic overlap and Hold/Resume recovery. Shell/UI tests
+cover progress IDs, phases and manager action routing. Real borderless focus handoff, game/controller input, indicator
+capture exclusion and physical DPI behavior still need this Windows/game check. No human result is entered here.
+
+**Bring:** game/mode, keyboard/mouse versus controller, OCR cold/warm, model route, a short recording from the button press
+through the result, the exact feedback/error, and `maru-app.log`. Include whether the manager appeared on the first action,
+whether the game kept receiving controller input, and whether Read again needed a retry. Do not send credentials.
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.

@@ -229,8 +229,7 @@ impl<B: Backend> InputControl for Control<B> {
     fn transfer(&self, lease: &mut InputLease, owner: u64) -> Result<()> {
         self.check_thread(&lease.snapshot)?;
         self.check_owner(owner)?;
-        if !lease.returning || (self.0.foreground() != lease.owner && self.0.foreground() != owner)
-        {
+        if self.0.foreground() != lease.owner && self.0.foreground() != owner {
             return Err(PlatformError::Failed(
                 "The active window changed. Open Maru's controls again before selecting an area."
                     .into(),
@@ -595,12 +594,37 @@ mod tests {
     }
 
     #[test]
-    fn a_transfer_after_an_observed_external_switch_is_refused() {
+    fn a_transfer_while_another_application_is_foreground_is_refused() {
         let fake = Fake::new();
         let mut lease = open(&fake, WHEEL);
         lease.focus_lost();
+        fake.state().foreground = OTHER;
         assert!(fake.control().transfer(&mut lease, PICKER).is_err());
         assert_eq!(fake.state().actions.len(), 2);
+    }
+
+    #[test]
+    fn a_user_refocusing_the_wheel_can_open_the_picker_without_restoring_old_game_focus() {
+        let fake = Fake::new();
+        let mut lease = open(&fake, WHEEL);
+        fake.state().foreground = OTHER;
+        lease.focus_lost();
+        fake.state().foreground = WHEEL;
+        fake.control().transfer(&mut lease, PICKER).unwrap();
+        assert_eq!(lease.owner(), PICKER);
+        assert_eq!(fake.state().foreground, PICKER);
+        fake.control().finish(lease).unwrap();
+        assert_eq!(fake.state().foreground, PICKER);
+        assert_eq!(fake.state().clip, DESKTOP);
+        assert_eq!(
+            fake.state().actions,
+            [
+                Action::Activate(WHEEL),
+                Action::Release,
+                Action::Activate(PICKER),
+                Action::Release,
+            ]
+        );
     }
 
     #[test]
