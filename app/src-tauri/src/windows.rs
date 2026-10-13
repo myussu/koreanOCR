@@ -189,10 +189,13 @@ pub fn panel_rect(app: &AppHandle) -> Option<Rect> {
 }
 
 /// Full-desktop transparent window for drawing a rectangle.
-pub fn open_picker(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(existing) = app.get_webview_window(PICKER) {
-        let _ = existing.close();
-    }
+pub async fn open_picker(app: &AppHandle) -> Result<(), String> {
+    let slot=crate::input_session::reserve_picker(app).await?;
+    open_reserved_picker(app,&slot).await
+}
+
+pub async fn open_reserved_picker(app: &AppHandle, _slot: &tokio::sync::OwnedMutexGuard<()>) -> Result<(),String> {
+    let snapshot = crate::input_session::prepare(app).await?;
     let v = virtual_screen(app);
     let win = WebviewWindowBuilder::new(app, PICKER, WebviewUrl::App("picker.html".into()))
         .title("Maru — pick a region")
@@ -203,22 +206,37 @@ pub fn open_picker(app: &AppHandle) -> tauri::Result<()> {
         .always_on_top(true)
         .skip_taskbar(true)
         .content_protected(true)
-        .focused(true)
+        .focused(false)
         .visible(false)
-        .build()?;
-    win.set_position(PhysicalPosition::new(v.x as i32, v.y as i32))?;
-    win.set_size(PhysicalSize::new(v.w as u32, v.h as u32))?;
-    crate::launcher::pause_for_picker(app);
-    if let Err(error) = win.show() { crate::launcher::resume_after_picker(app); return Err(error); }
-    win.set_focus()?;
+        .build().map_err(|e| e.to_string())?;
+    let mut session_id=None;
+    let opened = async {
+        win.set_position(PhysicalPosition::new(v.x as i32, v.y as i32)).map_err(|e| e.to_string())?;
+        win.set_size(PhysicalSize::new(v.w as u32, v.h as u32)).map_err(|e| e.to_string())?;
+        let id=crate::picker_session::begin(app);
+        session_id=Some(id);
+        crate::picker_session::wait_ready(app,id).await?;
+        crate::launcher::pause_for_picker(app);
+        crate::input_session::show(app, &win, snapshot, true).await
+    }.await;
+    if let Err(error) = opened {
+        if let Some(id)=session_id { crate::picker_session::clear(app,id); }
+        let _ = crate::input_session::finish(app, &win).await;
+        let _ = win.destroy();
+        crate::launcher::resume_after_picker(app);
+        tracing::warn!("region picker: {error}");
+        return Err(error);
+    }
     Ok(())
 }
 
-pub fn close_picker(app: &AppHandle) {
+pub async fn close_picker(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(PICKER) {
-        let _ = w.close();
+        if let Err(error) = crate::input_session::finish(app, &w).await { tracing::warn!("region picker return: {error}"); }
+        let _ = w.destroy();
     }
     crate::launcher::resume_after_picker(app);
+    if let Some(id)=crate::picker_session::current(app) { crate::picker_session::clear(app,id); }
 }
 
 /// Review / history / status window (a normal, focusable window).

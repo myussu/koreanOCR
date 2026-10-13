@@ -11,6 +11,7 @@ use std::sync::{
 
 struct GameScreen {
     window: Mutex<Option<AppWindow>>,
+    helper: Mutex<Option<AppWindow>>,
     foreground: Mutex<Option<AppInfo>>,
     page: Mutex<u8>,
     requests: Mutex<Vec<Rect>>,
@@ -27,6 +28,7 @@ impl GameScreen {
                 rect: Rect::new(100.0, 100.0, 1000.0, 600.0),
                 identity: 1,
             })),
+            helper: Mutex::new(None),
             foreground: Mutex::new(Some(app)),
             page: Mutex::new(1),
             requests: Mutex::new(Vec::new()),
@@ -39,6 +41,16 @@ impl GameScreen {
         *self.foreground.lock().unwrap() = Some(AppInfo {
             exe: exe.into(),
             title: exe.into(),
+        });
+    }
+    fn show_helper(&self) {
+        *self.helper.lock().unwrap() = Some(AppWindow {
+            app: AppInfo {
+                exe: "hollow_knight.exe".into(),
+                title: "Game helper".into(),
+            },
+            rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+            identity: 2,
         });
     }
 }
@@ -60,16 +72,41 @@ impl ScreenGrabber for GameScreen {
         Rect::new(-2000.0, -1000.0, 6000.0, 4000.0)
     }
     fn app_window(&self, exe: &str) -> Option<AppWindow> {
+        if let Some(helper) = self
+            .helper
+            .lock()
+            .unwrap()
+            .as_ref()
+            .filter(|w| w.app.exe.eq_ignore_ascii_case(exe))
+        {
+            return Some(helper.clone());
+        }
         self.window
             .lock()
             .unwrap()
             .clone()
             .filter(|w| w.app.exe.eq_ignore_ascii_case(exe))
     }
+    fn app_window_by_id(&self, exe: &str, identity: u64) -> Option<AppWindow> {
+        self.window
+            .lock()
+            .unwrap()
+            .clone()
+            .filter(|w| w.identity == identity)
+            .or_else(|| {
+                self.helper
+                    .lock()
+                    .unwrap()
+                    .clone()
+                    .filter(|w| w.identity == identity)
+            })
+            .filter(|w| w.identity == identity && w.app.exe.eq_ignore_ascii_case(exe))
+    }
 }
 struct ReadingOcr {
     calls: AtomicUsize,
     switch_foreground: AtomicBool,
+    show_helper: AtomicBool,
     screen: Arc<GameScreen>,
 }
 impl OcrEngine for ReadingOcr {
@@ -80,6 +117,10 @@ impl OcrEngine for ReadingOcr {
         self.calls.fetch_add(1, Ordering::Relaxed);
         if self.switch_foreground.swap(false, Ordering::Relaxed) {
             self.screen.foreground("other_game.exe");
+        }
+        if self.show_helper.swap(false, Ordering::Relaxed) {
+            self.screen.show_helper();
+            self.screen.foreground("maru-app.exe");
         }
         let text = match image.get_pixel(0, 0)[0] {
             1 => SENTENCE,
@@ -114,6 +155,7 @@ async fn reading_harness(path: &Path) -> ReadingHarness {
     let ocr = Arc::new(ReadingOcr {
         calls: AtomicUsize::new(0),
         switch_foreground: AtomicBool::new(false),
+        show_helper: AtomicBool::new(false),
         screen: screen.clone(),
     });
     let dict = Dictionary::open_in_memory().unwrap();
@@ -260,6 +302,171 @@ async fn moving_the_game_moves_the_saved_crop_and_resizing_requires_an_explicit_
         *h.screen.requests.lock().unwrap().last().unwrap(),
         Rect::new(200.0, 120.0, 1200.0, 300.0)
     );
+}
+
+#[tokio::test]
+async fn opening_the_area_picker_from_maru_uses_the_games_current_borderless_rectangle() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    h.screen.foreground("maru-app.exe");
+    let borderless = Rect::new(0.0, 0.0, 1920.0, 1080.0);
+    h.screen.window.lock().unwrap().as_mut().unwrap().rect = borderless;
+
+    h.engine.begin_reading_pick("Dialogue", None).unwrap();
+    h.engine.reading_context();
+    let area = h
+        .engine
+        .finish_reading_pick(Some(Rect::new(300.0, 120.0, 1200.0, 300.0)))
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(
+        area.rectangle(borderless),
+        Rect::new(300.0, 120.0, 1200.0, 300.0)
+    );
+    assert_eq!(area.exe, "hollow_knight.exe");
+    assert_eq!(area.reference_width, 1920.0);
+    assert!(!h.engine.reading_picker_open());
+}
+
+#[tokio::test]
+async fn a_game_that_disappeared_while_the_manager_was_open_is_refused_before_showing_the_picker() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    h.screen.foreground("maru-app.exe");
+    *h.screen.window.lock().unwrap() = None;
+
+    assert!(h.engine.begin_reading_pick("Dialogue", None).is_err());
+    assert!(!h.engine.reading_picker_open());
+    assert!(h.engine.reading_status().areas.is_empty());
+}
+
+#[tokio::test]
+async fn a_window_that_moves_after_the_picker_opens_is_still_refused() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    h.engine.begin_reading_pick("Dialogue", None).unwrap();
+    h.screen.foreground("maru-app.exe");
+    h.screen.window.lock().unwrap().as_mut().unwrap().rect.x += 20.0;
+
+    assert!(
+        h.engine
+            .finish_reading_pick(Some(Rect::new(200.0, 160.0, 600.0, 150.0)))
+            .unwrap_err()
+            .to_string()
+            .contains("moved or changed size")
+    );
+    assert!(h.engine.reading_status().areas.is_empty());
+}
+
+#[tokio::test]
+async fn a_same_executable_helper_after_picker_focus_cannot_replace_the_selected_game_window() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    h.engine.begin_reading_pick("Dialogue", None).unwrap();
+    h.screen.foreground("maru-app.exe");
+    h.screen.show_helper();
+    assert_eq!(
+        h.screen.app_window("hollow_knight.exe").unwrap().identity,
+        2
+    );
+
+    let area = h
+        .engine
+        .finish_reading_pick(Some(Rect::new(200.0, 160.0, 600.0, 150.0)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(area.reference_width, 1000.0);
+    assert_eq!(area.reference_height, 600.0);
+    assert_eq!(h.engine.reading_status().areas.len(), 1);
+}
+
+#[tokio::test]
+async fn a_new_pick_from_the_manager_keeps_the_known_game_when_a_helper_has_higher_window_order() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    h.screen.foreground("maru-app.exe");
+    h.screen.show_helper();
+    h.engine.begin_reading_pick("Dialogue", None).unwrap();
+    assert!(
+        h.engine
+            .finish_reading_pick(Some(Rect::new(200.0, 160.0, 600.0, 150.0)))
+            .unwrap()
+            .is_some()
+    );
+}
+
+#[tokio::test]
+async fn a_disappeared_selected_window_cannot_be_replaced_by_a_same_executable_helper() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    h.engine.begin_reading_pick("Dialogue", None).unwrap();
+    h.screen.foreground("maru-app.exe");
+    h.screen.show_helper();
+    *h.screen.window.lock().unwrap() = None;
+    assert!(
+        h.engine
+            .finish_reading_pick(Some(Rect::new(200.0, 160.0, 600.0, 150.0)))
+            .is_err()
+    );
+    assert!(h.engine.reading_status().areas.is_empty());
+}
+
+#[tokio::test]
+async fn a_helper_window_after_manual_ocr_does_not_discard_the_original_games_paragraph() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    save(&h, "Dialogue");
+    h.ocr.show_helper.store(true, Ordering::Relaxed);
+    h.engine.request_reading().await.unwrap();
+    let job = h.engine.take_reading_job().unwrap();
+    assert_eq!(job.capture.text, SENTENCE);
+    assert_eq!(job.capture.app.as_ref().unwrap().title, "Hollow Knight");
+}
+
+#[tokio::test]
+async fn a_same_executable_helper_cannot_change_the_saved_areas_status_reposition_or_size_check() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    let id = save(&h, "Dialogue");
+    h.screen.foreground("maru-app.exe");
+    h.screen.show_helper();
+
+    assert!(!h.engine.reading_status().position_check);
+    h.engine.select_reading_area(id).unwrap();
+    assert!(!h.engine.reading_status().position_check);
+    h.engine.request_reading().await.unwrap();
+    let job = h.engine.take_reading_job().unwrap();
+    h.engine.finish_reading(job.serial, None);
+
+    h.engine.begin_reading_pick("Dialogue", Some(id)).unwrap();
+    assert_eq!(
+        h.engine.reading_picker_hint().unwrap().1,
+        Some(Rect::new(200.0, 160.0, 600.0, 150.0))
+    );
+    let area = h
+        .engine
+        .finish_reading_pick(Some(Rect::new(250.0, 200.0, 500.0, 120.0)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(area.id, id);
+    assert_eq!(area.reference_width, 1000.0);
+
+    h.screen.window.lock().unwrap().as_mut().unwrap().rect.w = 1200.0;
+    assert!(h.engine.reading_status().position_check);
+    h.engine.confirm_reading_position().unwrap();
+    let status = h.engine.reading_status();
+    assert!(!status.position_check);
+    assert_eq!(status.areas[0].reference_width, 1200.0);
+    assert_eq!(status.areas[0].reference_height, 600.0);
+}
+
+#[tokio::test]
+async fn reopening_the_game_keeps_the_existing_area_available_for_manual_reposition() {
+    let h = reading_harness(Path::new(":memory:")).await;
+    let id = save(&h, "Dialogue");
+    h.screen.foreground("maru-app.exe");
+    h.screen.window.lock().unwrap().as_mut().unwrap().identity = 3;
+    h.engine.begin_reading_pick("Dialogue", Some(id)).unwrap();
+    let area = h
+        .engine
+        .finish_reading_pick(Some(Rect::new(200.0, 160.0, 600.0, 150.0)))
+        .unwrap()
+        .unwrap();
+    assert_eq!(area.id, id);
+    assert_eq!(h.engine.reading_status().areas.len(), 1);
 }
 
 #[tokio::test]

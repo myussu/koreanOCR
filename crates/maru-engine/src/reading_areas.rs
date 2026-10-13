@@ -195,10 +195,7 @@ impl Engine {
         let position_check = state
             .area()
             .and_then(|a| {
-                self.inner
-                    .platform
-                    .screen
-                    .app_window(&a.exe)
+                self.reading_target_window(&a.exe, state.target.as_ref())
                     .map(|w| a.needs_check(w.rect))
             })
             .unwrap_or(false);
@@ -247,7 +244,7 @@ impl Engine {
         state.selected = Some(id);
         state.automatic = false;
         state.held = false;
-        state.target = self.inner.platform.screen.app_window(&area.exe);
+        state.target = self.reading_target_window(&area.exe, state.target.as_ref());
         Ok(())
     }
 
@@ -290,9 +287,13 @@ impl Engine {
             })
             .transpose()?;
         let window = if let Some(area) = &area {
-            self.inner.platform.screen.app_window(&area.exe)
+            self.reading_target_window(&area.exe, state.target.as_ref())
         } else {
-            state.target.clone()
+            // Maru can be foreground while the game has moved or entered borderless mode.
+            state
+                .target
+                .as_ref()
+                .and_then(|target| self.reading_target_window(&target.app.exe, Some(target)))
         }
         .ok_or_else(|| {
             error("open the game and use Save reading area from the floating controls")
@@ -333,7 +334,7 @@ impl Engine {
             .inner
             .platform
             .screen
-            .app_window(&pick.window.app.exe)
+            .app_window_by_id(&pick.window.app.exe, pick.window.identity)
             .ok_or_else(|| error("the game window disappeared; select the area again"))?;
         if current.identity != pick.window.identity || current.rect != pick.window.rect {
             return Err(error(
@@ -452,10 +453,7 @@ impl Engine {
             .cloned()
             .ok_or_else(|| error("select a reading area first"))?;
         let window = self
-            .inner
-            .platform
-            .screen
-            .app_window(&area.exe)
+            .reading_target_window(&area.exe, state.target.as_ref())
             .ok_or_else(|| error("the game window is not visible"))?;
         normalized(area.rectangle(window.rect), window.rect)?;
         area.reference_width = window.rect.w;
@@ -467,11 +465,29 @@ impl Engine {
         Ok(())
     }
 
-    fn reading_window(&self, manual: bool) -> Result<(ReadingArea, AppWindow)> {
-        let area = lock(&self.inner.reading_areas)
-            .area()
-            .cloned()
-            .ok_or_else(|| error("save or select a reading area first"))?;
+    fn reading_target_window(&self, exe: &str, target: Option<&AppWindow>) -> Option<AppWindow> {
+        let screen = &self.inner.platform.screen;
+        target
+            .filter(|window| window.app.exe.eq_ignore_ascii_case(exe))
+            .and_then(|window| screen.app_window_by_id(exe, window.identity))
+            .or_else(|| screen.app_window(exe))
+    }
+
+    fn reading_window(
+        &self,
+        manual: bool,
+        identity: Option<u64>,
+    ) -> Result<(ReadingArea, AppWindow)> {
+        let (area, target) = {
+            let state = lock(&self.inner.reading_areas);
+            (
+                state
+                    .area()
+                    .cloned()
+                    .ok_or_else(|| error("save or select a reading area first"))?,
+                state.target.clone(),
+            )
+        };
         let foreground = self
             .inner
             .platform
@@ -482,11 +498,12 @@ impl Engine {
         {
             return Err(error("bring the selected game to the foreground"));
         }
-        let window = self
-            .inner
-            .platform
-            .screen
-            .app_window(&area.exe)
+        let screen = &self.inner.platform.screen;
+        let window = identity
+            .map_or_else(
+                || self.reading_target_window(&area.exe, target.as_ref()),
+                |id| screen.app_window_by_id(&area.exe, id),
+            )
             .ok_or_else(|| error("the game window is minimized or no longer visible"))?;
         if area.needs_check(window.rect) {
             return Err(error(
@@ -552,7 +569,7 @@ impl Engine {
             return Err(error("finish or cancel the area selection first"));
         }
         self.reading_context();
-        let (area, window) = self.reading_window(true)?;
+        let (area, window) = self.reading_window(true, None)?;
         let serial = {
             let mut state = lock(&self.inner.reading_areas);
             state.reset();
@@ -566,7 +583,7 @@ impl Engine {
                 .await
         }
         .await;
-        let current = self.reading_window(true);
+        let current = self.reading_window(true, Some(window.identity));
         let mut state = lock(&self.inner.reading_areas);
         if state.serial != serial {
             return Err(error(
@@ -617,7 +634,7 @@ impl Engine {
                 return;
             }
         }
-        let (area, window) = match self.reading_window(false) {
+        let (area, window) = match self.reading_window(false, None) {
             Ok(pair) => pair,
             Err(e) => {
                 let mut state = lock(&self.inner.reading_areas);
@@ -700,7 +717,7 @@ impl Engine {
             }
         };
         if !self
-            .reading_window(false)
+            .reading_window(false, Some(window.identity))
             .as_ref()
             .is_ok_and(|(_, w)| same_window(w, &window))
         {
@@ -763,7 +780,7 @@ impl Engine {
             .inner
             .platform
             .screen
-            .app_window(&pending.window.app.exe)
+            .app_window_by_id(&pending.window.app.exe, pending.window.identity)
             .is_none_or(|w| !same_window(&w, &pending.window))
         {
             state.reset();

@@ -19,6 +19,9 @@ mod correction;
 mod scan_controls;
 mod scan_actions;
 mod reading;
+mod wheel;
+mod input_session;
+mod picker_session;
 
 use std::sync::{Arc, Mutex};
 
@@ -71,6 +74,7 @@ pub fn tray_menu(app: &tauri::AppHandle, state: &AppState) -> tauri::Result<Menu
             &item("status", "Status…".into())?,
             &item("settings", "Settings…".into())?,
             &item("launcher", format!("Show / hide floating controls\t{}", keys.launcher))?,
+            &item("wheel", format!("Controls wheel\t{}", keys.wheel))?,
             &PredefinedMenuItem::separator(app)?,
             &item("quit", "Quit".into())?,
         ],
@@ -87,7 +91,7 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
         tauri::async_runtime::spawn(async move { match id.as_str() {
             "translate" => flow::translate_selection(app, state),
             "region" => {
-                let _ = windows::open_picker(&app);
+                if let Err(e)=windows::open_picker(&app).await { flow::notice(&app,&state,None,"info",e); }
             }
             "reading_again" => reading::hotkey(app, state),
             "reading" => {
@@ -110,6 +114,7 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             }
             "quit" => app.exit(0),
             "launcher" => launcher::toggle(&app),
+            "wheel" => wheel::hotkey(app,state),
             _ => {}
         }});
     });
@@ -141,6 +146,9 @@ fn main() {
             }
             let live_region = Mutex::new(services.engine.config().continuous.region);
             let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region, live_latest: Default::default(), live_error_shown: Default::default(), scan: Mutex::default(), live: std::sync::RwLock::new(booted.clone()), booted });
+            app.manage(input_session::InputState::default());
+            app.manage(picker_session::PickerSessionState::default());
+            app.manage(wheel::WheelState::default());
 
             let width = state.cfg().ui.max_width_px as f32;
             windows::create_panel(app.handle(), width)?;
@@ -161,7 +169,28 @@ fn main() {
             app.manage(state);
             Ok(())
         })
+        .on_window_event(|window,event| {
+            if !matches!(window.label(),"wheel"|"picker") { return; }
+            if matches!(event,tauri::WindowEvent::Focused(false)) { input_session::focus_changed(window.app_handle()); }
+            if let tauri::WindowEvent::CloseRequested { api,.. } = event {
+                api.prevent_close();
+                let app=window.app_handle().clone();
+                if window.label()=="wheel" {
+                    tauri::async_runtime::spawn(async move { if let Err(e)=wheel::wheel_close(app).await { tracing::warn!("controls wheel return: {e}"); } });
+                } else if let Some(state)=app.try_state::<Arc<AppState>>() {
+                    let state=state.inner().clone();
+                    let session_id=picker_session::current(&app);
+                    tauri::async_runtime::spawn(async move { flow::picked(app,state,None,session_id).await; });
+                }
+            }
+        })
         .invoke_handler(tauri::generate_handler![
+            picker_session::picker_session,
+            picker_session::picker_ready,
+            wheel::wheel_status,
+            wheel::wheel_action,
+            wheel::wheel_close,
+            wheel::wheel_ready,
             reading::reading_status,
             reading::reading_picker_hint,
             reading::reading_create,
@@ -239,6 +268,7 @@ fn main() {
         .expect("failed to build the Maru application");
 
     app.run(|handle, event| {
+        if matches!(event,RunEvent::ExitRequested {code:Some(_),..}) { input_session::finish_all(handle); }
         if let RunEvent::Exit = event && let Some(service) = handle.try_state::<maru_engine::resource_monitor::ResourceService>() {
             service.shutdown();
         }

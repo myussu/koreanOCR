@@ -281,10 +281,10 @@ pub async fn launcher_action(app: AppHandle, state: State<'_, Arc<AppState>>, ac
         "prepare_live" => { state.services.prepare_live_session().await?; },
         "release_models" => { state.services.release_idle_models().await?; },
         "translate" => flow::translate_selection(app, state.inner().clone()),
-        "region" => windows::open_picker(&app).map(|_| ()).map_err(|e| e.to_string())?,
+        "region" => windows::open_picker(&app).await?,
         "hover" => flow::toggle_hover(&app, &state),
         "continuous" => flow::toggle_continuous(&app, &state),
-        "continuous_area" => flow::choose_continuous_area(&app, &state),
+        "continuous_area" => flow::pick_continuous_area(&app, &state).await?,
         "scan" => crate::scan_controls::toggle(app, state.inner().clone()),
         "scan_refresh" => {
             if !state.scan().visible { return Err("Turn Label screen on first.".into()); }

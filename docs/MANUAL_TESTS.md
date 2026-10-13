@@ -759,6 +759,32 @@ foreground/physical input, high-DPI capture or NAS timing. Native Computer Use w
 and panel, app log, and Resources readings if latency/load is high. Note skipped/partial/duplicate paragraphs and whether
 Hold/Resume and window movement worked. Do not send credentials.
 
+## M-31 Borderless controls wheel and saved-area registration
+
+1. Run Hollow Knight in borderless mode with its cursor hidden. Press Ctrl+Alt+Q: the wheel should open at the pointer
+   with a visible cursor. Use mouse selection, arrows/Enter and 1–8; More controls must expose the other two pages.
+   Check the VRAM bar, active toggles and unavailable Join/Read controls. Esc, the shortcut again and Alt+F4 close it.
+   Check that control returns to the game; a focus-loss pause is expected in games configured to pause.
+2. Choose Snapshot region from the wheel. Draw anywhere across the dialogue, including beyond the game's former
+   cursor confinement. Escape/right-click/Alt+F4 cancel. Repeat and complete a snapshot, then use Save an area to name
+   and register a game area. It must appear in Reading areas and remain after restart. Read again must use that area.
+3. Open the manager in windowed mode, switch the game to borderless before starting selection, then save. Repeat
+   after moving the game and with another same-executable helper window present. Current geometry/original identity
+   must be used. Move/resize/minimize/close the game *during* selection: refuse the save with a clear error, logged as
+   `saved reading area:`; never register another application's rectangle.
+4. Alt-tab away while the wheel/picker is open. Closing it must not steal focus or restore stale confinement. Repeat
+   with a game that changes its cursor clip upon focus gain, two monitors (including negative origins), and high DPI.
+   The wheel must fit its monitor and the crop must align with the physical selected pixels. Close Maru normally.
+5. Change/disable Controls wheel in Settings → Shortcuts. A duplicate/taken key must report a registration problem;
+   Ctrl+Alt+M and existing capture keys keep their meanings. Repeat a failed saved-area request and retry successfully.
+
+**Verification:** Portable native-input policy tests, fake-window saved-reading regressions and real Chromium wheel
+screenshots/interactions cover logic and layout. The Windows implementation compiles, but hidden/confined game cursors,
+actual focus return, borderless registration and physical DPI behavior need this real-game check. No human result is entered.
+
+**Bring:** game/mode, shortcut, the exact save error, a short clip of opening the wheel/drawing/saving, DPI/resolution,
+and `maru-app.log`. Include whether the cursor/focus returned correctly. Do not send credentials.
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.

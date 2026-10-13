@@ -2683,6 +2683,7 @@ dependencies = [
  "maru-core",
  "maru-engine",
  "maru-llm",
+ "maru-platform",
  "maru-tts",
  "serde",
  "serde_json",

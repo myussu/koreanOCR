@@ -123,7 +123,12 @@ pub struct Hotkeys {
     /// Read the selected saved game area; empty until a shortcut is assigned.
     #[serde(default)]
     pub reading_again: String,
+    /// Open the focused controls wheel at the pointer, including in borderless games.
+    #[serde(default = "wheel_shortcut")]
+    pub wheel: String,
 }
+
+fn wheel_shortcut() -> String { "Ctrl+Alt+Q".into() }
 
 impl Default for Hotkeys {
     fn default() -> Self {
@@ -139,6 +144,7 @@ impl Default for Hotkeys {
             dismiss: "Ctrl+Alt+Escape".into(),
             launcher: "Ctrl+Alt+M".into(),
             reading_again: String::new(),
+            wheel: wheel_shortcut(),
         }
     }
 }
@@ -613,11 +619,21 @@ mod tests {
     fn the_example_config_in_the_docs_parses() {
         let c: Config = toml::from_str(include_str!("../../../docs/config.example.toml")).unwrap();
         assert_eq!(c.hotkeys.dismiss, "Ctrl+Alt+Escape");
+        assert_eq!(c.hotkeys.wheel, "Ctrl+Alt+Q");
         assert_eq!(c.llm.hf_repo.as_deref(), Some("unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"));
         assert_eq!(c.profile_for("mygame.exe").unwrap().glossary["이도현"], "Lee Do-hyun");
         assert_eq!(c.profiles[0].gloss_mode, Some(GlossMode::All));
         assert!(!c.lite, "the example documents lite mode but leaves it off");
         assert_eq!(c.lite_profile, LiteProfile::default(), "the documented lite values are the real defaults");
+    }
+
+    #[test]
+    fn old_shortcut_configs_gain_the_wheel_and_an_explicit_empty_shortcut_stays_disabled() {
+        let old: Config = toml::from_str("[hotkeys]\nlauncher = 'F7'").unwrap();
+        assert_eq!(old.hotkeys.wheel,"Ctrl+Alt+Q");
+        assert_eq!(old.hotkeys.launcher,"F7");
+        let off: Config = toml::from_str("[hotkeys]\nwheel = ''").unwrap();
+        assert!(off.hotkeys.wheel.is_empty());
     }
 
     #[test]

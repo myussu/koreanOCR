@@ -165,7 +165,9 @@ For every feature: how it starts, where it flows, what it persists, how it is co
   area; size changes require explicit check/reposition. The existing picker outlines a saved/scaled area and accepts
   Enter to retain it, a drag to replace it, or Esc to cancel. A changed window during selection/capture is refused.
   Shared emulator executables require distinct area names and manual selection.
-* **Platform:** additive `ScreenGrabber::app_window` has a default unsupported result. `AppWindow` reports executable,
+* **Platform:** additive `ScreenGrabber::app_window` has a default unsupported result. `app_window_by_id(exe,identity)`
+  defaults to filtering the older lookup; Windows re-inspects the exact HWND, including after picker focus changes.
+  New picks refresh current geometry instead of relying on the manager's cached rectangle. `AppWindow` reports executable,
   title, client rectangle and transient identity. The Windows implementation owns visible/non-minimized window lookup;
   no Win32 call enters the engine/shell.
 * **UI:** `reading.js`, `reading-core.js`, `reading.css`, `reading-demo.js` add the hub manager, floating selector/buttons
@@ -446,6 +448,26 @@ Real Chromium and borderless-game verification: M-17.
 Window-opening commands are async, and tray/hotkey actions run on the async runtime: Windows WebView2 creation must
 not block its event thread. First opening of the hub/picker is covered by M-19.
 
+### 4.9a Focused controls wheel (`Ctrl+Alt+Q`) and picker input
+
+* **Shell/UI:** `app/src-tauri/src/wheel.rs`, `app/ui/wheel{,-core}.js`, `wheel.html/css`. A lazy, protected,
+  focused `wheel` window opens at the pointer, clamped/scaled to its monitor. Its page acknowledges readiness before
+  first show; reopening resets selection while stale action/status completions are ignored. Three pages reuse tray/
+  floating actions and saved-reading controls. The VRAM bar uses the existing resource service. Pure decisions are
+  in `wheel-core.js`; keyboard navigation and enabled states have `wheel.test.mjs` coverage and Chromium demos.
+* **Input:** shell `input_session.rs` dispatches native work on the GUI thread. `maru-platform::input::InputControl`
+  owns snapshots/leases behind a trait; `windows/input.rs` owns activation, client/desktop identity and ClipCursor.
+  Capture happens before showing/changing cursor state. Activation is verified without synthetic key presses,
+  confinement is released, and Tauri shows its owning window's cursor. Wheel-to-picker transfer retains the source.
+  Completion consumes the lease; focus loss, closed/minimized/reused/moved windows, changed desktop or a new clip
+  prevent unsafe restoration. A source game that reapplies its clip on activation retains that clip. Dropping a token
+  performs no OS action. Portable backend tests cover those decisions and failures; real game input is M-31.
+* **Picker:** `picker_session.rs` reserves an opening/closing selection and gives each page a token. Startup awaits
+  positioned-window context and installed input listeners; old ready/finish/close callbacks cannot act on a replacement.
+  Existing region commands are kept, with async shell wiring so GUI-thread input operations are awaited.
+  Escape/right-click/Alt+F4 cancel, restore when appropriate and destroy the picker. Errors are logged and surfaced;
+  saved-area validation remains strict. No model selection, live watcher or translation prompt changes.
+
 ### 4.10 Setup wizard and installers (`maru setup`)
 * `maru-engine::hardware`: reads `nvidia-smi` and one PowerShell/CIM probe (GPUs, driver CUDA version, memory, free disk);
   parsers are separate from process calls and tested with real command output.
@@ -551,6 +573,9 @@ Saved reading areas add engine methods for storage, selection, capture, observat
 jobs. `ScreenGrabber::app_window(exe)` defaults to `None` for older/unsupported sources; `AppWindow` is additive.
 They reuse the ordinary translate event stream and cancellation slot. No existing event/config/database meaning changes.
 `hotkeys.reading_again` is additive, defaults to empty, and applies live with other shortcuts.
+`ScreenGrabber::app_window_by_id` is additive, with a filtered legacy default. `InputControl` is a separate optional
+platform trait and adds no field to `Platform` or `EngineParts`. `hotkeys.wheel` defaults to `Ctrl+Alt+Q` (user-approved),
+accepts an explicitly empty value, and applies live. Existing shortcut meanings are retained.
 
 `Engine` methods return `(id, EventRx)` (or `EventRx`, or plain data). Each long request kind has a **task slot** in `Inner`
 (`translate_task`, `deep_task`, `scan_task`; the translation cache is in memory — `Paths::cache_db` exists but is unused): starting a new one aborts the old one. Scan joins and live lines do **not** use a
@@ -595,10 +620,12 @@ No config key, event variant order, existing column meaning or command name is r
   optional physical outline and virtual-desktop origin; the page converts through device scale. These reuse the hub,
   panel and picker labels. `launcher_status.reading` adds the current metadata/status; `launcher_action("reading")`
   opens the manager. Existing commands and window labels remain registered. SQLite mutations run off the UI thread.
+  Additive `picker_session` / `picker_ready(sessionId)` synchronize picker startup; `picker_done(rect,sessionId?)`
+  accepts an optional token to reject stale pages. Legacy callers without a token still require a current selection.
 * **Reversible joins:** additive `scan_join_items(scanId,item,items,asWord)`, `scan_separate(scanId,item)` and
   `scan_open_item(scanId,item)` check current visible scans. Old command names remain registered. Joining/separation
   acknowledge errors through command results before changing the display; engine events replace successful labels.
-* **Windows** (labels in `windows.rs`, or the feature's module): `panel` (`index.html`), `picker`, `hub`, `scan`, `live`, `launcher` (`launcher.html`), `correction` (`correction.html`). Adding one needs a capability entry in
+* **Windows** (labels in `windows.rs`, or the feature's module): `panel` (`index.html`), `picker`, `hub`, `scan`, `live`, `launcher` (`launcher.html`), `correction` (`correction.html`), `wheel` (`wheel.html`). Adding one needs a capability entry in
   `app/src-tauri/capabilities/default.json`.
 * **OCR editor:** `correction_open_snapshot(requestId)`, `correction_open_scan(scanId,item)`, `correction_view`,
   `correction_apply(target,text,remember)`, `correction_forget(target)`, `correction_cancel`; `maru-correction` refreshes
@@ -611,6 +638,9 @@ No config key, event variant order, existing column meaning or command name is r
 * **Click-through windows** (scan, live) never take focus; the shell decides per pointer position whether the scan window accepts the
   click, from the rectangles the page reports.
 * **Floating controls commands:** `launcher_status`, `launcher_action`, `launcher_rects`, `launcher_drag`; action IDs mirror tray IDs, with history and hide additions. Drag/rect commands use CSS deltas and device scale.
+  The focused wheel adds `wheel_ready`, `wheel_status` (same status shape), `wheel_action(action)` and `wheel_close`;
+  `maru-wheel-show` resets the visible page. It accepts existing action IDs plus `reading_read`, `reading_save`
+  (opens the naming manager), `reading_auto` and `reading_hold`. Page changes are local, never shell commands.
   `launcher_action` additionally accepts `prepare_live` / `release_models`, `scan_join_mode` / `scan_refresh`; names of
   existing actions remain stable. Its `scan` action toggles the current labels; the tray/hotkey scan still rescans.
   `launcher_status` adds nullable `scan_id` and boolean `scan_join_mode`. `scan_join_mode(scanId,enabled)` changes only
@@ -632,6 +662,9 @@ No config key, event variant order, existing column meaning or command name is r
   Pure window decisions are in `logic.rs`.
 
 ### 6.4 Persistence
+
+The controls wheel and input lease are transient. Only the additive `hotkeys.wheel` shortcut persists in `config.toml`;
+cursor confinement, native handles, page/selection and resource readings are never saved.
 | File (under the data dir unless noted) | Owner | Content |
 |---|---|---|
 | `config.toml` (config dir) | `maru-core::config`, `settings.rs` | every setting; comments are preserved on edit |

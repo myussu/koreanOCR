@@ -86,3 +86,11 @@ pub fn find(exe: &str) -> Option<AppWindow> {
         search.found
     }
 }
+
+pub fn find_by_id(exe: &str, identity: u64) -> Option<AppWindow> {
+    let handle = usize::try_from(identity).ok()?;
+    if handle == 0 {
+        return None;
+    }
+    inspect(HWND(handle as *mut std::ffi::c_void), exe)
+}

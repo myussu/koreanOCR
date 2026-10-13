@@ -16,17 +16,18 @@ async fn blocking<T: Send + 'static>(
         .map_err(|e| e.to_string())
 }
 
-pub fn picked(app: AppHandle, state: Arc<AppState>, rect: Option<maru_core::Rect>) {
-    tauri::async_runtime::spawn(async move {
-        let engine = state.engine().clone();
-        match blocking(move || engine.finish_reading_pick(rect)).await {
-            Ok(Some(_)) => {
-                let _ = windows::open_hub(&app, "reading");
-            }
-            Ok(None) => {}
-            Err(e) => flow::notice(&app, &state, None, "info", e),
+pub async fn picked(app: AppHandle, state: Arc<AppState>, rect: Option<maru_core::Rect>) {
+    let engine = state.engine().clone();
+    match blocking(move || engine.finish_reading_pick(rect)).await {
+        Ok(Some(_)) => {
+            let _ = windows::open_hub(&app, "reading");
         }
-    });
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!("saved reading area: {e}");
+            flow::notice(&app, &state, None, "info", e);
+        }
+    }
 }
 
 pub fn spawn(app: AppHandle, state: Arc<AppState>) {
@@ -134,15 +135,13 @@ pub async fn reading_create(
     name: String,
     area_id: Option<i64>,
 ) -> Result<(), String> {
-    if app.get_webview_window(windows::PICKER).is_some() {
-        return Err("Finish or cancel the current area selection first.".into());
-    }
+    let slot=crate::input_session::reserve_picker(&app).await?;
     let engine = state.engine().clone();
     blocking(move || engine.begin_reading_pick(&name, area_id)).await?;
     if let Some(hub) = app.get_webview_window(windows::HUB) {
         let _ = hub.hide();
     }
-    if let Err(e) = windows::open_picker(&app) {
+    if let Err(e) = windows::open_reserved_picker(&app,&slot).await {
         let _ = state.engine().finish_reading_pick(None);
         return Err(e.to_string());
     }

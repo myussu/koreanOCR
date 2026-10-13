@@ -19,6 +19,7 @@ enum Action {
     Dismiss,
     Launcher,
     ReadingAgain,
+    Wheel,
 }
 
 /// One action may have several keys: `"Ctrl+Alt+T | F6"` (a comma followed by a space also works;
@@ -55,6 +56,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
         (keys.dismiss, Action::Dismiss),
         (keys.launcher, Action::Launcher),
         (keys.reading_again, Action::ReadingAgain),
+        (keys.wheel, Action::Wheel),
     ];
     let mut problems = Vec::new();
     for (text, action) in table.into_iter().flat_map(|(text, action)| alternatives(&text).into_iter().map(move |t| (t, action))) {
@@ -76,7 +78,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
             tauri::async_runtime::spawn(async move { match action {
                 Action::Translate => flow::translate_selection(app, state),
                 Action::Region => {
-                    let _ = windows::open_picker(&app);
+                    if let Err(e) = windows::open_picker(&app).await { flow::notice(&app,&state,None,"info",e); }
                 }
                 Action::Hover => flow::toggle_hover(&app, &state),
                 Action::Continuous => flow::toggle_continuous(&app, &state),
@@ -89,6 +91,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
                 Action::Dismiss => flow::dismiss_all(&app, &state),
                 Action::Launcher => crate::launcher::toggle(&app),
                 Action::ReadingAgain => crate::reading::hotkey(app, state),
+                Action::Wheel => crate::wheel::hotkey(app, state),
             }});
         });
         if let Err(e) = result {
@@ -114,7 +117,7 @@ mod tests {
 
     #[test]
     fn the_keys_we_suggest_for_games_all_parse() {
-        for key in ["F6", "F7", "F8", "Pause", "ScrollLock", "Numpad5", "Insert", "Ctrl+Alt+T", "Ctrl+Alt+Shift+C", "Ctrl+Alt+Escape"] {
+        for key in ["F6", "F7", "F8", "Pause", "ScrollLock", "Numpad5", "Insert", "Ctrl+Alt+T", "Ctrl+Alt+Shift+C", "Ctrl+Alt+Escape", "Ctrl+Alt+Q"] {
             assert!(key.parse::<Shortcut>().is_ok(), "{key} should be a valid hotkey");
         }
     }

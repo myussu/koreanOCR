@@ -14,6 +14,7 @@ default-run = "maru-app"
 [dependencies]
 maru-core = { path = "../../crates/maru-core" }
 maru-engine = { path = "../../crates/maru-engine" }
+maru-platform = { path = "../../crates/maru-platform" }
 maru-llm = { path = "../../crates/maru-llm" }
 maru-tts = { path = "../../crates/maru-tts" }
 base64 = "0.22"

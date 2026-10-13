@@ -276,12 +276,14 @@ pub fn scan_unjoin(state: S, scan_id: u64, joined: String) -> usize {
 
 /// The picker reports a rectangle in *its own* pixels; add the window's screen origin.
 #[tauri::command]
-pub fn picker_done(app: AppHandle, state: S, rect: Option<Rect>) {
+pub async fn picker_done(app: AppHandle, state: S<'_>, rect: Option<Rect>, session_id: Option<u64>) -> Result<(), String> {
+    if !crate::picker_session::accepts(&app,session_id) { return Ok(()); }
     let rect = rect.map(|r| {
         let origin = tauri::Manager::get_webview_window(&app, windows::PICKER).and_then(|w| w.outer_position().ok()).unwrap_or_default();
         Rect::new(r.x + origin.x as f32, r.y + origin.y as f32, r.w, r.h)
     });
-    flow::picked(app, state.inner().clone(), rect);
+    flow::picked(app, state.inner().clone(), rect,session_id).await;
+    Ok(())
 }
 
 #[derive(Serialize)]

@@ -9,6 +9,7 @@ pub mod testing;
 pub mod resources;
 pub mod network;
 pub mod app_window;
+pub mod input;
 #[cfg(windows)]
 pub mod windows;
 
@@ -58,6 +59,11 @@ pub trait ScreenGrabber: Send + Sync {
     /// Visible client area for this executable; unsupported sources return no window.
     fn app_window(&self, _exe: &str) -> Option<app_window::AppWindow> {
         None
+    }
+    /// Recheck the same visible window after an overlay changes foreground or window order.
+    fn app_window_by_id(&self, exe: &str, identity: u64) -> Option<app_window::AppWindow> {
+        self.app_window(exe)
+            .filter(|window| window.identity == identity)
     }
 }
 

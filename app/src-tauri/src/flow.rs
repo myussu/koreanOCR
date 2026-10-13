@@ -5,7 +5,7 @@ use std::sync::Arc;
 use maru_core::{Capture, Config, Event, Point, Rect};
 use maru_engine::EventRx;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::logic;
 use crate::state::AppState;
@@ -394,14 +394,24 @@ pub fn toggle_continuous(app: &AppHandle, state: &Arc<AppState>) {
 
 /// Let the user drag a new area for continuous mode; it starts watching there as soon as it is picked.
 pub fn choose_continuous_area(app: &AppHandle, state: &Arc<AppState>) {
+    let (app,state)=(app.clone(),state.clone());
+    tauri::async_runtime::spawn(async move {
+        if let Err(e)=pick_continuous_area(&app,&state).await { notice(&app,&state,None,"info",e); }
+    });
+}
+
+pub async fn pick_continuous_area(app: &AppHandle, state: &Arc<AppState>) -> Result<(),String> {
+    let slot=crate::input_session::reserve_picker(app).await?;
     if state.stop_continuous() {
         windows::hide_live(app);
         refresh_tray(app, state);
     }
     state.panel().awaiting_continuous_region = true;
-    if windows::open_picker(app).is_err() {
+    if let Err(e)=windows::open_reserved_picker(app,&slot).await {
         state.panel().awaiting_continuous_region = false;
+        return Err(e);
     }
+    Ok(())
 }
 
 /// Keep the chosen live-mode area for the next launch (this session already uses it).
@@ -417,10 +427,13 @@ fn remember_region(state: &AppState, rect: Rect) {
 }
 
 /// The picker reported a rectangle (or was cancelled).
-pub fn picked(app: AppHandle, state: Arc<AppState>, rect: Option<Rect>) {
-    windows::close_picker(&app);
+pub async fn picked(app: AppHandle, state: Arc<AppState>, rect: Option<Rect>, session_id: Option<u64>) {
+    let _slot=crate::input_session::picker_slot(&app).await;
+    if !crate::picker_session::accepts(&app,session_id) { return; }
+    if app.get_webview_window(windows::PICKER).is_none() { return; }
+    windows::close_picker(&app).await;
     if state.engine().reading_picker_open() {
-        crate::reading::picked(app, state, rect);
+        crate::reading::picked(app, state, rect).await;
         return;
     }
     let awaiting = std::mem::take(&mut state.panel().awaiting_continuous_region);

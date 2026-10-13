@@ -11,6 +11,7 @@ mod uia;
 pub(crate) mod resources;
 pub(crate) mod network;
 mod app_window;
+pub(crate) mod input;
 
 use std::sync::Arc;
 use std::time::Duration;
@@ -89,6 +90,9 @@ impl ScreenGrabber for WinScreen {
     }
     fn app_window(&self, exe: &str) -> Option<crate::app_window::AppWindow> {
         app_window::find(exe)
+    }
+    fn app_window_by_id(&self, exe: &str, identity: u64) -> Option<crate::app_window::AppWindow> {
+        app_window::find_by_id(exe, identity)
     }
 }
 

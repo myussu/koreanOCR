@@ -140,6 +140,7 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 | `Ctrl+Alt+S` | label every Korean text on the screen (game menus, HUDs); press again to rescan |
 | `Ctrl+Alt+L` | history, review and status |
 | `Ctrl+Alt+Esc` | hide the panel and all screen labels |
+| `Ctrl+Alt+Q` | open the focused controls wheel at the pointer; mouse or keyboard navigation |
 
 Each action accepts several keys separated by `|` in `config.toml` (e.g. `translate = "Ctrl+Alt+T | F6"`), which helps in games that use Ctrl/Shift/Alt. A registered key is taken from every program while Maru runs, so pick ones you don't use (see `docs/config.example.toml`). `Status` shows which toggles are on, and the tray icon's tooltip lists them too.
 
@@ -276,6 +277,16 @@ and reject incomplete, malformed or token-capped streams. The wrapper accepts `-
 
 ## Saved reading areas
 
+If the game hides or confines the pointer, press **Ctrl+Alt+Q** to open the controls wheel at its position.
+Maru takes focus and shows a pointer for this interaction. Choose with the mouse, **1–8**, or **arrows + Enter**;
+**Esc** closes it. **8 / More controls**, **Page Up/Down**, or **[ / ]** move between its three pages.
+**Save an area** opens the Reading areas manager, where you name the area and start selection; **Snapshot region**
+opens the picker directly. The wheel also offers labels, Join words, live controls, settings and a cached VRAM bar.
+Change or disable **Controls wheel** in **Settings → Shortcuts**. A shortcut used by another app must be changed.
+Opening these controls can pause a game on focus loss. Maru returns focus and prior pointer confinement only while
+the interaction still owns focus and the original game window is unchanged; switching apps preserves that choice.
+This targets windowed and borderless games. Exclusive fullscreen still depends on the game's overlay support.
+
 For a game whose dialogue or descriptions stay in the same place, open the floating **마** menu and choose
 **Save a new area**. Draw around the entire paragraph. Maru saves it for that game's executable and opens
 **Reading areas**, where you can rename it, select another area, reposition it, or remove it. Areas sharing an
@@ -301,6 +312,9 @@ In Reading areas, **Check scaled area** / **Reposition** shows its outline: Ente
 and Esc cancels. Confirming a position returns to manual reading; enable Auto-read again when ready.
 
 See [M-30](docs/MANUAL_TESTS.md#m-30-saved-game-reading-areas) for the real-game checks.
+The picker refreshes the game's current geometry before selection, including after switching to borderless,
+and validates that exact window afterward. It still refuses a window moved, resized or closed during selection.
+See [M-31](docs/MANUAL_TESTS.md#m-31-borderless-controls-wheel-and-saved-area-registration) for the input checks.
 
 ## Game menus: screen labels
 

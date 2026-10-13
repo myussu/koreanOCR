@@ -19,7 +19,7 @@ jobs:
       - run: cargo test --manifest-path app/src-tauri/Cargo.toml
       - uses: actions/setup-node@v4
         with: { node-version: 22 }
-      - run: node --test app/ui/test/core.test.mjs app/ui/test/layout.test.mjs app/ui/test/settings.test.mjs app/ui/test/reader.test.mjs app/ui/test/anki.test.mjs app/ui/test/live.test.mjs app/ui/test/scan-core.test.mjs app/ui/test/settings-live.test.mjs app/ui/test/resources.test.mjs app/ui/test/settings-connection.test.mjs app/ui/test/launcher.test.mjs app/ui/test/correction.test.mjs app/ui/test/context-menu.test.mjs app/ui/test/scan-status.test.mjs app/ui/test/reading.test.mjs
+      - run: node --test app/ui/test/core.test.mjs app/ui/test/layout.test.mjs app/ui/test/settings.test.mjs app/ui/test/reader.test.mjs app/ui/test/anki.test.mjs app/ui/test/live.test.mjs app/ui/test/scan-core.test.mjs app/ui/test/settings-live.test.mjs app/ui/test/resources.test.mjs app/ui/test/settings-connection.test.mjs app/ui/test/launcher.test.mjs app/ui/test/correction.test.mjs app/ui/test/context-menu.test.mjs app/ui/test/scan-status.test.mjs app/ui/test/reading.test.mjs app/ui/test/wheel.test.mjs
       - run: python -m unittest discover -s tools -p "test_*.py"
 
   linux:
