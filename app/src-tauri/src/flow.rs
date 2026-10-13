@@ -61,6 +61,7 @@ pub fn show_translation(app: &AppHandle, state: &Arc<AppState>, capture: Capture
 /// content word as soon as the breakdown arrives (a click on a scan label that is one word). With
 /// `auto_speak` the panel reads the text aloud as soon as it has it.
 pub fn show_capture(app: &AppHandle, state: &Arc<AppState>, capture: Capture, word_only: bool, auto_deep: bool, auto_speak: bool) {
+    state.engine().interrupt_reading();
     let cursor = state.engine().platform().screen.cursor();
     {
         let mut p = state.panel();
@@ -418,6 +419,10 @@ fn remember_region(state: &AppState, rect: Rect) {
 /// The picker reported a rectangle (or was cancelled).
 pub fn picked(app: AppHandle, state: Arc<AppState>, rect: Option<Rect>) {
     windows::close_picker(&app);
+    if state.engine().reading_picker_open() {
+        crate::reading::picked(app, state, rect);
+        return;
+    }
     let awaiting = std::mem::take(&mut state.panel().awaiting_continuous_region);
     let Some(rect) = rect else { return };
     if awaiting {

@@ -530,6 +530,9 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         live_llm,
         labels: Some(labels),
     });
+    if let Err(e) = engine.open_reading_areas(&paths.data_dir.join("reading-areas.db")) {
+        notes.push(e.to_string());
+    }
 
     if !alternate && !opts.defer_models && opts.start_llm && cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart {
         let (engine, cfg, paths, server) = (engine.clone(), cfg.clone(), paths.clone(), server.clone());

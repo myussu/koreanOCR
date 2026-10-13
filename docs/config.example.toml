@@ -30,6 +30,7 @@ speak      = "Ctrl+Alt+P"       # translate the selection and read it aloud (aga
 history    = "Ctrl+Alt+L"
 dismiss    = "Ctrl+Alt+Escape"  # hides the panel and the screen labels (a bare Escape would be hijacked in every other app)
 launcher   = "Ctrl+Alt+M"       # show / hide floating quick controls
+reading_again = ""            # read the selected saved game area; assign a key in Settings → Shortcuts if wanted
 
 [llm]
 # Let llama-server download and cache the model on first run (`maru setup llm` does it up front).

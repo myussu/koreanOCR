@@ -196,6 +196,7 @@ pub struct LauncherStatus {
     snapshot: String,
     shortcut: String,
     live_setup: maru_engine::model_controls::LiveSetupStatus,
+    reading: maru_engine::reading_areas::ReadingStatus,
 }
 
 #[tauri::command]
@@ -260,6 +261,7 @@ pub fn launcher_status(app: AppHandle, state: State<'_, Arc<AppState>>) -> Launc
         snapshot,
         shortcut: state.cfg().hotkeys.launcher,
         live_setup: state.services.live_setup_status(),
+        reading: { state.engine().reading_context(); state.engine().reading_status() },
     }
 }
 
@@ -294,6 +296,10 @@ pub async fn launcher_action(app: AppHandle, state: State<'_, Arc<AppState>>, ac
             crate::scan_controls::set_join_mode(&app, &state, id, enabled)?;
         },
         "speak" => flow::speak_selection(app, state.inner().clone()),
+        "reading" => {
+            state.engine().reading_context();
+            windows::open_hub(&app, "reading").map_err(|e| e.to_string())?;
+        },
         "review" | "history" | "status" | "settings" | "resources" => windows::open_hub(&app, &action).map_err(|e| e.to_string())?,
         "hide" => show(&app, false),
         "quit" => app.exit(0),

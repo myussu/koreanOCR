@@ -274,6 +274,34 @@ and reject incomplete, malformed or token-capped streams. The wrapper accepts `-
 
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
 
+## Saved reading areas
+
+For a game whose dialogue or descriptions stay in the same place, open the floating **마** menu and choose
+**Save a new area**. Draw around the entire paragraph. Maru saves it for that game's executable and opens
+**Reading areas**, where you can rename it, select another area, reposition it, or remove it. Areas sharing an
+executable, such as different games inside one emulator, should have distinct names and be selected manually.
+
+**Read again** captures the selected area without drawing another rectangle. For a keyboard button, assign
+**Read saved area again** in **Settings → Shortcuts**; it starts unassigned so existing keys keep working.
+The tray also offers Read saved area again and Saved reading areas. Ordinary region snapshots keep their existing controls.
+
+**Auto-read** is a separate, explicit toggle. It waits for matching OCR readings of settled text, reads the whole
+paragraph through the normal snapshot pipeline, and keeps only the latest pending paragraph while one translation
+is active. It retains snapshot model routing, OCR corrections, word meanings, clickable words and deep dive;
+if live subtitles are also on, the existing snapshot quality-server/live-model routing still applies.
+Unchanged text makes no new translation request. Watching uses periodic cropped captures and occasional OCR;
+it uses the configured snapshot OCR, including the vision reader if enabled, and does not reduce a loaded model's VRAM.
+
+**Hold** keeps an answer available; **Resume** reads the current settled dialogue. Opening a word's deep dive,
+correcting a snapshot or opening another snapshot automatically holds Auto-read. Blank dialogue is normal and
+leaves the previous reading available. Status text distinguishes settling/queued new text from the previous answer.
+Saved areas and each executable's selected area survive restart; Auto-read starts off. Switching away from the
+selected game pauses capture. Moving the window moves the crop; resizing or changing resolution requires a check.
+In Reading areas, **Check scaled area** / **Reposition** shows its outline: Enter keeps it, dragging replaces it,
+and Esc cancels. Confirming a position returns to manual reading; enable Auto-read again when ready.
+
+See [M-30](docs/MANUAL_TESTS.md#m-30-saved-game-reading-areas) for the real-game checks.
+
 ## Game menus: screen labels
 
 Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless-windowed games; an exclusive-fullscreen game cannot be drawn over), finds every piece of Korean text, and puts a short English label beside each.

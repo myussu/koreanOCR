@@ -18,6 +18,7 @@ enum Action {
     History,
     Dismiss,
     Launcher,
+    ReadingAgain,
 }
 
 /// One action may have several keys: `"Ctrl+Alt+T | F6"` (a comma followed by a space also works;
@@ -53,6 +54,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
         (keys.history, Action::History),
         (keys.dismiss, Action::Dismiss),
         (keys.launcher, Action::Launcher),
+        (keys.reading_again, Action::ReadingAgain),
     ];
     let mut problems = Vec::new();
     for (text, action) in table.into_iter().flat_map(|(text, action)| alternatives(&text).into_iter().map(move |t| (t, action))) {
@@ -86,6 +88,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
                 }
                 Action::Dismiss => flow::dismiss_all(&app, &state),
                 Action::Launcher => crate::launcher::toggle(&app),
+                Action::ReadingAgain => crate::reading::hotkey(app, state),
             }});
         });
         if let Err(e) = result {

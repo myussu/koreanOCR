@@ -1,10 +1,12 @@
 import { invoke, listen, replayFromQuery, mockCommands, inTauri } from './bridge.js';
 import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, readableText, sentenceRanges, snapshotCorrectionId, VARIANT_LABEL } from './core.js';
 import { contextMenu } from './context-menu.js';
+import { readingPanel } from './reading.js';
 import { Reader } from './reader.js';
 import { cleanDeck, deckChoices, addTags, removeTag, intervalText, addedText, reverseChoice, canSubmitAnki } from './anki.js';
 
 const card = document.getElementById('card');
+const areaReading = readingPanel(() => reportSize());
 const snapshotMenu = contextMenu();
 let state = emptyState();
 let cfg = { gloss_mode: 'fade_known', font_size_px: 18, show_romanization: true, show_pronunciation: true, show_grammar_formula: true, theme: 'auto', anki: false, tts: false, opacity: 0.97 };
@@ -191,7 +193,7 @@ function deepBlock() {
 
 function render() {
   const s = state;
-  const kids = [];
+  const kids = [areaReading];
   if (s.notice) kids.push(h('div', { class: `notice ${s.notice.level}`, text: s.notice.text }));
   if (s.id != null) {
     const dir = s.direction === 'en_to_ko' ? 'English → 한국어' : '한국어 → English';

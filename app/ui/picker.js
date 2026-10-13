@@ -1,8 +1,21 @@
-import { invoke } from './bridge.js';
+import { invoke, inTauri, mockCommands } from './bridge.js';
+import { pickerArea } from './reading-core.js';
 
 const box = document.getElementById('box');
 const sizeTag = document.getElementById('size');
 let start = null;
+let preview = null;
+let submitted = false;
+function finish(rect) {
+  if(submitted)return;submitted=true;
+  invoke('picker_done',{rect}).catch(e=>{submitted=false;document.querySelector('#hint').textContent=String(e);});
+}
+if(!inTauri&&new URLSearchParams(location.search).get('demo')==='reading-preview')mockCommands({reading_picker_hint:()=>({name:'Dialogue',rect:{x:210,y:150,w:630,h:180},origin:{x:0,y:0}}),picker_done:args=>{window.pickerResult=args;(window.pickerResults??=[]).push(args);}});
+invoke('reading_picker_hint').then(hint=>{
+  if(!hint||start||submitted)return;
+  document.querySelector('#hint').textContent=hint.rect?`${hint.name} · Enter keeps this area · drag to reposition · Esc cancels`:`${hint.name} · drag around the text to save this area · Esc cancels`;
+  preview=pickerArea(hint.rect,hint.origin,devicePixelRatio||1);if(preview)draw(preview);
+}).catch(()=>{});
 
 const rectOf = (a, b) => ({ x: Math.min(a.x, b.x), y: Math.min(a.y, b.y), w: Math.abs(a.x - b.x), h: Math.abs(a.y - b.y) });
 
@@ -13,6 +26,8 @@ function draw(r) {
 }
 
 addEventListener('mousedown', (e) => {
+  if(submitted)return;
+  preview = null;
   start = { x: e.clientX, y: e.clientY };
 });
 addEventListener('mousemove', (e) => start && draw(rectOf(start, { x: e.clientX, y: e.clientY })));
@@ -22,11 +37,16 @@ addEventListener('mouseup', (e) => {
   start = null;
   const dpr = window.devicePixelRatio || 1;
   // A click without a drag cancels; very small boxes are accidents.
-  if (r.w < 8 || r.h < 8) return invoke('picker_done', { rect: null });
-  invoke('picker_done', { rect: { x: r.x * dpr, y: r.y * dpr, w: r.w * dpr, h: r.h * dpr } });
+  if (r.w < 8 || r.h < 8) return finish(null);
+  finish({ x: r.x * dpr, y: r.y * dpr, w: r.w * dpr, h: r.h * dpr });
 });
-addEventListener('keydown', (e) => e.key === 'Escape' && invoke('picker_done', { rect: null }));
+addEventListener('keydown', (e) => e.key === 'Escape' && finish(null));
+addEventListener('keydown',e=>{
+  if(e.key!=='Enter'||!preview||start)return;
+  const dpr=devicePixelRatio||1;
+  finish({x:preview.x*dpr,y:preview.y*dpr,w:preview.w*dpr,h:preview.h*dpr});
+});
 addEventListener('contextmenu', (e) => {
   e.preventDefault();
-  invoke('picker_done', { rect: null });
+  finish(null);
 });

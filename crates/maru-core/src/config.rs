@@ -120,6 +120,9 @@ pub struct Hotkeys {
     pub dismiss: String,
     /// Show or hide the floating controls.
     pub launcher: String,
+    /// Read the selected saved game area; empty until a shortcut is assigned.
+    #[serde(default)]
+    pub reading_again: String,
 }
 
 impl Default for Hotkeys {
@@ -135,6 +138,7 @@ impl Default for Hotkeys {
             history: "Ctrl+Alt+L".into(),
             dismiss: "Ctrl+Alt+Escape".into(),
             launcher: "Ctrl+Alt+M".into(),
+            reading_again: String::new(),
         }
     }
 }

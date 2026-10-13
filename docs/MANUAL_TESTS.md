@@ -727,6 +727,38 @@ profile still need this manual check. No model, dependency or user database was 
 **Bring:** Korean joined text, selected Join/One word action, a screenshot of the word controls and Separate menu,
 which word fails to open, and the app log. Do not send credentials.
 
+## M-30 Saved game reading areas
+
+1. In Hollow Knight (or another game with a fixed dialogue box), use floating **Save a new area**. Select the entire
+   paragraph and exclude decorative borders/speaker labels unless you want them read too. Rename it in Reading areas.
+   Return to the game and press **Read again** on successive pages without redrawing. Verify full paragraph spacing,
+   translation, word meanings, individual deep dives, and the existing snapshot OCR correction menu.
+2. Assign Read saved area again in Settings → Shortcuts and repeat with that key. Add a second named area; select it,
+   rename it, cancel removal, and remove it. Restart Maru: saved names and the selected area survive; Auto-read is off.
+   Different executables keep separate selections. Games inside one emulator require explicit distinct names/selection.
+3. Enable **Auto-read**. Check typewriter/fade-in dialogue, animated backgrounds, repeated pages and empty dialogue boxes.
+   It should confirm settled OCR text, avoid repeated model requests for unchanged text, and retain the last reading
+   after a blank box. Quickly advance several pages while a NAS request is pending: only the latest pending paragraph
+   should be read next; older output/errors must not replace it. Settling/queued status identifies the previous answer.
+4. Press **Hold**, inspect several words, and press **Resume** on a later page. Deep dive, snapshot correction and opening
+   another snapshot should also hold Auto-read. Check focus, resizing and click-through with the floating menu in a
+   borderless game. Switch to another program: capture pauses; returning confirms the game text again.
+5. Move the game window, including to a monitor left of the primary display, and test high DPI. The crop follows it.
+   Resize/change resolution: reading must pause/refuse the old size. **Check scaled area** or **Reposition** outlines the
+   area; Enter retains it, dragging replaces it, Esc cancels. Confirmed positioning returns to manual mode. Minimize/close
+   the game during capture/selection and ensure no other application's pixels are submitted.
+6. Try an actual configured NAS failure in an isolated setup, restore it, then Read again. Verify clear failure/retry
+   status and usable offline breakdown. Check the Resources page for watcher/OCR/model cost beside the game.
+
+**Verification:** Scripted-engine tests cover full snapshot/gloss/deep-dive flow and cache, per-executable persistence,
+movement/size validation, superseded jobs/errors, blank/duplicate confirmation and game switching. Chromium demos
+cover the manager, floating controls and picker/status layout. These do not verify actual game OCR quality, Windows
+foreground/physical input, high-DPI capture or NAS timing. Native Computer Use was unavailable; no human result is entered.
+
+**Bring:** area name/game, manual or Auto-read mode, resolution/DPI, screenshot or short clip of the original paragraph
+and panel, app log, and Resources readings if latency/load is high. Note skipped/partial/duplicate paragraphs and whether
+Hold/Resume and window movement worked. Do not send credentials.
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.

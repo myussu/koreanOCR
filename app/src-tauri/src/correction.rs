@@ -43,6 +43,7 @@ pub async fn correction_open_snapshot(
     state: S<'_>,
     request_id: u64,
 ) -> Result<(), String> {
+    state.engine().hold_reading_for_interaction();
     open(&app, &state, Target::Snapshot { id: request_id })
 }
 #[tauri::command]

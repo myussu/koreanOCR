@@ -26,6 +26,7 @@ export const SECTIONS = [
       { path: 'hotkeys.history', label: 'History', help: 'Recent lines', type: 'keys' },
       { path: 'hotkeys.dismiss', label: 'Dismiss', help: 'Hides the panel and the screen labels', type: 'keys' },
       { path: 'hotkeys.launcher', label: 'Floating controls on/off', help: 'Quick controls above a borderless game', type: 'keys' },
+      { path: 'hotkeys.reading_again', label: 'Read saved area again', help: 'Reads the selected area for this game; leave empty for the floating button only', type: 'keys' },
     ],
   },
   {

@@ -1,11 +1,20 @@
 import { invoke, inTauri, mockCommands } from './bridge.js';
 import { ACTIONS, statusText, moved, liveDetails, modelActions, scanActions } from './launcher-core.js';
 import { makeVramBar } from './resources.js';
+import { readingQuickControls } from './reading.js';
+import { installReadingDemo } from './reading-demo.js';
 const button = document.querySelector('#maru'), menu = document.querySelector('#menu');
 const vram = makeVramBar(); document.querySelector('#actions').before(vram);
 let expanded = false, busy = false, drag = null, last = null;
+const areas=readingQuickControls({beforeCapture:()=>expand(false),manage:()=>action('reading'),changed:()=>report()});
+document.querySelector('#state').after(areas);
+const saveArea=document.createElement('button');saveArea.textContent='Save a new area';saveArea.type='button';
+saveArea.onclick=async()=>{try{let name='Dialogue',n=2;while(last?.reading?.areas.some(a=>a.exe===last.reading.exe&&a.name.toLowerCase()===name.toLowerCase()))name=`Dialogue ${n++}`;await expand(false);await invoke('reading_create',{name,areaId:null});}catch(e){await expand(true);showError(e);}};
+areas.append(saveArea);
 if (!inTauri) {
+  const reading=installReadingDemo();
   const state = { live: true, hover: false, scan: false, scan_id: null, scan_join_mode: false, speech: false, model: 'MiLMMT 4B Q6', model_status: 'Ready', queued: 0, active: 0, snapshot: 'Live model + offline meanings' };
+  state.reading=reading;
   let nextScan = 0;
   state.live_setup={model:'HY-MT2 1.8B Q4',device:'GPU',model_status:'Ready',ocr:'Hybrid · CPU detector + PaddleOCR-VL',ocr_status:'Ready',preparation:'Not prepared',busy:false};
   const mode=new URLSearchParams(location.search).get('demo');
@@ -56,6 +65,7 @@ for(const [id,label,toggle] of ACTIONS) {
 async function refresh() {
   try {
     last=await invoke('launcher_status');
+    areas.update(last.reading);saveArea.disabled=busy||!last.reading?.can_create;
     document.querySelector('#state').textContent=statusText(last);
     const details=liveDetails(last);
     document.querySelector('#model').textContent=details.model;

@@ -116,6 +116,7 @@ pub(crate) struct Inner {
     pub anki_sync_pending: std::sync::atomic::AtomicBool,
     pub anki_add_gate: Arc<tokio::sync::Mutex<()>>,
     pub ocr_corrections: Mutex<crate::ocr_corrections::OcrState>,
+    pub reading_areas: Mutex<crate::reading_areas::ReadingState>,
     pub runtime: tokio::runtime::Handle,
     pub live_ocr: Option<Arc<dyn OcrEngine>>,
     pub live_llm: Option<LlmClient>,
@@ -187,6 +188,7 @@ impl Engine {
             anki_sync_pending: std::sync::atomic::AtomicBool::new(false),
             anki_add_gate: Arc::new(tokio::sync::Mutex::new(())),
             ocr_corrections: Mutex::new(Default::default()),
+            reading_areas: Mutex::new(Default::default()),
             runtime: tokio::runtime::Handle::current(),
             cfg,
         };

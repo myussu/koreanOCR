@@ -1,4 +1,6 @@
 //! The whole pipeline, against a scripted stand-in for llama-server.
+#[path = "support/reading_areas.rs"]
+mod reading_areas;
 
 use std::io::Cursor;
 use std::sync::Arc;

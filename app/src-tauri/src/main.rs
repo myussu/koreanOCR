@@ -18,6 +18,7 @@ mod resources;
 mod correction;
 mod scan_controls;
 mod scan_actions;
+mod reading;
 
 use std::sync::{Arc, Mutex};
 
@@ -58,6 +59,8 @@ pub fn tray_menu(app: &tauri::AppHandle, state: &AppState) -> tauri::Result<Menu
         &[
             &item("translate", format!("Translate selection\t{}", keys.translate))?,
             &item("region", format!("Pick a region…\t{}", keys.region))?,
+            &item("reading_again", format!("Read saved area again\t{}", keys.reading_again))?,
+            &item("reading", "Saved reading areas…".into())?,
             &item("hover", format!("Toggle hover mode\t{}", keys.hover))?,
             &item("continuous", format!("Toggle live subtitles\t{}", keys.continuous))?,
             &item("continuous_area", format!("Live subtitles: choose area…\t{}", keys.continuous_area))?,
@@ -86,6 +89,11 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             "region" => {
                 let _ = windows::open_picker(&app);
             }
+            "reading_again" => reading::hotkey(app, state),
+            "reading" => {
+                state.engine().reading_context();
+                let _ = windows::open_hub(&app, "reading");
+            },
             "hover" => flow::toggle_hover(&app, &state),
             "continuous" => flow::toggle_continuous(&app, &state),
             "continuous_area" => flow::choose_continuous_area(&app, &state),
@@ -149,10 +157,21 @@ fn main() {
             watch::spawn(app.handle().clone(), state.clone());
             watch::spawn_anki_refresh(state.clone());
             watch::spawn_scan_hits(app.handle().clone(), state.clone());
+            reading::spawn(app.handle().clone(), state.clone());
             app.manage(state);
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            reading::reading_status,
+            reading::reading_picker_hint,
+            reading::reading_create,
+            reading::reading_select,
+            reading::reading_rename,
+            reading::reading_remove,
+            reading::reading_auto,
+            reading::reading_hold,
+            reading::reading_confirm_position,
+            reading::reading_read,
             correction::correction_open_snapshot,
             correction::correction_open_scan,
             correction::correction_view,

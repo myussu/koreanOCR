@@ -149,6 +149,31 @@ For every feature: how it starts, where it flows, what it persists, how it is co
 * **Tests:** `crates/maru-engine/tests/pipeline.rs` (event order, cancellation, cache, degraded modes), `app/ui/test/core.test.mjs`.
 * **Real-PC check:** M-5 (selection across apps), M-6 (overlay behaviour).
 
+### 4.1a Saved game reading areas (Read again / opt-in Auto-read)
+
+* **Flow:** floating controls / Reading areas hub / optional `hotkeys.reading_again` → shell `reading.rs` →
+  `Engine` methods in `reading_areas.rs`. `reading_store.rs` owns a separate SQLite store and `reading_change.rs`
+  confirms identical OCR text at least 650 ms apart. A 300 ms poll fingerprints cropped frames; a periodic two-second
+  OCR check catches small changes or moving backgrounds. It uses normal snapshot OCR and `Engine::translate`,
+  retaining model routing, exact OCR corrections, cache, breakdown, glosses and per-word deep dives.
+* **State:** one active translation and one replaceable latest pending capture. Generations reject superseded results
+  and older errors; returning from another app resets confirmation before capturing. Manual capture calls are gated.
+  Hold pauses watching and retains the current stream through completion; deep dive/editor interactions hold it.
+  Another snapshot explicitly supersedes it. Empty confirmed text
+  retains the last answer. Automatic mode and all pending/active/status state are transient and start off.
+* **Areas:** named per executable, normalized against a visible game client rectangle. Window movement follows the
+  area; size changes require explicit check/reposition. The existing picker outlines a saved/scaled area and accepts
+  Enter to retain it, a drag to replace it, or Esc to cancel. A changed window during selection/capture is refused.
+  Shared emulator executables require distinct area names and manual selection.
+* **Platform:** additive `ScreenGrabber::app_window` has a default unsupported result. `AppWindow` reports executable,
+  title, client rectangle and transient identity. The Windows implementation owns visible/non-minimized window lookup;
+  no Win32 call enters the engine/shell.
+* **UI:** `reading.js`, `reading-core.js`, `reading.css`, `reading-demo.js` add the hub manager, floating selector/buttons
+  and snapshot status/hold banner. Floating rectangles include these controls through the existing menu rectangle.
+* **Tests:** `tests/pipeline.rs` includes `support/reading_areas.rs` (scripted model and fake windows/OCR);
+  `reading_change.rs` tests text settling; `app/ui/test/reading.test.mjs` covers controls, stale selection and DPI preview.
+  Chromium demos check layout and interaction. Real Windows/game/capture quality check: M-30.
+
 ### 4.2 Hover lookup (`Ctrl+Alt+H`)
 `watch.rs` detects a pointer resting on a word (`logic.rs::Dwell`) → `Engine::capture_hover` → `Engine::lookup_word`
 (offline only, no model) → panel. Config: `[hotkeys].hover`; the dwell time, pointer radius and idle-hide time are constants at the top of `watch.rs`.
@@ -522,6 +547,11 @@ Streaming variants/glosses may be visible before a later error; only validated r
 follow-up work ends when its translation request ends, even without the requested register. No event schema is changed.
 
 ### 6.2 Engine ↔ front end
+Saved reading areas add engine methods for storage, selection, capture, observation, hold and generation-checked
+jobs. `ScreenGrabber::app_window(exe)` defaults to `None` for older/unsupported sources; `AppWindow` is additive.
+They reuse the ordinary translate event stream and cancellation slot. No existing event/config/database meaning changes.
+`hotkeys.reading_again` is additive, defaults to empty, and applies live with other shortcuts.
+
 `Engine` methods return `(id, EventRx)` (or `EventRx`, or plain data). Each long request kind has a **task slot** in `Inner`
 (`translate_task`, `deep_task`, `scan_task`; the translation cache is in memory — `Paths::cache_db` exists but is unused): starting a new one aborts the old one. Scan joins and live lines do **not** use a
 slot that would cancel a scan (joins are detached; live lines have their own lane). Anything that must outlive a request
@@ -559,6 +589,12 @@ signatures and add `begin_anki_add`/`finish_anki_add` permits, `anki_count`, and
 No config key, event variant order, existing column meaning or command name is repurposed.
 
 ### 6.3 Shell ↔ pages
+* **Saved reading areas:** additive `reading_status`, `reading_create(name,areaId?)`, `reading_select(areaId)`,
+  `reading_rename(areaId,name)`, `reading_remove(areaId)`, `reading_read`, `reading_auto(enabled)`,
+  `reading_hold(held)`, `reading_confirm_position` and `reading_picker_hint`. The nullable picker hint gives name,
+  optional physical outline and virtual-desktop origin; the page converts through device scale. These reuse the hub,
+  panel and picker labels. `launcher_status.reading` adds the current metadata/status; `launcher_action("reading")`
+  opens the manager. Existing commands and window labels remain registered. SQLite mutations run off the UI thread.
 * **Reversible joins:** additive `scan_join_items(scanId,item,items,asWord)`, `scan_separate(scanId,item)` and
   `scan_open_item(scanId,item)` check current visible scans. Old command names remain registered. Joining/separation
   acknowledge errors through command results before changing the display; engine events replace successful labels.
@@ -600,6 +636,7 @@ No config key, event variant order, existing column meaning or command name is r
 |---|---|---|
 | `config.toml` (config dir) | `maru-core::config`, `settings.rs` | every setting; comments are preserved on edit |
 | `launcher-position.json` | `app/src-tauri/launcher.rs` | collapsed floating window top-left in physical pixels; clamped to an available monitor on startup |
+| `reading-areas.db` | `maru-engine::reading_store` | additive `reading_areas`: names and game/executable metadata, normalized client rectangle, reference size and selected area per executable; no captured text or images |
 | `resource-logs/resources-*.jsonl` | `maru-engine/resource_monitor.rs` | opt-in versioned local sessions: process/adapter samples, queue counts, numeric timing/error-stage/completion events; no subtitle/error text, bounded size, retained on stop/limit |
 | `vocab.db` | `maru-srs` | words, lookups, states, FSRS fields, contexts, Anki intervals |
 | `vocab.db` additional tables | `maru-srs::anki_store` | `anki_membership` (unique tracked words) and `anki_pending_adds` (owned incomplete note setup, scoped by endpoint/note type); additive initialization |

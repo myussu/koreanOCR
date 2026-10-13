@@ -8,6 +8,7 @@ pub mod block;
 pub mod testing;
 pub mod resources;
 pub mod network;
+pub mod app_window;
 #[cfg(windows)]
 pub mod windows;
 
@@ -54,6 +55,10 @@ pub trait ScreenGrabber: Send + Sync {
     fn foreground_app(&self) -> Option<AppInfo>;
     /// The whole virtual desktop.
     fn screen_bounds(&self) -> Rect;
+    /// Visible client area for this executable; unsupported sources return no window.
+    fn app_window(&self, _exe: &str) -> Option<app_window::AppWindow> {
+        None
+    }
 }
 
 /// Everything the engine needs from the OS.

@@ -3,6 +3,7 @@ import { ankiWordCounts } from './anki.js';
 import { latencyText, liveHistory } from './live-core.js';
 import { settingsView } from './settings.js';
 import { resourcesView } from './resources.js';
+import { readingView } from './reading.js';
 
 const view = document.getElementById('view');
 const tabs = [...document.querySelectorAll('#tabs button')];
@@ -29,7 +30,7 @@ async function show(name) {
   for (const b of tabs) b.setAttribute('aria-selected', String(b.dataset.tab === name));
   view.replaceChildren(h('p', { class: 'center', text: 'Loading…' }));
   try {
-    view.replaceChildren(...(await { review, history, status, settings: settingsView, resources: resourcesView }[name]()));
+    view.replaceChildren(...(await { review, history, status, settings: settingsView, resources: resourcesView, reading: readingView }[name]()));
   } catch (e) {
     view.replaceChildren(h('div', { class: 'err', text: String(e) }));
   }
