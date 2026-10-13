@@ -17,6 +17,12 @@ pub enum Profile {
     Maru,
     HyMt,
     HyMt2,
+    Lfm,
+    Index,
+    Milmmt,
+    MilmmtContext,
+    TranslateGemmaSub,
+    Lmt,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
@@ -25,16 +31,18 @@ pub enum Sampling {
     #[default]
     Matched,
     Tencent,
+    Lfm,
+    Greedy,
 }
 
 impl Sampling {
     fn temperature(self) -> f32 {
-        match self { Self::Matched => 0.1, Self::Tencent => 0.7 }
+        match self { Self::Matched => 0.1, Self::Tencent => 0.7, Self::Lfm => 0.3, Self::Greedy => 0.0 }
     }
 
     fn server_args(self) -> Vec<String> {
         match self {
-            Self::Matched => Vec::new(),
+            Self::Matched | Self::Lfm | Self::Greedy => Vec::new(),
             Self::Tencent => ["--top-p", "0.6", "--top-k", "20", "--repeat-penalty", "1.05"].into_iter().map(str::to_owned).collect(),
         }
     }
@@ -113,6 +121,29 @@ pub async fn measure(client: &LlmClient, profile: Profile, source: &str, turns: 
     measure_with_sampling(client, profile, Sampling::Matched, source, turns, timeout).await
 }
 
+fn lfm_messages(source: &str, turns: &[(String, String)]) -> Vec<Message> {
+    // The card's system/source pair is native; preceding chat pairs are an explicit context experiment.
+    let mut messages = vec![Message::system("Translate the following text to English.")];
+    for (ko, en) in turns {
+        messages.push(Message::user(ko));
+        messages.push(Message::assistant(en));
+    }
+    messages.push(Message::user(source));
+    messages
+}
+
+fn index_messages(source: &str, turns: &[(String, String)]) -> Vec<Message> {
+    // Index's released client uses this Chinese instruction, an explicit source language and no system message.
+    let prompt = |text: &str| format!("请将以下韩语文本翻译为英语，直接输出翻译结果，不要进行任何解释。\n\n{text}");
+    let mut messages = Vec::new();
+    for (ko, en) in turns {
+        messages.push(Message::user(prompt(ko)));
+        messages.push(Message::assistant(en));
+    }
+    messages.push(Message::user(prompt(source)));
+    messages
+}
+
 async fn measure_with_sampling(client: &LlmClient, profile: Profile, sampling: Sampling, source: &str, turns: &[(String, String)], timeout: Duration) -> Measurement {
     let started_unix_ms = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_millis();
     let started = Instant::now();
@@ -126,6 +157,24 @@ async fn measure_with_sampling(client: &LlmClient, profile: Profile, sampling: S
     };
     let request = async {
         match profile {
+            Profile::TranslateGemmaSub | Profile::Lmt => {
+                if sampling != Sampling::Greedy {
+                    Err(LlmError::Api("Translate Gemma Sub and LMT diagnostics require greedy sampling".into()))
+                } else {
+                    let messages = match profile {
+                        Profile::TranslateGemmaSub => crate::live_sub_models::sub_messages(source, turns),
+                        _ => crate::live_sub_models::lmt_messages(source, turns),
+                    };
+                    crate::live_sub_models::stream(client, source, &messages, &mut delta).await
+                }
+            }
+            Profile::Milmmt | Profile::MilmmtContext => {
+                if sampling != Sampling::Greedy || (matches!(profile, Profile::Milmmt) && !turns.is_empty()) {
+                    Err(LlmError::Api("MiLMMT requires greedy sampling; context requires the experimental milmmt-context profile".into()))
+                } else {
+                    crate::live_completion::stream(client.root(), source, turns, &mut delta).await
+                }
+            }
             Profile::Maru => {
                 let ctx = PromptContext { from_ocr: true, ..Default::default() };
                 client.translate_live(&LiveRequest { text: source, ctx: &ctx, turns }, &mut |chunk| {
@@ -134,14 +183,19 @@ async fn measure_with_sampling(client: &LlmClient, profile: Profile, sampling: S
                     }
                 }).await
             }
-            Profile::HyMt | Profile::HyMt2 => {
+            Profile::HyMt | Profile::HyMt2 | Profile::Lfm | Profile::Index => {
                 let opts = ChatOpts {
                     max_tokens: Some((source.chars().count() as u32 * 2 + 40).min(256)),
                     temperature: Some(sampling.temperature()),
                     log_timings: true,
                     ..Default::default()
                 };
-                let messages = match profile { Profile::HyMt2 => hy2_messages(source, turns), _ => hy_messages(source, turns) };
+                let messages = match profile {
+                    Profile::HyMt2 => hy2_messages(source, turns),
+                    Profile::Lfm => lfm_messages(source, turns),
+                    Profile::Index => index_messages(source, turns),
+                    _ => hy_messages(source, turns),
+                };
                 client.stream_chat(&messages, &opts, &mut delta).await.map(|s| crate::tasks::clean_text(&s))
             }
         }
@@ -298,8 +352,23 @@ fn review(cases: &[Case], records: &[Record]) -> String {
 /// A/B/A, sequential requests, separate warm-up and no application services or answer cache.
 /// The output directory must be new. Completed records survive a later server failure.
 pub async fn compare(cfg: &LlmConfig, paths: &Paths, cases: &[Case], options: &Options, progress: &mut (dyn FnMut(&str) + Send)) -> Result<Vec<PassSummary>> {
-    if options.candidate_sampling == Sampling::Tencent && matches!(options.candidate_profile, Profile::Maru) {
+    if options.candidate_sampling == Sampling::Tencent && !matches!(options.candidate_profile, Profile::HyMt | Profile::HyMt2) {
         return Err(LlmError::Api("Tencent sampling requires an HY-MT candidate prompt".into()));
+    }
+    if options.candidate_sampling == Sampling::Lfm && !matches!(options.candidate_profile, Profile::Lfm) {
+        return Err(LlmError::Api("LFM sampling requires an LFM candidate prompt".into()));
+    }
+    if options.candidate_sampling == Sampling::Greedy && !matches!(options.candidate_profile, Profile::Index | Profile::Milmmt | Profile::MilmmtContext | Profile::TranslateGemmaSub | Profile::Lmt) {
+        return Err(LlmError::Api("greedy sampling requires an Index, MiLMMT, Translate Gemma Sub or LMT candidate prompt".into()));
+    }
+    if matches!(options.candidate_profile, Profile::Milmmt) && (options.candidate_sampling != Sampling::Greedy || options.context_lines != 0 || options.rolling_context) {
+        return Err(LlmError::Api("MiLMMT requires greedy sampling, zero context and no rolling context for its published plain prompt".into()));
+    }
+    if matches!(options.candidate_profile, Profile::MilmmtContext) && options.candidate_sampling != Sampling::Greedy {
+        return Err(LlmError::Api("MiLMMT context requires greedy sampling".into()));
+    }
+    if matches!(options.candidate_profile, Profile::TranslateGemmaSub | Profile::Lmt) && options.candidate_sampling != Sampling::Greedy {
+        return Err(LlmError::Api("Translate Gemma Sub and LMT diagnostics require greedy sampling".into()));
     }
     if options.runs == 0 || options.port == 0 || cases.is_empty() {
         return Err(LlmError::Api("runs, port and corpus must be nonzero".into()));
@@ -347,7 +416,7 @@ pub async fn compare(cfg: &LlmConfig, paths: &Paths, cases: &[Case], options: &O
         std::fs::write(options.out.join(format!("{pass}-startup.log")), server.log_tail()).map_err(io_error)?;
         let client = server.client();
         let warmup = measure_with_sampling(&client, profile, sampling, "준비가 되면 시작하겠습니다.", &[], timeout).await;
-        passes.push(serde_json::json!({ "pass": pass, "model": model, "model_bytes": std::fs::metadata(model).map_err(io_error)?.len(), "profile": profile, "sampling": sampling, "temperature": sampling.temperature(), "load_ms": load_ms, "warmup": warmup, "args": crate::build_args(&config, &crate::ModelSource::File(model.clone())) }));
+        passes.push(serde_json::json!({ "pass": pass, "model": model, "model_bytes": std::fs::metadata(model).map_err(io_error)?.len(), "profile": profile, "request_format": match profile { Profile::Milmmt => "published_plain_completion", Profile::MilmmtContext => "experimental_plain_completed_examples", Profile::TranslateGemmaSub => "published_subtitle_context_blocks", Profile::Lmt => "published_lmt_instruction_experimental_chat_history", _ => "chat_messages" }, "sampling": sampling, "temperature": sampling.temperature(), "load_ms": load_ms, "warmup": warmup, "args": crate::build_args(&config, &crate::ModelSource::File(model.clone())) }));
         if let Some(error) = warmup.error {
             failure = Some(format!("{pass} warm-up failed: {error}"));
             drop(server);
@@ -386,7 +455,7 @@ pub async fn compare(cfg: &LlmConfig, paths: &Paths, cases: &[Case], options: &O
     let status = if failure.is_some() { "incomplete" } else if summaries.iter().any(|s| s.errors > 0) { "completed_with_errors" } else { "completed" };
     config.model_path = None;
     let report = Report {
-        status, limitation: "Model and prompt comparison only: no screen capture, OCR, overlay, vision reader or TTS. Warm-up excluded. Success-only latency summaries. No automatic quality score. The top-level temperature is the baseline/matched setting; per-pass sampling and temperature identify candidate overrides. Tencent sets temperature 0.7, top_p 0.6, top_k 20 and repeat penalty 1.05; unspecified samplers remain llama-server defaults. All profiles retain the live output cap. Draft model and application extra server arguments disabled for all passes.",
+        status, limitation: "Model and prompt comparison only: no screen capture, OCR, overlay, vision reader or TTS. Warm-up excluded. Success-only latency summaries. No automatic quality score. The top-level temperature is the baseline/matched setting; per-pass sampling and temperature identify candidate overrides. Tencent sets temperature 0.7, top_p 0.6, top_k 20 and repeat penalty 1.05; LFM sets temperature 0.3; greedy sets temperature 0. Unspecified samplers remain llama-server defaults. LFM and Index chat history is experimental, not a published context template. MiLMMT context uses experimental plain completed translation examples, not a published dialogue template. Fixed reference history is optimistic; rolling history uses each model's own previous answers. Scenes and repetitions reset history. Translate Gemma Sub uses its published subtitle context blocks, neutral style, greedy decoding and top_k 1. LMT uses its published single-source instruction and experimental preceding chat pairs, greedy decoding and top_k 1; this does not reproduce its published five-beam example. These two candidate profiles preserve unwanted labels and reject capped, malformed or incomplete chat streams without changing production clients. All profiles retain the live output cap. Draft model and application extra server arguments disabled for all passes.",
         game_state: &options.game_state, context_mode: if options.rolling_context { "rolling_model_outputs" } else { "fixed_reference_translations" },
         context_lines: options.context_lines, runs: options.runs, temperature: 0.1, candidate_sampling: options.candidate_sampling, token_cap: "min(source characters * 2 + 40, 256)",
         config: &config, corpus: cases, passes: &passes, summaries: &summaries, failure: &failure,
@@ -467,7 +536,7 @@ mod tests {
         let mock = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&[" ", "Do not", " go."]), delay_ms: 15 }).await;
         let client = LlmClient::new(&mock.url, &LlmConfig::default());
         let turns = vec![("가도 되나요?".into(), "May I go?".into())];
-        for profile in [Profile::Maru, Profile::HyMt, Profile::HyMt2] {
+        for profile in [Profile::Maru, Profile::HyMt, Profile::HyMt2, Profile::Lfm, Profile::Index] {
             let result = measure(&client, profile, "가지 마세요.", &turns, Duration::from_secs(2)).await;
             assert!(result.error.is_none());
             assert_eq!(result.translation, "Do not go.");
@@ -513,6 +582,102 @@ mod tests {
         let options = Options { candidate_profile: Profile::Maru, candidate_sampling: Sampling::Tencent, ..options() };
         let result = compare(&LlmConfig::default(), &Paths::under(Path::new("unused")), &[case("1", "a")], &options, &mut |_| {}).await;
         assert!(result.unwrap_err().to_string().contains("requires an HY-MT"));
+    }
+
+    #[tokio::test]
+    async fn lfm_and_index_use_their_own_instructions_and_keep_the_current_source_last() {
+        let mock = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["Don't go."]), delay_ms: 0 }).await;
+        let client = LlmClient::new(&mock.url, &LlmConfig::default());
+        let turns = vec![("가도 되나요?".into(), "May I go?".into())];
+        for (profile, sampling) in [(Profile::Lfm, Sampling::Lfm), (Profile::Index, Sampling::Greedy)] {
+            for context in [&[][..], turns.as_slice()] {
+                let result = measure_with_sampling(&client, profile, sampling, "가지 마세요.", context, Duration::from_secs(2)).await;
+                assert!(result.error.is_none());
+            }
+        }
+        let requests = mock.requests.lock().unwrap();
+        let bodies: Vec<serde_json::Value> = requests.iter().map(|r| serde_json::from_str(&r.1).unwrap()).collect();
+        assert_eq!(bodies[0]["temperature"], serde_json::json!(0.3_f32));
+        assert_eq!(bodies[2]["temperature"], serde_json::json!(0.0_f32));
+        for body in &bodies {
+            assert_eq!(body["max_tokens"], bodies[0]["max_tokens"]);
+            assert_eq!(body["chat_template_kwargs"]["enable_thinking"], false);
+            assert!(body["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap().ends_with("가지 마세요."));
+        }
+        assert_eq!(bodies[0]["messages"][0]["content"], "Translate the following text to English.");
+        assert_eq!(bodies[1]["messages"][2]["content"], "May I go?");
+        assert_eq!(bodies[2]["messages"].as_array().unwrap().len(), 1);
+        assert!(bodies[2]["messages"][0]["content"].as_str().unwrap().starts_with("请将以下韩语文本翻译为英语"));
+        assert_eq!(bodies[3]["messages"][1]["content"], "May I go?");
+        assert!(Sampling::Lfm.server_args().is_empty());
+        assert!(Sampling::Greedy.server_args().is_empty());
+    }
+
+    #[tokio::test]
+    async fn candidate_sampling_is_refused_when_it_belongs_to_another_model_family() {
+        for (profile, sampling, message) in [
+            (Profile::Lfm, Sampling::Tencent, "requires an HY-MT"),
+            (Profile::Index, Sampling::Lfm, "requires an LFM"),
+            (Profile::Maru, Sampling::Greedy, "requires an Index"),
+        ] {
+            let options = Options { candidate_profile: profile, candidate_sampling: sampling, ..options() };
+            let result = compare(&LlmConfig::default(), &Paths::under(Path::new("unused")), &[case("1", "a")], &options, &mut |_| {}).await;
+            assert!(result.unwrap_err().to_string().contains(message));
+        }
+    }
+
+    #[tokio::test]
+    async fn milmmt_requires_its_published_greedy_prompt_without_experimental_context() {
+        for (sampling, context_lines, rolling_context) in [(Sampling::Matched, 0, false), (Sampling::Greedy, 4, false), (Sampling::Greedy, 0, true)] {
+            let options = Options { candidate_profile: Profile::Milmmt, candidate_sampling: sampling, context_lines, rolling_context, ..options() };
+            let result = compare(&LlmConfig::default(), &Paths::under(Path::new("unused")), &[case("1", "a")], &options, &mut |_| {}).await;
+            assert!(result.unwrap_err().to_string().contains("MiLMMT requires"));
+        }
+    }
+
+    #[tokio::test]
+    async fn subtitle_and_lmt_candidates_use_native_messages_and_preserve_capped_streams_as_failures() {
+        let mock = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["Up?"]), delay_ms: 0 }).await;
+        let client = LlmClient::new(&mock.url, &LlmConfig::default());
+        let turns = vec![("위로 갈 수 있어요.".into(), "We can go up.".into())];
+        for profile in [Profile::TranslateGemmaSub, Profile::Lmt] {
+            let refused = measure_with_sampling(&client, profile, Sampling::Matched, "위로?", &turns, Duration::from_secs(1)).await;
+            assert!(refused.error.unwrap().contains("greedy"));
+            let result = measure_with_sampling(&client, profile, Sampling::Greedy, "위로?", &turns, Duration::from_secs(1)).await;
+            assert!(result.error.is_none());
+            assert_eq!(result.translation, "Up?");
+        }
+        {
+            let requests = mock.requests.lock().unwrap();
+            assert_eq!(requests.len(), 2);
+            let bodies: Vec<serde_json::Value> = requests.iter().map(|r| serde_json::from_str(&r.1).unwrap()).collect();
+            assert_eq!(bodies[0]["messages"].as_array().unwrap().len(), 2);
+            assert!(bodies[0]["messages"][1]["content"].as_str().unwrap().ends_with("[CURRENT_SOURCE]\n위로?"));
+            assert_eq!(bodies[1]["messages"].as_array().unwrap().len(), 3);
+            assert_eq!(bodies[1]["messages"][1]["content"], "We can go up.");
+        }
+        let capped = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![b"data: {\"choices\":[{\"delta\":{\"content\":\"partial\"},\"finish_reason\":\"length\"}]}\n".to_vec()], delay_ms: 0 }).await;
+        let result = measure_with_sampling(&LlmClient::new(&capped.url, &LlmConfig::default()), Profile::TranslateGemmaSub, Sampling::Greedy, "위로?", &[], Duration::from_secs(1)).await;
+        assert!(result.error.unwrap().contains("length"));
+        assert_eq!(result.streamed_text, "partial");
+        assert!(result.translation.is_empty());
+    }
+
+    #[tokio::test]
+    async fn experimental_milmmt_context_is_plain_and_still_requires_greedy_sampling() {
+        let mock = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![b"data: {\"content\":\"Up?\",\"stop\":true}\n\n".to_vec()], delay_ms: 0 }).await;
+        let client = LlmClient::new(&mock.url, &LlmConfig::default());
+        let turns = vec![("위로 갈 수 있어요.".into(), "We can go up.".into())];
+        let refused = measure_with_sampling(&client, Profile::MilmmtContext, Sampling::Matched, "위로?", &turns, Duration::from_secs(1)).await;
+        assert!(refused.error.unwrap().contains("greedy"));
+        assert!(mock.requests.lock().unwrap().is_empty());
+        let result = measure_with_sampling(&client, Profile::MilmmtContext, Sampling::Greedy, "위로?", &turns, Duration::from_secs(1)).await;
+        assert!(result.error.is_none());
+        assert_eq!(result.translation, "Up?");
+        let requests = mock.requests.lock().unwrap();
+        assert_eq!(requests[0].0, "/completion");
+        let body: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
+        assert!(body["prompt"].as_str().unwrap().contains("English: We can go up.\n\nTranslate this"));
     }
 
     #[tokio::test]

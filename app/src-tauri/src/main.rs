@@ -9,9 +9,15 @@ mod flow;
 mod hotkeys;
 mod logic;
 mod settings;
+mod server_check;
 mod state;
 mod watch;
 mod windows;
+mod launcher;
+mod resources;
+mod correction;
+mod scan_controls;
+mod scan_actions;
 
 use std::sync::{Arc, Mutex};
 
@@ -61,6 +67,7 @@ pub fn tray_menu(app: &tauri::AppHandle, state: &AppState) -> tauri::Result<Menu
             &item("review", "Review & history…".into())?,
             &item("status", "Status…".into())?,
             &item("settings", "Settings…".into())?,
+            &item("launcher", format!("Show / hide floating controls\t{}", keys.launcher))?,
             &PredefinedMenuItem::separator(app)?,
             &item("quit", "Quit".into())?,
         ],
@@ -72,7 +79,9 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
     let state = state.clone();
     let mut tray = TrayIconBuilder::with_id("maru").tooltip("Maru").menu(&menu).on_menu_event(move |app, event| {
         let (app, state) = (app.clone(), state.clone());
-        match event.id.as_ref() {
+        let id = event.id.as_ref().to_string();
+        // WebView2 creation must not block the thread delivering this menu event.
+        tauri::async_runtime::spawn(async move { match id.as_str() {
             "translate" => flow::translate_selection(app, state),
             "region" => {
                 let _ = windows::open_picker(&app);
@@ -92,8 +101,9 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
                 let _ = windows::open_hub(&app, "settings");
             }
             "quit" => app.exit(0),
+            "launcher" => launcher::toggle(&app),
             _ => {}
-        }
+        }});
     });
     if let Some(icon) = app.default_window_icon() {
         tray = tray.icon(icon.clone());
@@ -116,8 +126,8 @@ fn main() {
                 Config::default()
             });
             let booted = cfg.clone();
-            // Engines start in the background (the language model loads while you work).
-            let services = tauri::async_runtime::block_on(boot(paths, cfg, BootOptions::default()));
+            // Settings and controls stay available before any local GPU model is requested.
+            let services = tauri::async_runtime::block_on(boot(paths, cfg, BootOptions { defer_models: true, ..Default::default() }));
             for note in &services.notes {
                 tracing::info!("{note}");
             }
@@ -128,6 +138,10 @@ fn main() {
             windows::create_panel(app.handle(), width)?;
             windows::create_scan(app.handle())?;
             windows::create_live(app.handle())?;
+            launcher::create(app.handle(), state.clone())?;
+            app.manage(maru_engine::resource_monitor::ResourceService::start(state.services.clone()));
+            app.manage(maru_engine::server_discovery::DiscoveryService::default());
+            app.manage(correction::CorrectionState::default());
             build_tray(app.handle(), &state)?;
             for problem in hotkeys::register(app.handle(), &state) {
                 tracing::warn!("{problem}");
@@ -139,6 +153,12 @@ fn main() {
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            correction::correction_open_snapshot,
+            correction::correction_open_scan,
+            correction::correction_view,
+            correction::correction_apply,
+            correction::correction_forget,
+            correction::correction_cancel,
             commands::ui_config,
             commands::live_idle,
             commands::history_open,
@@ -151,6 +171,7 @@ fn main() {
             commands::anki_add_example,
             commands::anki_sync,
             commands::anki_check,
+            commands::anki_refresh,
             commands::anki_due,
             commands::review_word,
             commands::due_words,
@@ -167,6 +188,10 @@ fn main() {
             commands::scan_open,
             commands::scan_join,
             commands::scan_unjoin,
+            scan_controls::scan_join_mode,
+            scan_actions::scan_join_items,
+            scan_actions::scan_separate,
+            scan_actions::scan_open_item,
             commands::word_contexts,
             commands::open_hub,
             commands::tts_test,
@@ -174,14 +199,30 @@ fn main() {
             commands::tts_clip,
             commands::tts_reading,
             settings::get_settings,
+            server_check::test_model_connection,
+            server_check::discovery_networks,
+            server_check::discovery_start,
+            server_check::discovery_status,
+            server_check::discovery_cancel,
             settings::save_settings,
             settings::restart_app,
             settings::open_config_file,
+            launcher::launcher_status,
+            launcher::launcher_action,
+            launcher::launcher_rects,
+            launcher::launcher_drag,
+            launcher::launcher_expand,
+            resources::resource_status,
+            resources::resource_record,
+            resources::resource_enable,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Maru application");
 
-    app.run(|_handle, event| {
+    app.run(|handle, event| {
+        if let RunEvent::Exit = event && let Some(service) = handle.try_state::<maru_engine::resource_monitor::ResourceService>() {
+            service.shutdown();
+        }
         // Closing the hub window must not quit: Maru lives in the tray.
         if let RunEvent::ExitRequested { api, code, .. } = event
             && code.is_none()

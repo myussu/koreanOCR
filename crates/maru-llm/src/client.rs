@@ -77,6 +77,8 @@ pub struct LlmClient {
     llama_extensions: bool,
     /// `reasoning_effort` for foreign servers; `None` sends nothing.
     reasoning_effort: Option<String>,
+    runtime: Option<(std::sync::Arc<crate::model_runtime::ModelRuntime>, crate::model_runtime::ModelRole)>,
+    request_deadline: Option<Duration>,
 }
 
 impl LlmClient {
@@ -96,6 +98,8 @@ impl LlmClient {
             idle_timeout: Duration::from_secs(cfg.request_timeout_secs.max(1)),
             llama_extensions: cfg.endpoint.is_none(),
             reasoning_effort: Some(cfg.reasoning_effort.trim().to_string()).filter(|e| !e.is_empty()),
+            runtime: None,
+            request_deadline: None,
         }
     }
 
@@ -109,6 +113,31 @@ impl LlmClient {
 
     pub fn root(&self) -> &str {
         &self.root
+    }
+
+    pub fn with_runtime(mut self, runtime: std::sync::Arc<crate::model_runtime::ModelRuntime>, role: crate::model_runtime::ModelRole) -> Self {
+        self.runtime = Some((runtime, role));
+        self
+    }
+
+    pub fn has_runtime(&self) -> bool { self.runtime.is_some() }
+    /// Optional overall deadline for the snapshot fallback; ordinary clients keep their existing timeout.
+    pub fn with_request_deadline(mut self, deadline: Duration) -> Self { self.request_deadline = Some(deadline); self }
+    pub fn loaded_role(&self) -> Option<crate::model_runtime::ModelRole> { self.runtime.as_ref().and_then(|(runtime, _)| runtime.current_role()) }
+    pub async fn ensure_loaded(&self) -> Result<()> {
+        let _lease = self.model_lease().await?;
+        Ok(())
+    }
+
+    pub(crate) async fn model_lease(&self) -> Result<Option<crate::model_runtime::ModelLease>> {
+        match &self.runtime {
+            Some((runtime, role)) => runtime.acquire(*role).await.map(Some),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn model_name(&self) -> &str {
+        &self.model
     }
 
     /// `true` once llama-server reports the model loaded. Servers without a
@@ -164,14 +193,26 @@ impl LlmClient {
     /// the full text is returned at the end. Dropping the future cancels the
     /// request (the server stops generating when the connection closes).
     pub async fn stream_chat(&self, messages: &[Message], opts: &ChatOpts, on_delta: &mut (dyn FnMut(&str) + Send)) -> Result<String> {
+        self.stream_chat_inner(messages, opts, on_delta, false).await
+    }
+
+    pub(crate) async fn stream_warmup(&self, messages: &[Message]) -> Result<()> {
+        let opts = ChatOpts { max_tokens: Some(1), ..Default::default() };
+        self.stream_chat_inner(messages, &opts, &mut |_| {}, true).await.map(|_| ())
+    }
+
+    async fn stream_chat_inner(&self, messages: &[Message], opts: &ChatOpts, on_delta: &mut (dyn FnMut(&str) + Send), warmup: bool) -> Result<String> {
+        let _lease = self.model_lease().await?;
         let started = std::time::Instant::now();
         let url = format!("{}/v1/chat/completions", self.root);
-        let resp = self
+        let request = self
             .http
             .post(&url)
-            .json(&self.body(messages, opts))
-            .send()
+            .json(&self.body(messages, opts));
+        let request = match self.request_deadline { Some(deadline) => request.timeout(deadline), None => request };
+        let resp = tokio::time::timeout(self.idle_timeout, request.send())
             .await
+            .map_err(|_| LlmError::Stalled(self.idle_timeout.as_secs()))?
             .map_err(|source| LlmError::Unreachable { url: self.root.clone(), source })?;
 
         let status = resp.status();
@@ -179,7 +220,9 @@ impl LlmClient {
             tracing::info!(headers_ms = started.elapsed().as_millis() as u64, "live model response");
         }
         if !status.is_success() {
-            let body = resp.text().await.unwrap_or_default();
+            let body = tokio::time::timeout(self.idle_timeout, resp.text()).await
+                .map_err(|_| LlmError::Stalled(self.idle_timeout.as_secs()))?
+                .unwrap_or_default();
             return Err(LlmError::Http { status: status.as_u16(), body: body.chars().take(400).collect() });
         }
 
@@ -190,15 +233,24 @@ impl LlmClient {
             let next = tokio::time::timeout(self.idle_timeout, stream.next())
                 .await
                 .map_err(|_| LlmError::Stalled(self.idle_timeout.as_secs()))?;
-            let Some(chunk) = next else { break };
-            let chunk = chunk.map_err(|e| LlmError::Stream(e.to_string()))?;
-            for event in parser.push(&chunk) {
+            let ended = next.is_none();
+            let events = match next {
+                Some(chunk) => parser.push(&chunk.map_err(|e| LlmError::Stream(e.to_string()))?),
+                None => parser.finish(),
+            };
+            for event in events {
                 match event {
                     SseEvent::Delta(text) => {
                         on_delta(&text);
                         full.push_str(&text);
                     }
                     SseEvent::Error(e) => return Err(LlmError::Api(e)),
+                    SseEvent::Finish(reason) => {
+                        // Warm-ups deliberately request one token and never produce reusable answers.
+                        if reason != "stop" && !(warmup && reason == "length") {
+                            return Err(LlmError::Api(format!("translation stopped before finishing ({reason}); try a shorter selection")));
+                        }
+                    }
                     SseEvent::Timings(t) => {
                         if opts.log_timings {
                             tracing::info!(prompt_ms = t.get("prompt_ms").and_then(|v| v.as_f64()),
@@ -211,14 +263,10 @@ impl LlmClient {
                     SseEvent::Done => return Ok(full),
                 }
             }
-        }
-        for event in parser.finish() {
-            if let SseEvent::Delta(text) = event {
-                on_delta(&text);
-                full.push_str(&text);
+            if ended {
+                return Err(LlmError::Stream("response ended without its final [DONE] event".into()));
             }
         }
-        Ok(full)
     }
 }
 
@@ -228,6 +276,7 @@ pub enum SseEvent {
     Error(String),
     Done,
     Timings(Value),
+    Finish(String),
 }
 
 /// Incremental `text/event-stream` parser for chat-completion chunks.
@@ -243,34 +292,55 @@ impl SseParser {
         // Split on raw bytes: a network chunk may end inside a multi-byte character.
         while let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = self.buf.drain(..=i).collect();
-            if let Some(e) = parse_line(&line) {
-                events.push(e);
-            }
+            events.extend(parse_line(&line));
         }
         events
     }
 
     pub fn finish(&mut self) -> Vec<SseEvent> {
         let rest = std::mem::take(&mut self.buf);
-        parse_line(&rest).into_iter().collect()
+        parse_line(&rest)
     }
 }
 
-fn parse_line(line: &[u8]) -> Option<SseEvent> {
-    let line = String::from_utf8_lossy(line);
-    let payload = line.trim().strip_prefix("data:")?.trim();
+fn parse_line(line: &[u8]) -> Vec<SseEvent> {
+    let line = match std::str::from_utf8(line) {
+        Ok(line) => line,
+        Err(_) => return vec![SseEvent::Error("invalid UTF-8 in a model response event".into())],
+    };
+    let Some(payload) = line.trim().strip_prefix("data:").map(str::trim) else { return Vec::new() };
+    if payload.is_empty() { return Vec::new(); }
     if payload == "[DONE]" {
-        return Some(SseEvent::Done);
+        return vec![SseEvent::Done];
     }
-    let v: Value = serde_json::from_str(payload).ok()?;
+    let v: Value = match serde_json::from_str(payload) {
+        Ok(Value::Object(object)) => Value::Object(object),
+        _ => return vec![SseEvent::Error("malformed model response event".into())],
+    };
     if let Some(err) = v.get("error") {
         let msg = err.get("message").and_then(Value::as_str).or_else(|| err.as_str()).unwrap_or("unknown error");
-        return Some(SseEvent::Error(msg.to_string()));
+        return vec![SseEvent::Error(msg.to_string())];
     }
-    if let Some(text) = v.pointer("/choices/0/delta/content").and_then(Value::as_str).filter(|s| !s.is_empty()) {
-        return Some(SseEvent::Delta(text.to_string()));
+    let mut events = Vec::new();
+    if let Some(choices) = v.get("choices") {
+        let Some(choices) = choices.as_array() else { return vec![SseEvent::Error("malformed response choices".into())] };
+        if let Some(choice) = choices.first() {
+            if !choice.is_object() { return vec![SseEvent::Error("malformed response choice".into())]; }
+            if let Some(delta) = choice.get("delta") {
+                if !delta.is_object() { return vec![SseEvent::Error("malformed response delta".into())]; }
+                if let Some(content) = delta.get("content").filter(|c| !c.is_null()) {
+                    let Some(text) = content.as_str() else { return vec![SseEvent::Error("malformed response content".into())] };
+                    if !text.is_empty() { events.push(SseEvent::Delta(text.to_string())); }
+                }
+            }
+            if let Some(reason) = choice.get("finish_reason").filter(|r| !r.is_null()) {
+                let Some(reason) = reason.as_str() else { return vec![SseEvent::Error("malformed response finish reason".into())] };
+                events.push(SseEvent::Finish(reason.to_string()));
+            }
+        }
     }
-    v.get("timings").cloned().map(SseEvent::Timings)
+    if let Some(timings) = v.get("timings") { events.push(SseEvent::Timings(timings.clone())); }
+    events
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -433,7 +503,8 @@ mod tests {
 
     #[tokio::test]
     async fn unreachable_server_is_reported_clearly() {
-        let client = LlmClient::new("http://127.0.0.1:1", &cfg());
+        // Leave time for the connection error rather than the shorter header timeout.
+        let client = LlmClient::new("http://127.0.0.1:1", &LlmConfig { request_timeout_secs: 5, ..cfg() });
         let err = client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap_err();
         assert!(matches!(err, LlmError::Unreachable { .. }));
         assert!(!client.health().await);
@@ -510,5 +581,72 @@ mod tests {
         .await;
         let client = LlmClient::new(&server.url, &cfg());
         client.wait_ready(Duration::from_secs(2)).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_server_that_accepts_but_never_sends_headers_times_out() {
+        use tokio::io::AsyncReadExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let root = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0; 4096];
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            std::future::pending::<()>().await;
+        });
+        let mut client = LlmClient::new(&root, &cfg());
+        client.idle_timeout = Duration::from_millis(50);
+        let result = tokio::time::timeout(Duration::from_millis(500), client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {})).await;
+        server.abort();
+        assert!(matches!(result, Ok(Err(LlmError::Stalled(_)))), "{result:?}");
+    }
+
+    #[tokio::test]
+    async fn incomplete_malformed_capped_and_error_at_eof_streams_are_refused() {
+        for tail in [
+            "",
+            "data: not-json\n\ndata: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\ndata: [DONE]\n\n",
+            "data: {\"error\":{\"message\":\"failed at EOF\"}}",
+            "data: {\"choices\":[{\"delta\":{\"content\":7}}]}\n\ndata: [DONE]\n\n",
+        ] {
+            let server = spawn_mock(move |_, _| MockResponse { status: 200, chunks: vec![sse_event("partial"), tail.as_bytes().to_vec()], delay_ms: 0 }).await;
+            let client = LlmClient::new(&server.url, &cfg());
+            let result = client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await;
+            assert!(result.is_err(), "accepted {tail:?}: {result:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_final_delta_and_stop_reason_in_one_event_are_both_checked() {
+        for reason in ["stop", "length"] {
+            let server = spawn_mock(move |_, _| MockResponse { status: 200, chunks: vec![format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"Yes.\"}},\"finish_reason\":\"{reason}\"}}],\"timings\":{{\"predicted_ms\":1}}}}\n\ndata: [DONE]\n\n").into_bytes()], delay_ms: 0 }).await;
+            let client = LlmClient::new(&server.url, &cfg());
+            let result = client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await;
+            if reason == "stop" { assert_eq!(result.unwrap(), "Yes."); } else { assert!(result.is_err()); }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_done_marker_without_a_trailing_newline_is_accepted() {
+        let server = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![sse_event("Yes."), b"data: [DONE]".to_vec()], delay_ms: 0 }).await;
+        assert_eq!(LlmClient::new(&server.url, &cfg()).stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap(), "Yes.");
+    }
+
+    #[tokio::test]
+    async fn regular_deltas_can_take_longer_than_one_idle_timeout_in_total() {
+        let server = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["a", "b", "c", "d", "e"]), delay_ms: 50 }).await;
+        let mut client = LlmClient::new(&server.url, &cfg());
+        client.idle_timeout = Duration::from_millis(150);
+        assert_eq!(client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap(), "abcde");
+    }
+
+    #[tokio::test]
+    async fn an_error_response_with_a_body_that_never_finishes_times_out() {
+        let server = spawn_mock(|_, _| MockResponse { status: 503, chunks: vec![b"loading".to_vec()], delay_ms: 500 }).await;
+        let mut client = LlmClient::new(&server.url, &cfg());
+        client.idle_timeout = Duration::from_millis(50);
+        assert!(matches!(client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await, Err(LlmError::Stalled(_))));
     }
 }

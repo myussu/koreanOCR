@@ -9,6 +9,8 @@ pub mod event;
 pub mod paths;
 pub mod settings;
 pub mod types;
+pub mod live_model;
+pub mod resources;
 
 pub use config::Config;
 pub use error::{Error, Result};

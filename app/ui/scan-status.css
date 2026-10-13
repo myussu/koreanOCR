@@ -1,0 +1,19 @@
+.lab[data-status="loading"] { color: #b7c0d0; border-color: rgba(147, 197, 253, 0.6); }
+.lab .loading-dot { display: inline-block; animation: scan-loading-dot 1.2s ease-in-out infinite; }
+.lab .loading-dot:nth-child(2) { animation-delay: 0.15s; }
+.lab .loading-dot:nth-child(3) { animation-delay: 0.3s; }
+.lab[data-status="failed"] { color: #fbbf24; border-color: #fbbf24; font-weight: 700; }
+.lab[data-status="unavailable"] { color: #c5cbd5; border-style: dashed; }
+.lab.dot[data-status="loading"] { animation: scan-loading-dot 1.2s ease-in-out infinite; }
+.lab.dot[data-status="failed"] { background: #b45309; }
+.lab.dot[data-status="unavailable"] { background: #4b5563; }
+.lab.dot[data-status="loading"]:hover { animation: none; }
+
+@keyframes scan-loading-dot {
+  0%, 80%, 100% { opacity: 0.35; }
+  40% { opacity: 1; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .lab .loading-dot, .lab.dot[data-status="loading"] { animation: none; opacity: 1; }
+}

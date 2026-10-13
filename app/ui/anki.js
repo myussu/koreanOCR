@@ -70,7 +70,7 @@ export function intervalText(days) {
 /** What to tell the user once a word has gone in. */
 export function addedText(reply) {
   if (reply.result !== 'added') return '';
-  const cards = reply.cards === 1 ? '1 card' : `${reply.cards} cards`;
+  const cards = !reply.cards ? 'card setup awaiting confirmation' : reply.cards === 1 ? '1 card' : `${reply.cards} cards`;
   const reverse = reply.reverse_deck ? `; the English → Korean one is in ${reply.reverse_deck}` : '';
   return `✓ Added to ${reply.deck} (${cards}${reverse})${reply.sync ? ' · syncing with AnkiWeb' : ''}`;
 }
@@ -79,4 +79,17 @@ export function addedText(reply) {
 export function reverseChoice(wanted, configured) {
   if (!wanted) return 'off';
   return configured === 'off' ? 'subdeck' : null;
+}
+
+/** Keyboard submission must respect the same busy state as the Add button. */
+export function canSubmitAnki(u) {
+  return !!u && !u.busy && !u.loading && !!u.overview?.connected;
+}
+
+export function ankiSettingsPending(draft,pendingRestart=[]){
+  return [...Object.keys(draft),...pendingRestart].some(p=>p.startsWith('learning.anki.'));
+}
+
+export function ankiWordCounts(s){
+  return [['words seen',s.vocab.total],['tracked in Anki',s.anki_words??'—'],['known',s.vocab.known]];
 }

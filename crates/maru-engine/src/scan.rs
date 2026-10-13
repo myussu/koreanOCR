@@ -100,7 +100,7 @@ fn offline_items(inner: &Inner, found: &[Found], mode: GlossMode, profile: Optio
         } else {
             (String::new(), LabelSource::Pending)
         };
-        items.push(ScanItem { item: first_id + items.len() as u32, rect: f.rect, text: f.text.clone(), label, source, known: known && mode != GlossMode::All });
+        items.push(ScanItem { item: first_id + items.len() as u32, rect: f.rect, text: f.text.clone(), label, source, known: known && mode != GlossMode::All, join: None });
     }
     items
 }
@@ -182,15 +182,13 @@ pub(crate) async fn run(inner: Arc<Inner>, id: u64, source: Source, tx: EventTx)
     em.send(Event::Timing { id, stage: Stage::Ocr, ms: read_time.as_millis() as u32 });
 
     // ── the free part: dictionary, glossary, remembered labels ──
-    let app = inner.platform.screen.foreground_app();
-    let scope = app.as_ref().map(|a| a.exe.clone()).unwrap_or_default();
-    *crate::engine::lock(&inner.scan_scope) = (id, scope.clone());
+    let scope = crate::engine::lock(&inner.scan_scope).1.clone();
     // Lines the person once joined by hand are joined again.
     let found = {
         let rules = inner.labels.as_ref().map(|c| c.joins_for(&scope)).unwrap_or_default();
-        crate::joins::apply_rules(found_items(&out), &rules)
+        crate::scan_joining::apply_saved(found_items(&out), &rules, inner.labels.as_deref(), &scope)
     };
-    label(&inner, &em, found, 0, &scope, started).await;
+    label(&inner, &em, LabelInput::Joined { items: found, correct_ocr: true }, 0, &scope, started).await;
 
     em.send(Event::Timing { id, stage: Stage::Total, ms: started.elapsed().as_millis() as u32 });
     em.done();
@@ -198,23 +196,66 @@ pub(crate) async fn run(inner: Arc<Inner>, id: u64, source: Source, tx: EventTx)
 
 /// Give `found` its labels: what is free at once (`ScanItems`), then the model's answers, streamed
 /// (`ScanLabel`). Item numbers start at `first_id`, so a later join can add items to a scan that is on screen.
-async fn label(inner: &Arc<Inner>, em: &Emitter, found: Vec<Found>, first_id: u32, scope: &str, started: Instant) {
+pub(crate) enum LabelInput { Ocr(Vec<Found>), Joined { items: Vec<crate::scan_joining::JoinedFound>, correct_ocr: bool } }
+pub(crate) async fn label(inner: &Arc<Inner>, em: &Emitter, input: LabelInput, first_id: u32, scope: &str, started: Instant) {
+    let (mut found, correct_ocr, mut joins, observations) = match input {
+        LabelInput::Ocr(found) => { let joins = vec![None; found.len()]; let observed = vec![None; found.len()]; (found, true, joins, observed) },
+        LabelInput::Joined { items, correct_ocr } => {
+            let observations = items.iter().map(|i| i.observed.clone()).collect::<Vec<_>>();
+            let (found, joins) = items.into_iter().map(|i| (i.found, i.join)).unzip();
+            (found, correct_ocr, joins, observations)
+        }
+    };
     let id = em.id();
     let scope = scope.to_string();
     let profile = inner.cfg.profile_for(&scope).cloned();
     let mode = effective_gloss_mode(inner, profile.as_ref());
     let t = Instant::now();
-    let items = {
+    let mut originals = found.clone();
+    for (original, observed) in originals.iter_mut().zip(observations) {
+        if let Some(observed) = observed { original.text = observed; }
+    }
+    if correct_ocr {
+        for (item, original) in found.iter_mut().zip(&originals) {
+            if item.text != original.text && let Some(cache) = &inner.labels
+                && let Ok(Some(text)) = cache.ocr_correction(&scope, &original.text) { item.text = text; }
+        }
+        crate::ocr_corrections::correct_found(inner, &scope, &mut found);
+        for join in joins.iter_mut().flatten() {
+            for part in &mut join.parts {
+                if part.observed.is_some() { continue; }
+                let mut found = vec![Found { rect: part.rect, text: part.text.clone() }];
+                crate::ocr_corrections::correct_found(inner, &scope, &mut found);
+                if found[0].text != part.text { part.observed = Some(part.text.clone()); part.text = found[0].text.clone(); }
+            }
+        }
+    }
+    let corrected = found.clone();
+    let mut items = {
         let (inner, profile, scope) = (inner.clone(), profile.clone(), scope.clone());
         tokio::task::spawn_blocking(move || offline_items(&inner, &found, mode, profile.as_ref(), &scope, first_id)).await.unwrap_or_default()
     };
+    for item in &mut items {
+        if let Some(index) = corrected.iter().position(|f| f.rect == item.rect && f.text == item.text) {
+            item.join = joins[index].clone();
+        }
+    }
     em.send(Event::Timing { id, stage: Stage::Morphology, ms: t.elapsed().as_millis() as u32 });
     let groups = needs_model(&items);
+    let waiting: Vec<u32> = groups.iter().flat_map(|g| g.2.iter().copied()).collect();
+    let finished: Vec<u32> = items.iter().map(|i| i.item).filter(|item| !waiting.contains(item)).collect();
+    crate::ocr_corrections::register_items(inner, id, &items, &originals, &corrected);
     em.send(Event::ScanItems { id, items });
+    if !finished.is_empty() {
+        em.send(Event::ScanLabelsFinished { id, items: finished, error: None });
+    }
 
     // ── the rest: the model, in batches, streamed ──
-    if !groups.is_empty()
-        && let Some(client) = await_llm(inner, em).await
+    if groups.is_empty() { return; }
+    let Some(client) = await_llm(inner, em).await else {
+        em.send(Event::ScanLabelsFinished { id, items: waiting, error: Some("The translation model is unavailable. Refresh labels to try again.".into()) });
+        return;
+    };
     {
         let ctx = PromptContext {
             hint: profile.as_ref().and_then(|p| p.hint.clone()),
@@ -225,11 +266,13 @@ async fn label(inner: &Arc<Inner>, em: &Emitter, found: Vec<Found>, first_id: u3
         let first_label = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let gate = Arc::new(Semaphore::new(PARALLEL_BATCHES));
         let mut batches = JoinSet::new(); // dropped with this task, so a newer scan cancels the requests
+        let mut batch_items = HashMap::new();
         for batch in groups.chunks(BATCH) {
             let (client, em, ctx, gate, inner, scope, first_label) =
                 (client.clone(), em.clone(), ctx.clone(), gate.clone(), inner.clone(), scope.clone(), first_label.clone());
             let batch = batch.to_vec();
-            batches.spawn(async move {
+            let item_ids: Vec<u32> = batch.iter().flat_map(|g| g.2.iter().copied()).collect();
+            let task = batches.spawn(async move {
                 let Ok(_slot) = gate.acquire().await else { return };
                 let asked: Vec<(usize, &str)> = batch.iter().enumerate().map(|(n, g)| (n, g.1.as_str())).collect();
                 let learned = Mutex::new(Vec::<(String, String)>::new());
@@ -248,9 +291,12 @@ async fn label(inner: &Arc<Inner>, em: &Emitter, found: Vec<Found>, first_id: u3
                         learned.lock().unwrap_or_else(|p| p.into_inner()).push((text.clone(), line.label));
                     })
                     .await;
-                if let Err(e) = result {
-                    em.error(Stage::Llm, e.to_string());
+                let error = result.err().map(|e| e.to_string());
+                if let Some(message) = &error {
+                    em.error(Stage::Llm, message.clone());
                 }
+                let items = batch.iter().flat_map(|g| g.2.iter().copied()).collect();
+                em.send(Event::ScanLabelsFinished { id: em.id(), items, error });
                 // Remember what was learned, even from a half-finished answer.
                 let learned = learned.into_inner().unwrap_or_else(|p| p.into_inner());
                 if !learned.is_empty()
@@ -259,8 +305,17 @@ async fn label(inner: &Arc<Inner>, em: &Emitter, found: Vec<Found>, first_id: u3
                     let _ = tokio::task::spawn_blocking(move || cache.put_many(&scope, &learned, now_secs())).await;
                 }
             });
+            batch_items.insert(task.id(), item_ids);
         }
-        while batches.join_next().await.is_some() {}
+        while let Some(result) = batches.join_next_with_id().await {
+            if let Err(error) = result {
+                let message = "A translation task stopped unexpectedly. Refresh labels to try again.".to_string();
+                em.error(Stage::Llm, message.clone());
+                if let Some(items) = batch_items.remove(&error.id()) {
+                    em.send(Event::ScanLabelsFinished { id, items, error: Some(message) });
+                }
+            }
+        }
     }
 }
 
@@ -289,7 +344,7 @@ pub(crate) async fn join(inner: Arc<Inner>, scan_id: u64, item: u32, pieces: Vec
         let (scope, text) = (scope.clone(), joined.text.clone());
         let _ = tokio::task::spawn_blocking(move || cache.put_join(&scope, &parts, &text, now_secs())).await;
     }
-    label(&inner, &em, vec![joined], item, &scope, started).await;
+    label(&inner, &em, LabelInput::Ocr(vec![joined]), item, &scope, started).await;
     em.done();
 }
 
@@ -328,7 +383,7 @@ mod tests {
         let items: Vec<ScanItem> = found
             .iter()
             .enumerate()
-            .map(|(i, f)| ScanItem { item: i as u32, rect: f.rect, text: f.text.clone(), label: String::new(), source: LabelSource::Pending, known: false })
+            .map(|(i, f)| ScanItem { item: i as u32, rect: f.rect, text: f.text.clone(), label: String::new(), source: LabelSource::Pending, known: false, join: None })
             .collect();
         let groups = needs_model(&items);
         assert_eq!(groups.len(), 1);
@@ -337,7 +392,7 @@ mod tests {
 
     #[test]
     fn already_labelled_and_known_items_are_not_sent_to_the_model() {
-        let item = |n: u32, text: &str, source, known| ScanItem { item: n, rect: Rect::default(), text: text.into(), label: String::new(), source, known };
+        let item = |n: u32, text: &str, source, known| ScanItem { item: n, rect: Rect::default(), text: text.into(), label: String::new(), source, known, join: None };
         let items = vec![
             item(0, "취소", LabelSource::Cache, false),
             item(1, "설정", LabelSource::Glossary, false),
@@ -352,7 +407,7 @@ mod tests {
     #[test]
     fn long_lines_are_clipped_for_the_prompt() {
         let long = "가".repeat(300);
-        let items = vec![ScanItem { item: 0, rect: Rect::default(), text: long, label: String::new(), source: LabelSource::Pending, known: false }];
+        let items = vec![ScanItem { item: 0, rect: Rect::default(), text: long, label: String::new(), source: LabelSource::Pending, known: false, join: None }];
         assert_eq!(needs_model(&items)[0].1.chars().count(), MAX_PROMPT_CHARS);
     }
 }

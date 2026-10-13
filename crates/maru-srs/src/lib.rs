@@ -3,6 +3,7 @@
 pub mod anki;
 pub mod fsrs;
 pub mod store;
+pub mod anki_store;
 
 use thiserror::Error;
 

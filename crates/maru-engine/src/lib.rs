@@ -9,6 +9,7 @@
 pub mod anki_flow;
 pub mod annotate;
 pub mod bootstrap;
+mod deferred_models;
 pub mod cache;
 pub mod capture;
 pub mod change;
@@ -17,8 +18,20 @@ pub mod engine;
 pub mod memory;
 mod pipeline;
 mod live_lane;
+mod live_context;
+pub mod live_models;
 mod live_text;
+mod resource_targets;
+pub mod model_controls;
+pub mod ocr_corrections;
+#[cfg(test)]
+mod model_control_tests;
+#[cfg(test)]
+mod remote_model_tests;
+pub mod resource_monitor;
+pub mod server_discovery;
 mod scan;
+mod scan_joining;
 pub mod respace;
 pub mod vision;
 pub mod hardware;
@@ -33,3 +46,4 @@ pub use capture::{CaptureError, Capturer};
 pub use continuous::{ContinuousHandle, LiveEvent, LiveLine};
 pub use engine::{DeepDiveRequest, Engine, EngineError, EngineParts, EventRx, ReviewResult};
 pub use memory::HistoryItem;
+pub use maru_llm::connection::{ConnectionReply, test_connection};

@@ -125,6 +125,10 @@ pub enum Event {
     ScanItems { id: u64, items: Vec<ScanItem> },
     /// A better label for one item (remembered, glossary, or from the model).
     ScanLabel { id: u64, item: u32, label: String, source: LabelSource },
+    ScanCorrection { id: u64, item: u32, replacement: u32 },
+    /// These items finished waiting for labels; joins can still be working under the same scan id.
+    ScanLabelsFinished { id: u64, items: Vec<u32>, error: Option<String> },
+    ScanSeparated { id: u64, item: u32, next_item: u32 },
 
     Timing { id: u64, stage: Stage, ms: u32 },
     Error { id: u64, stage: Stage, message: String },
@@ -146,6 +150,9 @@ impl Event {
             | Event::ScanStarted { id, .. }
             | Event::ScanItems { id, .. }
             | Event::ScanLabel { id, .. }
+            | Event::ScanCorrection { id, .. }
+            | Event::ScanLabelsFinished { id, .. }
+            | Event::ScanSeparated { id, .. }
             | Event::Timing { id, .. }
             | Event::Error { id, .. }
             | Event::Done { id } => *id,
@@ -177,16 +184,30 @@ mod tests {
             label: String::new(),
             source: LabelSource::Pending,
             known: false,
+            join: None,
         }];
         for e in [
             Event::ScanStarted { id: 9, screen: Rect::new(0.0, 0.0, 1920.0, 1080.0) },
             Event::ScanItems { id: 9, items },
             Event::ScanLabel { id: 9, item: 3, label: "Inventory".into(), source: LabelSource::Model },
+            Event::ScanCorrection { id: 9, item: 3, replacement: 4 },
+            Event::ScanLabelsFinished { id: 9, items: vec![3], error: None },
+            Event::ScanLabelsFinished { id: 9, items: vec![4], error: Some("Server timed out".into()) },
+            Event::ScanSeparated { id: 9, item: 4, next_item: 7 },
         ] {
             assert_eq!(e.id(), 9);
             let v = serde_json::to_value(&e).unwrap();
             assert_eq!(serde_json::from_value::<Event>(v).unwrap(), e);
         }
         assert_eq!(serde_json::to_value(LabelSource::Cache).unwrap(), "cache");
+    }
+
+    #[test]
+    fn older_scan_items_without_join_metadata_still_parse() {
+        let item: ScanItem = serde_json::from_value(serde_json::json!({
+            "item":0,"rect":{"x":1.0,"y":2.0,"w":30.0,"h":20.0},
+            "text":"한국어","label":"Korean","source":"model","known":false
+        })).unwrap();
+        assert!(item.join.is_none());
     }
 }

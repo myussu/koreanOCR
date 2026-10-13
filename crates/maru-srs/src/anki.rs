@@ -183,7 +183,7 @@ pub struct ExistingNote {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Added {
-    New { note_id: u64, deck: String, reverse_deck: Option<String>, cards: usize },
+    New { note_id: u64, deck: String, reverse_deck: Option<String>, cards: usize, warning: Option<String> },
     Exists(ExistingNote),
 }
 
@@ -253,15 +253,17 @@ impl AnkiClient {
             .json()
             .await
             .map_err(|e| SrsError::Anki(format!("bad AnkiConnect response: {e}")))?;
-        match resp.get("error") {
-            Some(Value::String(e)) => Err(SrsError::Anki(e.clone())),
-            _ => Ok(resp.get("result").cloned().unwrap_or(Value::Null)),
+        match (resp.get("error"), resp.get("result")) {
+            (Some(Value::String(e)), _) => Err(SrsError::Anki(e.clone())),
+            (Some(Value::Null), Some(result)) => Ok(result.clone()),
+            _ => Err(SrsError::Anki("The server returned an invalid AnkiConnect response.".into())),
         }
     }
 
     /// AnkiConnect API version, proving Anki is running with the add-on.
     pub async fn ping(&self) -> Result<u64> {
-        Ok(self.call("version", json!({})).await?.as_u64().unwrap_or(0))
+        self.call("version", json!({})).await?.as_u64().filter(|v| *v >= 6)
+            .ok_or_else(|| SrsError::Anki("AnkiConnect API version 6 or newer is required.".into()))
     }
 
     /// Every deck in your collection.
@@ -376,18 +378,33 @@ impl AnkiClient {
             }
             Err(e) => return Err(e),
         };
+        match self.finish_add(note_id, &req.deck, req.reverse).await {
+            Ok((reverse_deck, cards)) => Ok(Added::New { note_id, deck: req.deck.clone(), reverse_deck, cards, warning: None }),
+            Err(error) => Ok(Added::New { note_id, deck: req.deck.clone(), reverse_deck: None, cards: 0,
+                warning: Some(format!("The note was added, but its card setup is unfinished: {error}. Retry adding this word to finish; no duplicate note is needed.")) }),
+        }
+    }
+
+    /// Finish only a note created by this add. Existing unrelated notes are left alone.
+    pub async fn finish_add(&self, note_id: u64, deck: &str, reverse: ReverseMode) -> Result<(Option<String>, usize)> {
         // Cards come in template order: Korean → English, then English → Korean.
         let info = self.call("notesInfo", json!({ "notes": [note_id] })).await?;
         let cards: Vec<u64> = info[0]["cards"].as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
         let mut reverse_deck = None;
-        if req.reverse == ReverseMode::Subdeck
+        if cards.is_empty() {
+            return Err(SrsError::Anki("Anki did not return the note's cards".into()));
+        }
+        if reverse == ReverseMode::Subdeck
             && let Some(&reverse_card) = cards.get(1)
         {
-            let sub = format!("{}::{}", req.deck, self.cfg.reverse_subdeck.trim());
+            if self.cfg.reverse_subdeck.trim().is_empty() {
+                return Err(SrsError::Anki("Choose a reverse subdeck name in Settings".into()));
+            }
+            let sub = format!("{}::{}", deck, self.cfg.reverse_subdeck.trim());
             self.call("changeDeck", json!({ "cards": [reverse_card], "deck": sub })).await?;
             reverse_deck = Some(sub);
         }
-        Ok(Added::New { note_id, deck: req.deck.clone(), reverse_deck, cards: cards.len() })
+        Ok((reverse_deck, cards.len()))
     }
 
     /// Add another sentence to a word's card (its `Examples` field), with its audio. `false` if the
@@ -423,14 +440,20 @@ impl AnkiClient {
     /// How every Korean → English card of the note type stands.
     pub async fn states(&self) -> Result<Vec<CardState>> {
         let query = format!("\"note:{}\" card:1", search_text(&self.cfg.note_type));
-        let ids: Vec<u64> = self.call("findCards", json!({ "query": query })).await?.as_array().map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
+        let found = self.call("findCards", json!({ "query": query })).await?;
+        let ids: Vec<u64> = found.as_array().ok_or_else(|| SrsError::Anki("Anki returned an invalid card list".into()))?
+            .iter().map(|v| v.as_u64().ok_or_else(|| SrsError::Anki("Anki returned an invalid card ID".into()))).collect::<Result<_>>()?;
         let mut out = Vec::new();
         for chunk in ids.chunks(200) {
             let infos = self.call("cardsInfo", json!({ "cards": chunk })).await?;
-            for c in infos.as_array().into_iter().flatten() {
+            let infos = infos.as_array().ok_or_else(|| SrsError::Anki("Anki returned invalid card details".into()))?;
+            for c in infos {
+                if c["type"].as_i64().is_none() || c["queue"].as_i64().is_none() || c["interval"].as_f64().is_none() {
+                    return Err(SrsError::Anki("Anki returned incomplete scheduling details; progress was not changed".into()));
+                }
                 let word = unesc(&str_of(&c["fields"]["Word"]["value"]));
                 if word.is_empty() {
-                    continue;
+                    return Err(SrsError::Anki("Anki card details are missing the Word field; progress was not changed".into()));
                 }
                 out.push(CardState {
                     word,

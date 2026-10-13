@@ -7,6 +7,7 @@
 
 use maru_core::Rect;
 
+#[cfg(test)]
 use crate::labels::key;
 use crate::scan::Found;
 
@@ -91,6 +92,7 @@ pub(crate) fn follows(a: &Rect, b: &Rect) -> bool {
 /// Make the remembered joins on a fresh reading of the screen. Each rule is tried against every line that
 /// starts it; a chain of lines that match the rule's parts, each following the one before, becomes one line
 /// at the place of the first. Rules apply in the order given, so a join of joined lines works.
+#[cfg(test)]
 pub(crate) fn apply_rules(mut found: Vec<Found>, rules: &[JoinRule]) -> Vec<Found> {
     for rule in rules {
         let Some((first, rest)) = rule.parts.split_first() else { continue };

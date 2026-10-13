@@ -5,11 +5,40 @@ export const CHIP_H = 26;
 const GAP = 6;
 const EDGE = 4;
 
+/** Selecting words is explicit; an ordinary click opens the word's explanation. */
+export function labelClickAction(joining, shiftKey = false) {
+  return joining || shiftKey ? 'select' : 'open';
+}
+
+export const startsNewScan = (id, latest) => id > latest;
+export const clearsCurrentScan = (current, through) => current == null || through == null || through >= current;
+export const acceptsJoinReply = (currentId, requestId, currentRevision, requestRevision) => currentId === requestId && currentRevision === requestRevision;
+
 /** An item number that no label on screen uses. */
 export function nextItemId(ids) {
   let max = -1;
   for (const id of ids) if (Number.isFinite(id) && id > max) max = id;
   return max + 1;
+}
+
+export const canSeparate = (it) => (it?.data?.join?.parts?.length ?? 0) >= 2 || (it?.parts?.length ?? 0) >= 2;
+
+/** Include unfinished joins and reserved correction IDs; their labels may not have arrived yet. */
+export const nextJoinId = (items, pending, reserved) => nextItemId([...items, ...pending, ...reserved]);
+
+export const acceptsJoinFailure = (currentScan, requestScan, currentParts, requestParts) => currentScan === requestScan && currentParts === requestParts;
+
+/** Remove absorbed ancestors too, including joins that were subsequently corrected. */
+export function joinedTreeIds(items, root) {
+  const seen = new Set();
+  const remaining = [root];
+  while (remaining.length) {
+    const id = remaining.pop();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    remaining.push(...(items.get(id)?.parts ?? []));
+  }
+  return [...seen];
 }
 
 /**
@@ -18,7 +47,7 @@ export function nextItemId(ids) {
  */
 export function chipFor(picked) {
   if (picked.length >= 2) return { kind: 'join', n: picked.length };
-  if (picked.length === 1 && picked[0].parts?.length) return { kind: 'split' };
+  if (picked.length === 1 && canSeparate(picked[0])) return { kind: 'split' };
   return null;
 }
 

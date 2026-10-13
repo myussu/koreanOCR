@@ -66,6 +66,7 @@ pub struct EngineParts {
     pub labels: Option<Arc<crate::labels::LabelCache>>,
     /// CPU PP-OCR for the optional live-only path. `None` means it is unavailable.
     pub live_ocr: Option<Arc<dyn OcrEngine>>,
+    pub live_llm: Option<LlmClient>,
 }
 
 /// A click on a word, with the context needed to explain it.
@@ -106,15 +107,20 @@ pub(crate) struct Inner {
     pub memory: Mutex<Memory>,
     pub history: Mutex<History>,
     /// Earlier live-subtitle lines, `(source, translation)`, sent to the model as chat turns.
-    pub live_turns: Mutex<Vec<(String, String)>>,
+    pub live_turns: Mutex<crate::live_context::LiveContext>,
     pub next_id: AtomicU64,
     pub translate_task: Mutex<Option<JoinHandle<()>>>,
     pub deep_task: Mutex<Option<JoinHandle<()>>>,
     pub anki: Option<AnkiClient>,
     /// A sync with AnkiWeb is already scheduled.
     pub anki_sync_pending: std::sync::atomic::AtomicBool,
+    pub anki_add_gate: Arc<tokio::sync::Mutex<()>>,
+    pub ocr_corrections: Mutex<crate::ocr_corrections::OcrState>,
     pub runtime: tokio::runtime::Handle,
     pub live_ocr: Option<Arc<dyn OcrEngine>>,
+    pub live_llm: Option<LlmClient>,
+    pub live_active: std::sync::atomic::AtomicBool,
+    pub live_load_task: Mutex<Option<JoinHandle<()>>>,
     pub live_counts: Arc<crate::live_lane::Counters>,
     pub live_queue: std::sync::OnceLock<mpsc::UnboundedSender<crate::live_lane::Job>>,
 }
@@ -163,6 +169,9 @@ impl Engine {
             scan_ocr: parts.scan_ocr,
             labels: parts.labels,
             live_ocr: parts.live_ocr,
+            live_llm: parts.live_llm,
+            live_active: std::sync::atomic::AtomicBool::new(false),
+            live_load_task: Mutex::new(None),
             live_counts: Arc::new(crate::live_lane::Counters::default()),
             live_queue: std::sync::OnceLock::new(),
             scan_task: Mutex::new(None),
@@ -170,12 +179,14 @@ impl Engine {
             cache: Mutex::new(Cache::new(256)),
             memory: Mutex::new(Memory::new(cfg.llm.context_lines)),
             history: Mutex::new(History::new(cfg.continuous.history_len)),
-            live_turns: Mutex::new(Vec::new()),
+            live_turns: Mutex::new(crate::live_context::LiveContext::default()),
             next_id: AtomicU64::new(1),
             translate_task: Mutex::new(None),
             deep_task: Mutex::new(None),
             anki,
             anki_sync_pending: std::sync::atomic::AtomicBool::new(false),
+            anki_add_gate: Arc::new(tokio::sync::Mutex::new(())),
+            ocr_corrections: Mutex::new(Default::default()),
             runtime: tokio::runtime::Handle::current(),
             cfg,
         };
@@ -189,6 +200,21 @@ impl Engine {
 
     pub fn config(&self) -> &Config {
         &self.inner.cfg
+    }
+    /// Front ends report the watcher lifetime; model selection alone is not live mode.
+    pub fn set_live_active(&self, active: bool) {
+        let before = self.inner.live_active.swap(active, Ordering::AcqRel);
+        if !active && let Some(task) = lock(&self.inner.live_load_task).take() { task.abort(); }
+        if active && !before && let Some(client) = self.inner.live_llm.clone().or_else(|| self.inner.llm.clone()).filter(|c| c.has_runtime()) {
+            let task = self.inner.runtime.spawn(async move {
+                if let Err(e) = client.ensure_loaded().await { tracing::warn!("live model could not load: {e}"); }
+            });
+            *lock(&self.inner.live_load_task) = Some(task);
+        }
+    }
+    pub fn live_work(&self) -> (usize, usize) { self.inner.live_counts.counts() }
+    pub fn loaded_translation_role(&self) -> Option<maru_llm::model_runtime::ModelRole> {
+        self.inner.live_llm.as_ref().and_then(|c| c.loaded_role())
     }
     pub fn analyzer(&self) -> maru_lang::Analyzer {
         self.inner.analyzer.clone()
@@ -250,16 +276,17 @@ impl Engine {
             max_in_flight = self.inner.cfg.continuous.max_in_flight,
             filter_ocr_jitter = self.inner.cfg.continuous.filter_ocr_jitter, "live session started");
         lock(&self.inner.live_turns).clear(); // a new session is a new scene
+        self.set_live_active(true);
         Ok(continuous::spawn(&self.inner.runtime, self.inner.platform.screen.clone(), ocr, self.inner.cfg.continuous.clone(), region))
     }
 
     // ───────────── translation ─────────────
 
-    fn next_id(&self) -> u64 {
+    pub(crate) fn next_id(&self) -> u64 {
         self.inner.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    fn spawn_into(&self, slot: &Mutex<Option<JoinHandle<()>>>, fut: impl std::future::Future<Output = ()> + Send + 'static) {
+    pub(crate) fn spawn_into(&self, slot: &Mutex<Option<JoinHandle<()>>>, fut: impl std::future::Future<Output = ()> + Send + 'static) {
         let handle = self.inner.runtime.spawn(fut);
         if let Some(previous) = lock(slot).replace(handle) {
             previous.abort(); // superseded: its channel closes, the UI also drops stale ids
@@ -283,8 +310,9 @@ impl Engine {
     }
 
     /// Translate and break down `capture`. A newer call cancels an older one.
-    pub fn translate(&self, capture: Capture) -> (u64, EventRx) {
+    pub fn translate(&self, mut capture: Capture) -> (u64, EventRx) {
         let id = self.next_id();
+        crate::ocr_corrections::prepare_snapshot(&self.inner, id, &mut capture);
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = self.inner.clone();
         self.spawn_into(&self.inner.translate_task, pipeline::translate(inner, id, capture, tx));
@@ -295,6 +323,7 @@ impl Engine {
     /// remembered labels instantly, the rest from the model. A newer scan cancels an older one.
     pub fn scan(&self, screen: Rect) -> (u64, EventRx) {
         let id = self.next_id();
+        crate::ocr_corrections::begin_scan(&self.inner, id);
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = self.inner.clone();
         self.spawn_into(&self.inner.scan_task, crate::scan::run(inner, id, crate::scan::Source::Screen(screen), tx));
@@ -304,6 +333,7 @@ impl Engine {
     /// Join labels of scan `scan_id` that the person picked into one item numbered `item`: it is read in
     /// reading order, translated as one text and remembered for the program the scan was made in.
     pub fn scan_join(&self, scan_id: u64, item: u32, pieces: Vec<crate::joins::JoinPiece>) -> EventRx {
+        crate::ocr_corrections::reserve_scan_item(&self.inner, scan_id, item);
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = self.inner.clone();
         self.inner.runtime.spawn(crate::scan::join(inner, scan_id, item, pieces, tx));
@@ -326,6 +356,7 @@ impl Engine {
     /// Coordinates in the events are the picture's own pixels.
     pub fn scan_image(&self, image: image::RgbImage) -> (u64, EventRx) {
         let id = self.next_id();
+        crate::ocr_corrections::begin_scan(&self.inner, id);
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = self.inner.clone();
         self.spawn_into(&self.inner.scan_task, crate::scan::run(inner, id, crate::scan::Source::Image(image), tx));
@@ -333,8 +364,9 @@ impl Engine {
     }
 
     /// Instant, offline word lookup (hover mode): breakdown + dictionary, no model call.
-    pub fn lookup_word(&self, capture: Capture) -> (u64, EventRx) {
+    pub fn lookup_word(&self, mut capture: Capture) -> (u64, EventRx) {
         let id = self.next_id();
+        crate::ocr_corrections::prepare_snapshot(&self.inner, id, &mut capture);
         let (tx, rx) = mpsc::unbounded_channel();
         let inner = self.inner.clone();
         self.spawn_into(&self.inner.translate_task, pipeline::lookup(inner, id, capture, tx));

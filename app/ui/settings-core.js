@@ -1,4 +1,5 @@
 // What the settings page shows and how it edits it. Pure functions, no DOM, so they are tested.
+import { LIVE_FIELDS } from './settings-live-core.js';
 //
 // Each field names its place in config.toml by dotted path ("ui.font_size_px"). The page keeps only
 // what the user changed and sends that; the backend edits the file and says what needs a restart.
@@ -24,6 +25,7 @@ export const SECTIONS = [
       { path: 'hotkeys.continuous_area', label: 'Live subtitles: choose area', help: 'Pick a new area and start there', type: 'keys' },
       { path: 'hotkeys.history', label: 'History', help: 'Recent lines', type: 'keys' },
       { path: 'hotkeys.dismiss', label: 'Dismiss', help: 'Hides the panel and the screen labels', type: 'keys' },
+      { path: 'hotkeys.launcher', label: 'Floating controls on/off', help: 'Quick controls above a borderless game', type: 'keys' },
     ],
   },
   {
@@ -37,6 +39,7 @@ export const SECTIONS = [
       { path: 'ui.show_romanization', label: 'Show romanization', type: 'toggle' },
       { path: 'ui.show_pronunciation', label: 'Show pronunciation', help: 'How the word sounds when it differs from the spelling', type: 'toggle' },
       { path: 'ui.show_grammar_formula', label: 'Show how a word is built', help: 'e.g. 학교 + 에서', type: 'toggle' },
+      { path: 'ui.launcher', label: 'Show floating Maru controls at startup', help: 'Drag the button to move it; your position is remembered. The tray or shortcut can show it again.', type: 'toggle' },
     ],
   },
   {
@@ -75,7 +78,9 @@ export const SECTIONS = [
   {
     id: 'live',
     title: 'Live subtitles',
+    intro: 'Choose a translation model for real-game trials. Saving requires a restart. Turning live off returns snapshots to the normal Gemma setup.',
     fields: [
+      ...LIVE_FIELDS,
       { path: 'continuous.cpu_ocr', label: 'Use CPU PP-OCR for live subtitles', help: 'Experimental: skips the OCR reading model for live subtitles. Other features keep their screen reader. Recognition can differ', type: 'toggle' },
       { path: 'continuous.max_in_flight', label: 'Active live translations', help: '0 keeps the existing behavior; 1 translates in order; 2 allows overlap. Pending lines are kept for history', type: 'number', min: 0, max: 2, step: 1 },
       { path: 'continuous.filter_ocr_jitter', label: 'Check subtitle lettering for OCR duplicates', help: 'Experimental: confirms changing OCR readings against the subtitle pixels. Changed Korean or numbers need identical lettering to count as duplicates. Restart after saving', type: 'toggle' },
@@ -95,7 +100,7 @@ export const SECTIONS = [
       { path: 'lite', label: 'Game mode (lighter)', help: 'No OCR reading model, one model slot, a smaller context and a smaller translation model, so a game keeps its memory. The first start downloads the smaller model', type: 'toggle' },
       { path: 'llm.hf_repo', label: 'Model to download', help: 'A Hugging Face repository and quantisation, fetched on first start', type: 'text', nullable: true, placeholder: 'unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL' },
       { path: 'llm.model_path', label: 'Or a model file you already have', help: 'Wins over the download', type: 'text', nullable: true, placeholder: 'D:/models/model.gguf' },
-      { path: 'llm.endpoint', label: 'Or a server that is already running', help: 'LM Studio, Ollama, a PC on your network', type: 'text', nullable: true, placeholder: 'http://127.0.0.1:1234/v1' },
+      { path: 'llm.endpoint', label: 'Or a server that is already running', help: 'LM Studio, Ollama, a PC on your network. Enter an IP or hostname and use Detect server to find its port, or enter a full URL.', type: 'text', nullable: true, placeholder: '192.168.18.217 or http://127.0.0.1:1234/v1' },
       { path: 'llm.model_name', label: 'Model name that server expects', help: 'Only for servers that choose by name, such as Ollama: exactly what `ollama list` shows. llama-server ignores it', type: 'text', placeholder: 'maru' },
       { path: 'llm.reasoning_effort', label: 'Thinking, for that server', help: 'none stops thinking models (Qwen3, gpt-oss, …) from using the whole answer on reasoning; leave it empty if the server rejects the field', type: 'text', placeholder: 'none', advanced: true },
       { path: 'llm.parallel', label: 'Requests at once', help: 'Two lets translation and word meanings run together', type: 'number', min: 1, max: 4, step: 1 },

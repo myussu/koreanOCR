@@ -1,6 +1,8 @@
 import { invoke, listen, mockCommands, inTauri } from './bridge.js';
+import { ankiWordCounts } from './anki.js';
 import { latencyText, liveHistory } from './live-core.js';
 import { settingsView } from './settings.js';
+import { resourcesView } from './resources.js';
 
 const view = document.getElementById('view');
 const tabs = [...document.querySelectorAll('#tabs button')];
@@ -21,11 +23,13 @@ function h(tag, props = {}, ...kids) {
 let tab = location.hash.slice(1) || 'review';
 
 async function show(name) {
+  if(view.firstElementChild?.canLeave && !view.firstElementChild.canLeave())return;
+  view.firstElementChild?.dispose?.();
   tab = name;
   for (const b of tabs) b.setAttribute('aria-selected', String(b.dataset.tab === name));
   view.replaceChildren(h('p', { class: 'center', text: 'Loading…' }));
   try {
-    view.replaceChildren(...(await { review, history, status, settings: settingsView }[name]()));
+    view.replaceChildren(...(await { review, history, status, settings: settingsView, resources: resourcesView }[name]()));
   } catch (e) {
     view.replaceChildren(h('div', { class: 'err', text: String(e) }));
   }
@@ -81,7 +85,7 @@ async function ankiReview(s) {
   } catch (e) {
     out.push(h('p', { class: 'center', text: `Anki is not reachable: ${String(e).slice(0, 160)}` }));
   }
-  if (s.vocab) out.push(h('p', {}, [['words seen', s.vocab.total], ['in Anki', s.vocab.saved], ['known', s.vocab.known]].map(([l, v]) => h('span', { class: 'stat' }, h('b', { text: v }), l))));
+  if (s.vocab) out.push(h('p', {}, ankiWordCounts(s).map(([l, v]) => h('span', { class: 'stat' }, h('b', { text: v }), l))));
   return out;
 }
 
@@ -148,11 +152,14 @@ if (!inTauri) {
   const flat = { 'hotkeys.translate': 'Ctrl+Alt+T | F6', 'hotkeys.region': 'Ctrl+Alt+R', 'hotkeys.hover': 'Ctrl+Alt+H', 'hotkeys.continuous': 'Ctrl+Alt+C', 'hotkeys.continuous_area': 'Ctrl+Alt+Shift+C', 'hotkeys.scan': 'Ctrl+Alt+S', 'hotkeys.speak': 'Ctrl+Alt+P', 'hotkeys.history': 'Ctrl+Alt+L', 'hotkeys.dismiss': 'Ctrl+Alt+Escape', 'ui.font_size_px': 18, 'ui.max_width_px': 760, 'ui.theme': 'auto', 'ui.placement': 'auto', 'ui.show_romanization': true, 'ui.show_pronunciation': true, 'ui.show_grammar_formula': true, 'learning.gloss_mode': 'fade_known', 'learning.register': 'polite', 'learning.track_lookups': true, 'learning.auto_save_after_lookups': 2, 'learning.known_stability_days': 21, 'learning.desired_retention': 0.9, 'learning.anki.enabled': false, 'learning.anki.deck': 'Maru', 'learning.anki.note_type': 'Basic', 'learning.anki.url': 'http://127.0.0.1:8765', 'ocr.vision_reader': true, 'ocr.backend': 'auto', 'ocr.device': 'cpu', 'ocr.min_confidence': 0.8, 'capture.use_accessibility': true, 'capture.use_clipboard_fallback': true, 'capture.use_ocr_fallback': true, 'capture.ocr_radius_px': 320, 'capture.max_chars': 500, 'continuous.interval_ms': 100, 'continuous.stable_ms': 150, 'continuous.linger_ms': 1500, 'continuous.context_lines': 4, 'continuous.diff_threshold': 0.01, 'continuous.history_len': 300, lite: false, 'llm.hf_repo': null, 'llm.model_path': null, 'llm.endpoint': null, 'llm.parallel': 2, 'llm.ctx_size': 4096, 'llm.gpu_layers': 'all', 'llm.flash_attn': true, 'llm.temperature': 0.2, 'llm.context_lines': 4, 'lite_profile.hf_repo': 'unsloth/gemma-4-E4B-it-qat-GGUF:UD-Q4_K_XL', 'lite_profile.ctx_size': 3072, 'lite_profile.parallel': 1, 'tts.enabled': false, 'tts.run_in_lite': false, 'tts.provider': 'local', 'tts.endpoint': null, 'tts.api_key': null, 'tts.model': 'qwen3-tts', 'tts.voice': 'sohee', 'tts.language': '', 'tts.instructions': null, 'tts.speed': 1.0, 'tts.cache_mb': 300, 'tts.device': 'auto', 'tts.port': 18095, 'learning.anki.enabled': false, 'learning.anki.deck': 'Korean', 'learning.anki.reverse': 'subdeck', 'learning.anki.audio': true, 'learning.anki.sync_after_add': true, 'learning.anki.auto_tags': true, 'learning.anki.tags': ['maru'], 'learning.anki.refresh_minutes': 30, 'learning.anki.url': 'http://127.0.0.1:8765', 'learning.anki.api_key': null, 'learning.anki.note_type': 'Maru Korean', 'learning.anki.reverse_subdeck': 'Reverse' };
   const nest = (f) => Object.entries(f).reduce((o, [k, v]) => (k.split('.').reduce((t, p, i, a) => (t[p] = i === a.length - 1 ? v : (t[p] ?? {})), o), o), {});
   Object.assign(flat, { 'continuous.cpu_ocr': false, 'continuous.max_in_flight': 0, 'continuous.filter_ocr_jitter': false });
+  Object.assign(flat, {'hotkeys.launcher':'Ctrl+Alt+M','ui.launcher':true,'continuous.translation.model':'main','continuous.translation.hy_mt2_path':null,'continuous.translation.milmmt_path':null,'continuous.translation.hy_mt2_small_path':null,'continuous.translation.lfm_path':null,'continuous.translation.device':'gpu','continuous.translation.cpu_threads':4,'continuous.translation.dialogue_context':false,'continuous.translation.snapshot_endpoint':null,'continuous.translation.snapshot_model_name':'maru'});
   const mockDefaults = nest(flat);
   let mockValues = nest({ ...flat, 'llm.hf_repo': 'unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL' });
   let mockPending = [];
+  let mockDiscoveryId=0;
+  const mockDiscoveries=new Map();
   mockCommands({
-    get_settings: () => ({ values: mockValues, defaults: mockDefaults, path: 'C:\\Users\\you\\AppData\\Roaming\\maru\\Maru\\config\\config.toml', pending_restart: mockPending, lite_from_env: false }),
+    get_settings: () => ({ values: mockValues, defaults: mockDefaults, path: 'C:\\Users\\you\\AppData\\Roaming\\maru\\Maru\\config\\config.toml', pending_restart: mockPending, lite_from_env: false, live_models:[{model:'hy_mt2',path:'D:/models/Hy-MT2-7B-Q4_K_M.gguf'},{model:'milmmt',path:'D:/models/MiLMMT-46-4B-v1.0.Q6_K.gguf'},{model:'hy_mt2_small',path:'D:/models/Hy-MT2-1.8B-Q4_K_M.gguf'},{model:'lfm',path:'D:/models/lfm2-koen-Q5_K_M.gguf'}] }),
     save_settings: ({ changes }) => {
       const next = JSON.parse(JSON.stringify(mockValues));
       for (const [path, v] of Object.entries(changes)) path.split('.').reduce((t, p, i, a) => (i === a.length - 1 ? (t[p] = v === null ? path.split('.').reduce((d, k) => d?.[k], mockDefaults) : v) : t[p]), next);
@@ -164,8 +171,21 @@ if (!inTauri) {
     restart_app: () => {},
     anki_check: () => 'Anki is reachable (AnkiConnect v6); the note type "Maru Korean" is ready; 7 decks.',
     anki_sync: () => null,
+    anki_refresh: () => 7,
     anki_due: () => ({ due: 12, new: 5 }),
     tts_test: () => Promise.reject('The local voice is not running yet. Save and restart Maru to start it.'),
+    test_model_connection: ({modelName}) => new Promise(resolve => setTimeout(() => resolve({reply:`Hello. (demo: ${modelName})`, took_ms:450}),450)),
+    discovery_networks: () => [{cidr:'192.168.18.0/24',label:'Ethernet · 192.168.18.0/24'}],
+    discovery_start: ({kind,target}) => {
+      const id=++mockDiscoveryId;
+      const endpoint=kind==='lan' ? 'http://192.168.18.217:11434' : target.includes('://') ? target : `http://${target.includes(':') ? target : `${target}:11434`}`;
+      mockDiscoveries.set(id,{started:Date.now(),checked:0,total:kind==='lan'?762:3,done:false,cancelled:false,servers:[{endpoint,api:'Ollama (demo)',models:['gemma:12b','hy-mt2:7b']}],errors:[]});return id;
+    },
+    discovery_status: ({jobId}) => {
+      const state=mockDiscoveries.get(jobId);if(!state)throw Error('Unknown search');
+      if(!state.cancelled){state.done=Date.now()-state.started>1600;state.checked=state.done?state.total:Math.min(state.total,Math.floor((Date.now()-state.started)/10));}return state;
+    },
+    discovery_cancel: ({jobId}) => {const state=mockDiscoveries.get(jobId);if(state){state.done=true;state.cancelled=true;}},
     open_config_file: () => {},
   });
   mockCommands({

@@ -1,9 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyState, reduce, openDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget } from '../core.js';
+import { emptyState, reduce, openDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, snapshotCorrectionId } from '../core.js';
 
 const word = (over = {}) => ({ index: 0, surface: '학교에서', lemma: '학교', content: true, state: 'new', lookups: 0, dict_glosses: ['school'], morphs: [], ...over });
 const started = (id = 1, direction = 'ko_to_en') => ({ type: 'started', id, direction, capture: { text: '학교에서 공부해요' }, cached: false });
+
+test('the right-click correction action is available only for a current OCR snapshot', () => {
+  assert.equal(snapshotCorrectionId(emptyState()), null);
+  for (const source of ['typed', 'selection', 'continuous']) assert.equal(snapshotCorrectionId({ id: 4, capture: { source } }), null);
+  assert.equal(snapshotCorrectionId({ id: 4, capture: { source: 'ocr' } }), 4);
+  assert.equal(snapshotCorrectionId({ id: null, capture: { source: 'ocr' } }), null);
+});
 
 test('events build up one request', () => {
   let s = reduce(emptyState(), started());
@@ -23,6 +30,22 @@ test('events of a superseded request are ignored and the state object is untouch
   const s1 = reduce(emptyState(), started(2));
   const s2 = reduce(s1, { type: 'translation', id: 1, variant: 'primary', delta: 'stale' });
   assert.equal(s2, s1);
+});
+
+test('an older start cannot replace a newer answer or its open deep dive', () => {
+  let state = reduce(emptyState(), started(3));
+  state = reduce(state, { type: 'translation', id: 3, variant: 'primary', delta: 'Current ' });
+  state = openDeep(state, { id: 4, eojeol: word(), sentence: 's' });
+  assert.equal(reduce(state, started(2)), state);
+  state = reduce(state, { type: 'translation', id: 3, variant: 'primary', delta: 'answer.' });
+  assert.equal(state.translations.primary, 'Current answer.');
+  assert.equal(state.deep.id, 4);
+});
+
+test('a repeated start cannot erase text already streamed for that request', () => {
+  let state = reduce(emptyState(), started(3));
+  state = reduce(state, { type: 'translation', id: 3, variant: 'primary', delta: 'Current answer.' });
+  assert.equal(reduce(state, started(3)), state);
 });
 
 test('a new request resets everything, including an open deep dive', () => {

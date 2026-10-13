@@ -124,6 +124,7 @@ pub struct Status {
     pub lite: bool,
     /// Anki is the place words are reviewed.
     pub anki: bool,
+    pub anki_words: Option<u32>,
     /// Speech: `off`, `loading`, `ready` or `failed: …`.
     pub tts: String,
     /// Where speech comes from: `local`, `server` or empty when off.
@@ -145,9 +146,12 @@ pub fn status(state: S) -> Status {
     let llm = match e.llm_status() {
         LlmStatus::Ready => "ready".to_string(),
         LlmStatus::Starting => "loading".to_string(),
+        LlmStatus::Disabled if e.has_llm() => "loads on demand".to_string(),
         LlmStatus::Disabled => "not configured".to_string(),
         LlmStatus::Failed(why) => format!("failed: {why}"),
     };
+    let scan_visible = state.scan().visible;
+    let hover_mode = state.panel().hover_mode;
     Status {
         notes: state.services.notes.clone(),
         llm,
@@ -156,10 +160,12 @@ pub fn status(state: S) -> Status {
         dictionary: e.has_dictionary(),
         hotkeys: state.cfg().hotkeys,
         vocab: e.vocab_stats().ok().map(|s| VocabCounts { total: s.total, saved: s.saved, known: s.known, due_now: s.due_now }),
-        scan_visible: state.scan().visible,
+        scan_visible,
         lite: state.services.lite,
         anki: e.config().learning.anki.enabled,
+        anki_words: e.anki_count().ok(),
         tts: match state.services.tts_status() {
+            LlmStatus::Disabled if state.services.speech_on_demand() => "loads on demand".into(),
             LlmStatus::Disabled => "off".into(),
             LlmStatus::Starting => "loading".into(),
             LlmStatus::Ready => "ready".into(),
@@ -170,10 +176,11 @@ pub fn status(state: S) -> Status {
             (true, maru_core::config::TtsProvider::Local) => "local".into(),
             (true, maru_core::config::TtsProvider::Endpoint) => "server".into(),
         },
-        hover_mode: state.panel().hover_mode,
+        hover_mode,
         live_mode,
         live_area: if live_mode { state.live_region() } else { None },
         ocr_reader: match state.services.vision_status() {
+            LlmStatus::Disabled if state.services.vision_on_demand() => "loads on demand".into(),
             LlmStatus::Disabled => "off".into(),
             LlmStatus::Starting => "loading".into(),
             LlmStatus::Ready => "ready".into(),
@@ -241,8 +248,9 @@ pub fn live_idle(app: AppHandle) {
 
 /// The scan overlay reports where its labels are, so the window can accept clicks only over them.
 #[tauri::command]
-pub fn scan_labels(state: S, dpr: f32, rects: Vec<Rect>) {
+pub fn scan_labels(state: S, dpr: f32, rects: Vec<Rect>, scan_id: Option<u64>) {
     let mut scan = state.scan();
+    if scan.id != scan_id { return; }
     scan.dpr = dpr;
     scan.rects = rects;
 }
@@ -288,7 +296,7 @@ pub fn word_contexts(state: S, key: String) -> Res<Vec<WordContext>> {
 }
 
 #[tauri::command]
-pub fn open_hub(app: AppHandle, tab: String) -> Res<()> {
+pub async fn open_hub(app: AppHandle, tab: String) -> Res<()> {
     windows::open_hub(&app, &tab).map_err(err)
 }
 
@@ -315,7 +323,7 @@ fn clip_of(audio: maru_tts::Audio, cached: bool, started: std::time::Instant) ->
 }
 
 /// Speak a sentence with the *saved* speech settings, so a change can be tried without a restart
-/// (a local voice still needs its server running, which only a restart starts).
+/// (changing the local server's model or port still needs a restart).
 #[tauri::command]
 pub async fn tts_test(state: S<'_>, text: Option<String>) -> Res<Clip> {
     use maru_core::config::TtsProvider;
@@ -324,14 +332,7 @@ pub async fn tts_test(state: S<'_>, text: Option<String>) -> Res<Clip> {
     if !cfg.enabled {
         return Err("Speech is switched off. Turn it on, save, and restart.".into());
     }
-    if cfg.provider == TtsProvider::Local {
-        match state.services.tts_status() {
-            LlmStatus::Ready => {}
-            LlmStatus::Starting => return Err("The local voice is still loading; try again in a moment.".into()),
-            LlmStatus::Failed(why) => return Err(format!("The local voice is not running: {why}")),
-            LlmStatus::Disabled => return Err("The local voice is not running yet. Save and restart Maru to start it.".into()),
-        }
-    }
+    let _speech = if cfg.provider == TtsProvider::Local { state.services.speech_lease().await? } else { None };
     let tts = maru_tts::Tts::new(&cfg, &paths).map_err(err)?;
     let text = text.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "안녕하세요. 만나서 반갑습니다. 한국어를 공부하고 있어요.".into());
     let started = std::time::Instant::now();
@@ -351,12 +352,7 @@ pub async fn tts_clip(state: S<'_>, text: String) -> Res<Clip> {
     let Some(tts) = state.services.tts.clone() else {
         return Err("Speech is off. Turn it on in Settings → Speech.".into());
     };
-    match state.services.tts_status() {
-        LlmStatus::Ready => {}
-        LlmStatus::Starting => return Err("The voice is still loading; try again in a moment.".into()),
-        LlmStatus::Failed(why) => return Err(format!("The voice is not available: {why}")),
-        LlmStatus::Disabled => return Err("Speech is off.".into()),
-    }
+    let _speech = state.services.speech_lease().await?;
     let started = std::time::Instant::now();
     let (audio, cached) = tts.speak(&text).await.map_err(err)?;
     Ok(clip_of(audio, cached, started))
@@ -401,9 +397,7 @@ pub struct AnkiAddReply {
 /// Spoken `text` as a file for Anki: `Ok(None)` when speech is off or not ready.
 async fn spoken(state: &AppState, text: &str) -> Result<Option<maru_engine::anki_flow::Media>, String> {
     let Some(tts) = state.services.tts.clone() else { return Ok(None) };
-    if !matches!(state.services.tts_status(), LlmStatus::Ready) {
-        return Err("the voice is not ready".into());
-    }
+    let _speech = state.services.speech_lease().await?;
     let (audio, _) = tts.speak(text).await.map_err(err)?;
     let ext = match audio.mime.as_str() {
         "audio/mpeg" => "mp3",
@@ -419,6 +413,7 @@ async fn spoken(state: &AppState, text: &str) -> Result<Option<maru_engine::anki
 pub async fn anki_add(state: S<'_>, request: AnkiAddRequest) -> Res<AnkiAddReply> {
     let engine = state.engine();
     let cfg = engine.config().learning.anki.clone();
+    let permit = engine.begin_anki_add(&request.key, &request.deck).await.map_err(err)?;
     let reverse = match request.reverse.as_deref() {
         Some("subdeck") => maru_core::config::ReverseMode::Subdeck,
         Some("same_deck") => maru_core::config::ReverseMode::SameDeck,
@@ -426,7 +421,7 @@ pub async fn anki_add(state: S<'_>, request: AnkiAddRequest) -> Res<AnkiAddReply
         _ => cfg.reverse,
     };
     let (mut word_audio, mut sentence_audio, mut note) = (None, None, None);
-    if request.audio && cfg.audio {
+    if permit.needs_audio() && request.audio && cfg.audio {
         let sentence = engine.word_contexts(&request.key, 1).ok().and_then(|c| c.into_iter().next()).map(|c| c.sentence);
         let made = async {
             let word = spoken(&state, &request.key).await?;
@@ -443,7 +438,7 @@ pub async fn anki_add(state: S<'_>, request: AnkiAddRequest) -> Res<AnkiAddReply
         }
     }
     let added = engine
-        .anki_add(AnkiAddOptions { key: request.key, deck: request.deck, tags: request.tags, reverse, app: request.app, word_audio, sentence_audio })
+        .finish_anki_add(permit, AnkiAddOptions { key: request.key, deck: request.deck, tags: request.tags, reverse, app: request.app, word_audio, sentence_audio })
         .await
         .map_err(err)?;
     Ok(AnkiAddReply { added, note })
@@ -468,6 +463,11 @@ pub async fn anki_sync(state: S<'_>) -> Res<()> {
 #[tauri::command]
 pub async fn anki_check(state: S<'_>) -> Res<String> {
     state.engine().anki_check().await.map_err(err)
+}
+
+#[tauri::command]
+pub async fn anki_refresh(state: S<'_>) -> Res<usize> {
+    state.engine().anki_refresh().await.map_err(err)
 }
 
 #[derive(Serialize)]

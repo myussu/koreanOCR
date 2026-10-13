@@ -112,7 +112,7 @@ async fn compare_live_settings_with_real_ocr_and_translation_on_a_recording() {
             vocab: Arc::new(Vocab::open_in_memory(SrsConfig::from_learning(&config.learning)).unwrap()),
             llm: Some(llm.clone()), llm_status: None,
             platform: Platform { screen: Arc::new(Recording { frames: frames.clone(), began }), selection: Arc::new(FakeSelection::default()), os_ocr: None },
-            ocr: Some(normal.clone()), scan_ocr: None, live_ocr: Some(cpu.clone()), labels: None,
+            ocr: Some(normal.clone()), scan_ocr: None, live_ocr: Some(cpu.clone()), labels: None, live_llm: None,
         });
         let mut watcher = engine.start_continuous(region).unwrap();
         let mut requests = tokio::task::JoinSet::new();

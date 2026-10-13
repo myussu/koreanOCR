@@ -8,6 +8,8 @@ mod keys;
 mod ocr;
 mod process;
 mod uia;
+pub(crate) mod resources;
+pub(crate) mod network;
 
 use std::sync::Arc;
 use std::time::Duration;

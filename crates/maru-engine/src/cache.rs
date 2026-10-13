@@ -30,12 +30,14 @@ pub struct Cached {
     pub translations: Vec<(Variant, String)>,
     pub glosses: Vec<(Side, Gloss)>,
     pub note: Option<String>,
+    pub translation_complete: bool,
+    pub glosses_complete: bool,
 }
 
 impl Cached {
-    /// Worth keeping only if the model actually produced something.
+    /// Partial text remains visible while streaming, but only a finished answer is reusable.
     pub fn is_useful(&self) -> bool {
-        self.translations.iter().any(|(_, t)| !t.trim().is_empty())
+        self.translation_complete && self.translations.iter().any(|(_, t)| !t.trim().is_empty())
     }
 }
 
@@ -70,7 +72,7 @@ mod tests {
     }
 
     fn value(t: &str) -> Cached {
-        Cached { translations: vec![(Variant::Primary, t.into())], ..Default::default() }
+        Cached { translations: vec![(Variant::Primary, t.into())], translation_complete: true, ..Default::default() }
     }
 
     #[test]
@@ -87,6 +89,15 @@ mod tests {
         let mut c = Cache::new(8);
         c.put(key("a", ""), Cached::default());
         c.put(key("b", ""), value("  "));
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn a_variant_closed_before_the_response_finishes_is_not_a_cache_hit() {
+        let mut c = Cache::new(8);
+        let mut partial = value("Partial answer");
+        partial.translation_complete = false;
+        c.put(key("안녕", ""), partial);
         assert!(c.is_empty());
     }
 

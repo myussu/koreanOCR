@@ -118,6 +118,8 @@ pub struct Hotkeys {
     pub history: String,
     /// Dismiss the panel.
     pub dismiss: String,
+    /// Show or hide the floating controls.
+    pub launcher: String,
 }
 
 impl Default for Hotkeys {
@@ -132,6 +134,7 @@ impl Default for Hotkeys {
             speak: "Ctrl+Alt+P".into(),
             history: "Ctrl+Alt+L".into(),
             dismiss: "Ctrl+Alt+Escape".into(),
+            launcher: "Ctrl+Alt+M".into(),
         }
     }
 }
@@ -379,6 +382,7 @@ pub struct UiConfig {
     /// Seconds before an idle panel disappears (0 = stay until dismissed).
     pub auto_hide_secs: u32,
     pub theme: String,
+    pub launcher: bool,
 }
 
 impl Default for UiConfig {
@@ -393,6 +397,7 @@ impl Default for UiConfig {
             max_width_px: 760,
             auto_hide_secs: 0,
             theme: "auto".into(),
+            launcher: true,
         }
     }
 }
@@ -424,11 +429,14 @@ pub struct ContinuousConfig {
     /// Confirm live OCR jitter against the original lettering before discarding a changed reading.
     #[serde(default)]
     pub filter_ocr_jitter: bool,
+    /// Optional local model for live subtitles; main preserves existing behaviour.
+    #[serde(default)]
+    pub translation: crate::live_model::LiveTranslationConfig,
 }
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false, translation: Default::default() }
     }
 }
 

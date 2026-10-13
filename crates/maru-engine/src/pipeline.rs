@@ -172,15 +172,31 @@ async fn run_glosses(
     ctx: &PromptContext,
 ) {
     if words.is_empty() {
+        lock(collected).glosses_complete = true;
         return;
     }
     let started = Instant::now();
     let seen = AtomicBool::new(true); // first-token timing is for the translation only
+    let pending = Mutex::new(Cached::default());
     let result = llm
-        .glosses(&GlossRequest { sentence, words, ctx }, &mut |c| forward(em, collected, side, &seen, started, c))
+        .glosses(&GlossRequest { sentence, words, ctx }, &mut |c| {
+            if let LlmChunk::Gloss(g) = &c && !words.iter().any(|w| w.index == g.index) { return; }
+            forward(em, &pending, side, &seen, started, c)
+        })
         .await;
     if let Err(e) = result {
+        lock(collected).glosses_complete = false;
         em.error(Stage::Llm, format!("word meanings unavailable: {e}"));
+    } else {
+        let pending = std::mem::take(&mut *lock(&pending));
+        let mut collected = lock(collected);
+        for (side, gloss) in pending.glosses {
+            if !words.iter().any(|w| w.index == gloss.index) { continue; }
+            collected.glosses.retain(|(s, g)| *s != side || g.index != gloss.index);
+            collected.glosses.push((side, gloss));
+        }
+        if pending.note.is_some() { collected.note = pending.note; }
+        collected.glosses_complete = words.iter().all(|w| collected.glosses.iter().any(|(s, g)| *s == side && g.index == w.index));
     }
 }
 
@@ -190,6 +206,7 @@ pub(crate) async fn await_llm(inner: &Inner, em: &Emitter) -> Option<LlmClient> 
         em.error(Stage::Llm, NO_LLM);
         return None;
     };
+    if client.has_runtime() { return Some(client); }
     let Some(mut status) = inner.llm_status.clone() else { return Some(client) };
     if matches!(*status.borrow(), LlmStatus::Starting) {
         em.send(Event::Note { id: em.id, text: "The language model is still loading; the translation will appear as soon as it is ready.".into() });
@@ -218,6 +235,26 @@ pub(crate) fn effective_gloss_mode(inner: &Inner, profile: Option<&maru_core::co
     profile.and_then(|p| p.gloss_mode).unwrap_or(inner.cfg.learning.gloss_mode)
 }
 
+/// A snapshot captures its route once, even if the live toggle changes while it runs.
+async fn snapshot_model(inner: &Inner, em: &Emitter, active: bool) -> Option<(LlmClient, bool)> {
+    if active {
+        let cfg = &inner.cfg.continuous.translation;
+        if let Some(endpoint) = &cfg.snapshot_endpoint {
+            let remote_cfg = maru_core::config::LlmConfig { endpoint: Some(endpoint.clone()), model_name: cfg.snapshot_model_name.clone(), ..inner.cfg.llm.clone() };
+            let remote = LlmClient::from_config(&remote_cfg).with_request_deadline(std::time::Duration::from_secs(remote_cfg.request_timeout_secs.max(1)));
+            if remote.health().await { return Some((remote, false)); }
+            em.send(Event::Note { id: em.id, text: "The snapshot server is unavailable. Using local translation and offline meanings; local Gemma will not load. Try again for richer analysis when the server is available.".into() });
+        }
+        if cfg.model != maru_core::live_model::LiveModel::Main {
+            return match inner.live_llm.clone() {
+                Some(client) => Some((client, true)),
+                None => { em.error(Stage::Llm, "The selected live translation model is unavailable. Check its GGUF path in Settings."); None }
+            };
+        }
+    }
+    await_llm(inner, em).await.map(|c| (c, false))
+}
+
 pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: EventTx) {
     let em = Emitter { tx, id };
     let started = Instant::now();
@@ -235,8 +272,10 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
     capture.text = text.clone();
 
     let profile_key = (profile.as_ref().map(|p| p.name.clone()), profile.as_ref().map(|p| p.glossary.clone()), profile.as_ref().and_then(|p| p.hint.clone()));
-    let key = CacheKey::new(&text, direction, register, &profile_key);
-    let cached = lock(&inner.cache).get(&key);
+    let active = inner.live_active.load(Ordering::Acquire);
+    let special = active && (inner.cfg.continuous.translation.model != maru_core::live_model::LiveModel::Main || inner.cfg.continuous.translation.snapshot_endpoint.is_some());
+    let key = if special { CacheKey::new(&text, direction, register, &(&profile_key, "live-snapshot")) } else { CacheKey::new(&text, direction, register, &profile_key) };
+    let cached = if special { None } else { lock(&inner.cache).get(&key) };
 
     em.send(Event::Started { id, direction, capture: capture.clone(), cached: cached.is_some() });
     if truncated {
@@ -247,7 +286,22 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
     let words = capture.words.clone();
 
     if let Some(hit) = cached {
-        replay(&inner, &em, direction, register, &text, words, hit).await;
+        let eojeols = replay(&inner, &em, direction, register, &text, words, &hit).await;
+        let side = if direction == Direction::KoToEn { Side::Source } else { Side::Target };
+        let missing: Vec<_> = gloss_words(&eojeols, skip_known).into_iter()
+            .filter(|w| !hit.glosses.iter().any(|(s, g)| *s == side && g.index == w.index)).collect();
+        if !hit.glosses_complete || !missing.is_empty() {
+            let sentence = if direction == Direction::KoToEn { text.as_str() } else {
+                hit.translations.iter().find(|(v, _)| *v == Variant::from_register(register)).map(|(_, t)| t.as_str()).unwrap_or_default()
+            };
+            let collected = Mutex::new(hit.clone());
+            if missing.is_empty() { lock(&collected).glosses_complete = true; }
+            else if let Some(llm) = await_llm(&inner, &em).await {
+                let ctx = prompt_context(&inner, &capture, profile.as_ref());
+                run_glosses(&llm, &em, &collected, side, sentence, &missing, &ctx).await;
+            }
+            lock(&inner.cache).put(key, std::mem::take(&mut *lock(&collected)));
+        }
         em.timing(Stage::Total, started);
         em.done();
         return;
@@ -255,11 +309,12 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
 
     let ctx = prompt_context(&inner, &capture, profile.as_ref());
     let collected = Mutex::new(Cached::default());
+    let mut used_native = false;
 
     match direction {
         Direction::KoToEn => {
             let eojeols = analyze_and_emit(&inner, &em, Side::Source, &text, words).await;
-            let Some(llm) = await_llm(&inner, &em).await else {
+            let Some((llm, native)) = snapshot_model(&inner, &em, active).await else {
                 em.timing(Stage::Total, started);
                 em.done();
                 return;
@@ -268,25 +323,40 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
             let first_token = AtomicBool::new(false);
             let llm_started = Instant::now();
 
-            let translate_fut = async {
-                let r = llm
-                    .translate_ko_en(&KoEnRequest { text: &text, ctx: &ctx }, &mut |c| {
-                        forward(&em, &collected, Side::Source, &first_token, llm_started, c)
-                    })
-                    .await;
-                if let Err(e) = r {
-                    em.error(Stage::Llm, e.to_string());
-                }
-            };
-            tokio::join!(translate_fut, run_glosses(&llm, &em, &collected, Side::Source, &text, &gloss_list, &ctx));
+            if native {
+                used_native = true;
+                em.send(Event::Note { id, text: "Using the live translation model. Word breakdown and dictionary meanings are available offline; richer model analysis is available with a snapshot server or after live subtitles are turned off.".into() });
+                let result = llm.translate_selected_live(inner.cfg.continuous.translation.model, &LiveRequest { text: &text, ctx: &ctx, turns: &[] }, &mut |c| forward(&em, &collected, Side::Source, &first_token, llm_started, c)).await;
+                lock(&collected).translation_complete = result.is_ok();
+                if let Err(e) = result { em.error(Stage::Llm, e.to_string()); }
+            } else {
+                let translate_fut = async {
+                    let r = llm
+                        .translate_ko_en(&KoEnRequest { text: &text, ctx: &ctx }, &mut |c| {
+                            forward(&em, &collected, Side::Source, &first_token, llm_started, c)
+                        })
+                        .await;
+                    lock(&collected).translation_complete = r.is_ok();
+                    if let Err(e) = r {
+                        em.error(Stage::Llm, e.to_string());
+                    }
+                };
+                tokio::join!(translate_fut, run_glosses(&llm, &em, &collected, Side::Source, &text, &gloss_list, &ctx));
+            }
             em.timing(Stage::Llm, llm_started);
         }
         Direction::EnToKo => {
-            let Some(llm) = await_llm(&inner, &em).await else {
+            let Some((llm, native)) = snapshot_model(&inner, &em, active).await else {
                 em.timing(Stage::Total, started);
                 em.done();
                 return;
             };
+            if native {
+                em.error(Stage::Llm, "The live model translates Korean to English only. Configure a snapshot server or turn off live subtitles to translate English with Gemma.");
+                em.timing(Stage::Total, started);
+                em.done();
+                return;
+            }
             let primary = Variant::from_register(register);
             let (primary_tx, primary_rx) = oneshot::channel::<String>();
             let primary_tx = Mutex::new(Some(primary_tx));
@@ -305,6 +375,9 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
                         forward(&em, &collected, Side::Target, &first_token, llm_started, c)
                     })
                     .await;
+                // A missing register or failed stream must also release the follow-up.
+                drop(lock(&primary_tx).take());
+                lock(&collected).translation_complete = r.is_ok();
                 if let Err(e) = r {
                     em.error(Stage::Llm, e.to_string());
                 }
@@ -322,8 +395,17 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
         }
     }
 
+    let needs_fallback = !used_native && !lock(&collected).is_useful() && special && inner.cfg.continuous.translation.snapshot_endpoint.is_some()
+        && inner.cfg.continuous.translation.model != maru_core::live_model::LiveModel::Main && direction == Direction::KoToEn;
+    if needs_fallback && let Some(client) = inner.live_llm.clone() {
+        em.send(Event::Note { id, text: "The snapshot server could not complete the translation. Trying the live model; richer analysis remains unavailable.".into() });
+        let first = AtomicBool::new(false);
+        let result = client.translate_selected_live(inner.cfg.continuous.translation.model, &LiveRequest { text: &text, ctx: &ctx, turns: &[] }, &mut |c| forward(&em, &collected, Side::Source, &first, started, c)).await;
+        lock(&collected).translation_complete = result.is_ok();
+        if let Err(e) = result { em.error(Stage::Llm, e.to_string()); }
+    }
     let result = std::mem::take(&mut *lock(&collected));
-    if result.translations.is_empty() {
+    if !result.is_useful() {
         em.error(Stage::Llm, "The model did not return a translation. Check that it is loaded and responding.");
     } else {
         let main = result
@@ -335,7 +417,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
             .unwrap_or_default();
         lock(&inner.memory).push(&app_exe, &text, &main, Instant::now());
         lock(&inner.history).push(HistoryItem::new(id, now_secs(), text.clone(), main, direction, capture.app.as_ref().map(|a| a.exe.clone())));
-        lock(&inner.cache).put(key, result);
+        if !special { lock(&inner.cache).put(key, result); }
     }
     em.timing(Stage::Total, started);
     em.done();
@@ -348,17 +430,8 @@ fn since_ms(t: Instant) -> u32 {
 /// Remember a finished live line as context for the next one. The window grows to
 /// `context_lines + step` and then drops `step` lines at once, so the start of the prompt stays
 /// the same for several requests in a row and the server's prompt cache keeps working.
-fn remember_live_turn(inner: &Inner, source: &str, translation: &str) {
-    let cap = inner.cfg.continuous.context_lines;
-    if cap == 0 || translation.trim().is_empty() {
-        return;
-    }
-    let mut turns = lock(&inner.live_turns);
-    turns.push((source.to_string(), translation.to_string()));
-    let step = (cap / 2).max(1);
-    if turns.len() > cap + step {
-        turns.drain(..step);
-    }
+fn remember_live_turn(inner: &Inner, id: u64, source: &str, translation: &str) {
+    lock(&inner.live_turns).remember(id, source, translation, inner.cfg.continuous.context_lines);
 }
 
 /// Live subtitles: the translation and nothing else, as fast as the model allows. No breakdown and
@@ -378,10 +451,12 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     }
     let app_exe = capture.app.as_ref().map(|a| a.exe.clone()).unwrap_or_default();
     let profile = inner.cfg.profile_for(&app_exe).cloned();
+    // Lines already queued when the watcher stops still reach history, using the restored model.
+    let model = if inner.live_active.load(Ordering::Acquire) { inner.cfg.continuous.translation.model } else { maru_core::live_model::LiveModel::Main };
     let register = profile.as_ref().and_then(|p| p.register).unwrap_or(inner.cfg.learning.register);
     let profile_key = (profile.as_ref().map(|p| p.name.clone()), profile.as_ref().map(|p| p.glossary.clone()), profile.as_ref().and_then(|p| p.hint.clone()));
     // Its own cache entries: a plain translation of the same text also has word meanings, this does not.
-    let key = CacheKey::new(&text, Direction::KoToEn, register, &(&profile_key, "live"));
+    let key = if model == maru_core::live_model::LiveModel::Main { CacheKey::new(&text, Direction::KoToEn, register, &(&profile_key, "live")) } else { CacheKey::new(&text, Direction::KoToEn, register, &(&profile_key, "live", model)) };
     let cached = lock(&inner.cache).get(&key);
     let mut capture = capture;
     capture.text = text.clone();
@@ -394,21 +469,23 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         em.send(Event::TranslationDone { id, variant: Variant::Primary, text: main.clone() });
         (since_ms(appeared), main)
     } else {
-        let Some(llm) = await_llm(&inner, &em).await else {
+        let chosen = if model == maru_core::live_model::LiveModel::Main { await_llm(&inner, &em).await } else { inner.live_llm.clone() };
+        let Some(llm) = chosen else {
+            em.error(Stage::Llm, "The live translation model is unavailable. Check its file in Settings.");
             timing.finish("model_unavailable");
             em.done();
             return;
         };
         let mut ctx = prompt_context(&inner, &capture, profile.as_ref());
         ctx.history.clear(); // the earlier lines go in as chat turns instead
-        let turns = lock(&inner.live_turns).clone();
+        let turns = if model == maru_core::live_model::LiveModel::Main || inner.cfg.continuous.translation.dialogue_context { lock(&inner.live_turns).before(id) } else { Vec::new() };
         let collected = Mutex::new(Cached::default());
         let first_token = AtomicBool::new(false);
         let first = AtomicU32::new(0);
         let llm_started = Instant::now();
         timing.request(turns.len());
         let result = llm
-            .translate_live(&LiveRequest { text: &text, ctx: &ctx, turns: &turns }, &mut |c| {
+            .translate_selected_live(model, &LiveRequest { text: &text, ctx: &ctx, turns: &turns }, &mut |c| {
                 if matches!(c, LlmChunk::Text { .. }) && !first_token.load(Ordering::Relaxed) {
                     timing.first();
                     first.store(since_ms(appeared), Ordering::Relaxed);
@@ -416,12 +493,13 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
                 forward(&em, &collected, Side::Source, &first_token, llm_started, c)
             })
             .await;
+        lock(&collected).translation_complete = result.is_ok();
         if let Err(e) = result {
             em.error(Stage::Llm, e.to_string());
         }
         let result = std::mem::take(&mut *lock(&collected));
         let main = result.translations.first().map(|(_, t)| t.clone()).unwrap_or_default();
-        if main.trim().is_empty() {
+        if !result.is_useful() {
             timing.finish("empty_or_error");
             em.error(Stage::Llm, "The model did not return a translation for this line.");
             em.done();
@@ -437,7 +515,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         "live line: on screen → read {ready_ms} ms (OCR {ocr_ms} ms) → first word {first_ms} ms → done {total_ms} ms, {} characters",
         text.chars().count()
     );
-    remember_live_turn(&inner, &text, &translation);
+    remember_live_turn(&inner, id, &text, &translation);
     lock(&inner.memory).push(&app_exe, &text, &translation, Instant::now());
     lock(&inner.history).push(HistoryItem {
         live: true,
@@ -459,19 +537,19 @@ async fn replay(
     register: maru_core::Register,
     text: &str,
     words: Vec<WordBox>,
-    hit: Cached,
-) {
-    match direction {
+    hit: &Cached,
+) -> Vec<Eojeol> {
+    let eojeols = match direction {
         Direction::KoToEn => {
-            analyze_and_emit(inner, em, Side::Source, text, words).await;
+            analyze_and_emit(inner, em, Side::Source, text, words).await
         }
         Direction::EnToKo => {
             let primary = Variant::from_register(register);
             if let Some((_, korean)) = hit.translations.iter().find(|(v, _)| *v == primary) {
-                analyze_and_emit(inner, em, Side::Target, korean, Vec::new()).await;
-            }
+                analyze_and_emit(inner, em, Side::Target, korean, Vec::new()).await
+            } else { Vec::new() }
         }
-    }
+    };
     for (variant, t) in &hit.translations {
         em.send(Event::Translation { id: em.id, variant: *variant, delta: t.clone() });
         em.send(Event::TranslationDone { id: em.id, variant: *variant, text: t.clone() });
@@ -482,6 +560,7 @@ async fn replay(
     if let Some(note) = &hit.note {
         em.send(Event::Note { id: em.id, text: note.clone() });
     }
+    eojeols
 }
 
 /// Hover mode: no model, just the breakdown and dictionary for the word under the pointer.
@@ -544,10 +623,15 @@ pub(crate) async fn deep_dive(inner: Arc<Inner>, id: u64, req: DeepDiveRequest, 
     em.timing(Stage::Dictionary, started);
 
     // 3. Streaming tutor explanation.
-    let Some(llm) = await_llm(&inner, &em).await else {
+    let Some((llm, native)) = snapshot_model(&inner, &em, inner.live_active.load(Ordering::Acquire)).await else {
         em.done();
         return;
     };
+    if native {
+        em.send(Event::Note { id, text: "Offline dictionary and word formation are shown. Turn off live subtitles or configure a snapshot server for richer analysis.".into() });
+        em.done();
+        return;
+    }
     let ctx = PromptContext::default();
     let result = llm
         .deep_dive(

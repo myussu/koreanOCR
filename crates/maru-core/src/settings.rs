@@ -149,6 +149,8 @@ pub fn validate(cfg: &Config) -> Result<()> {
     check(cfg.continuous.linger_ms <= 10_000, "a live translation can stay at most 10 seconds after its line is gone");
     check(cfg.continuous.context_lines <= 20, "live mode can show the model at most 20 earlier lines");
     check(cfg.continuous.max_in_flight <= 2, "live mode can run at most two translations at once (0 keeps the existing behaviour)");
+    check((1..=32).contains(&cfg.continuous.translation.cpu_threads), "live translation CPU threads must be between 1 and 32");
+    check(cfg.continuous.translation.model == crate::live_model::LiveModel::Main || cfg.continuous.translation.selected_path().is_some_and(|p| !p.as_os_str().is_empty()), "choose a local GGUF file for the live translation model");
     check((1024..=65535).contains(&cfg.tts.port), "speech server port must be between 1024 and 65535");
     check(cfg.tts.speed >= 0.25 && cfg.tts.speed <= 4.0, "speech speed must be between 0.25 and 4");
     check(cfg.tts.timeout_secs >= 5, "speech timeout must be at least 5 seconds");

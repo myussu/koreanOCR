@@ -7,11 +7,17 @@
 //! * [`tasks`] — translate / gloss / deep-dive operations built from the above
 
 pub mod client;
+pub mod connection;
+pub mod discovery;
 pub mod demux;
 pub mod live_bench;
+mod live_completion;
+mod live_sub_models;
 pub mod prompts;
 pub mod server;
 pub mod tasks;
+pub mod model_runtime;
+pub mod live_models;
 
 use thiserror::Error;
 

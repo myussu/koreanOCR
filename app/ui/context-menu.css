@@ -1,0 +1,32 @@
+.context-menu {
+  position: fixed;
+  z-index: 1000;
+  box-sizing: border-box;
+  min-width: min(210px, calc(100vw - 8px));
+  max-width: calc(100vw - 8px);
+  max-height: calc(100vh - 8px);
+  overflow: auto;
+  padding: 5px;
+  border: 1px solid #626d83;
+  border-radius: 9px;
+  background: #202634;
+  color: #f4f6fa;
+  box-shadow: 0 6px 20px #0006;
+  pointer-events: auto;
+  font: 13px/18px "Segoe UI", system-ui, sans-serif;
+}
+.context-menu button {
+  display: block;
+  box-sizing: border-box;
+  width: 100%;
+  padding: 8px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+}
+.context-menu button:hover, .context-menu button:focus-visible { background: #354866; }
+.context-menu button:disabled { opacity: .5; cursor: default; }

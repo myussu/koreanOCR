@@ -24,7 +24,7 @@ maru-ocr.workspace = true
 maru-platform.workspace = true
 maru-tts.workspace = true
 tokio.workspace = true
-tokio-util.workspace = true
+tokio-util = { workspace = true, features = ["rt"] }
 lru.workspace = true
 serde.workspace = true
 serde_json.workspace = true

@@ -32,6 +32,8 @@ pub struct PanelState {
 #[derive(Default)]
 pub struct ScanState {
     pub visible: bool,
+    pub id: Option<u64>,
+    pub join_mode: bool,
     /// Physical pixel of the overlay window's top-left corner.
     pub origin: (f32, f32),
     /// Page pixels per physical pixel, as the page reports it.
@@ -40,6 +42,17 @@ pub struct ScanState {
     pub rects: Vec<Rect>,
     /// The window currently accepts the mouse (the pointer is over a label).
     pub interactive: bool,
+}
+
+impl ScanState {
+    pub fn accepts_events(&self, id: u64) -> bool {
+        self.visible && self.id == Some(id)
+    }
+    pub fn set_join_mode(&mut self, id: u64, enabled: bool) -> bool {
+        if !self.accepts_events(id) { return false; }
+        self.join_mode = enabled;
+        true
+    }
 }
 
 pub struct AppState {
@@ -84,7 +97,9 @@ impl AppState {
 
     /// Stop the live-mode watcher; true if one was running.
     pub fn stop_continuous(&self) -> bool {
-        self.continuous.lock().map(|mut c| c.take().is_some()).unwrap_or(false)
+        let stopped = self.continuous.lock().unwrap_or_else(|p| p.into_inner()).take().is_some();
+        self.engine().set_live_active(false);
+        stopped
     }
 
     pub fn scan(&self) -> MutexGuard<'_, ScanState> {
@@ -93,5 +108,23 @@ impl AppState {
 
     pub fn panel(&self) -> MutexGuard<'_, PanelState> {
         self.panel.lock().unwrap_or_else(|p| p.into_inner())
+    }
+}
+
+#[cfg(test)]
+mod scan_tests {
+    use super::ScanState;
+
+    #[test]
+    fn hidden_or_replaced_scans_refuse_late_events_and_join_mode_changes() {
+        let mut scan = ScanState { visible: true, id: Some(2), ..Default::default() };
+        assert!(scan.set_join_mode(2, true));
+        assert!(!scan.set_join_mode(1, false));
+        assert!(scan.join_mode);
+        assert!(!scan.accepts_events(1));
+        scan = ScanState::default();
+        assert!(!scan.accepts_events(2));
+        assert!(!scan.set_join_mode(2, true));
+        assert!(!scan.join_mode);
     }
 }

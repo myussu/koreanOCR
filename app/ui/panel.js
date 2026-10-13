@@ -1,9 +1,11 @@
 import { invoke, listen, replayFromQuery, mockCommands, inTauri } from './bridge.js';
-import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, readableText, sentenceRanges, VARIANT_LABEL } from './core.js';
+import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, readableText, sentenceRanges, snapshotCorrectionId, VARIANT_LABEL } from './core.js';
+import { contextMenu } from './context-menu.js';
 import { Reader } from './reader.js';
-import { cleanDeck, deckChoices, addTags, removeTag, intervalText, addedText, reverseChoice } from './anki.js';
+import { cleanDeck, deckChoices, addTags, removeTag, intervalText, addedText, reverseChoice, canSubmitAnki } from './anki.js';
 
 const card = document.getElementById('card');
+const snapshotMenu = contextMenu();
 let state = emptyState();
 let cfg = { gloss_mode: 'fade_known', font_size_px: 18, show_romanization: true, show_pronunciation: true, show_grammar_formula: true, theme: 'auto', anki: false, tts: false, opacity: 0.97 };
 let pinned = false;
@@ -227,6 +229,7 @@ function render() {
 // ───────────── actions ─────────────
 
 function update(next) {
+  if (next.id !== state.id) snapshotMenu.close();
   state = next;
   render();
 }
@@ -310,6 +313,7 @@ function closeAnki() {
 
 async function submitAnki() {
   const u = ankiUI;
+  if (!canSubmitAnki(u)) return;
   const deck = cleanDeck(u.query || u.deck);
   if (!deck) {
     u.message = 'Choose or type a deck first.';
@@ -323,11 +327,13 @@ async function submitAnki() {
     u.reply = reply;
     u.message = reply.result === 'added' ? addedText(reply) : `Already in Anki, in ${reply.deck}.`;
     if (reply.note) u.message += ` ${reply.note}`;
+    if (reply.warning) u.message += ` ${reply.warning}`;
     u.open = reply.result === 'exists';
-    if (reply.result === 'added') {
+    if (reply.result === 'added' && !reply.warning) {
       u.overview = { ...u.overview, existing: { note_id: 0, deck: reply.deck, interval_days: 0 } };
       closeAnki();
     }
+    if (reply.warning) u.open = true;
   } catch (e) {
     u.message = String(e);
   }
@@ -337,6 +343,7 @@ async function submitAnki() {
 
 async function addExample() {
   const u = ankiUI;
+  if (u.busy) return;
   u.busy = true;
   render();
   try {
@@ -521,6 +528,16 @@ const endDrag = () => {
 document.documentElement.addEventListener('pointerup', endDrag);
 document.documentElement.addEventListener('pointercancel', endDrag);
 
+card.addEventListener('contextmenu', (event) => {
+  const requestId = snapshotCorrectionId(state);
+  if (requestId == null || event.target.closest('input, textarea, [contenteditable]')) return;
+  event.preventDefault();
+  snapshotMenu.open({ x: event.clientX, y: event.clientY }, [
+    { label: 'Correct Korean OCR…', action: () => invoke('correction_open_snapshot', { requestId }).catch(e => flash(String(e))) },
+    { label: 'Cancel' },
+  ]);
+});
+
 // ───────────── sizing ─────────────
 
 let lastSize = '';
@@ -558,14 +575,16 @@ let autoSpeakId = null;
 listen('maru-auto-speak', (id) => {
   autoSpeakId = id;
 });
-listen('maru-hidden', () => reader.stop());
+listen('maru-hidden', () => { snapshotMenu.close(); reader.stop(); });
 listen('maru-tts-control', (what) => {
   if (what === 'stop') reader.stop();
 });
 listen('maru-event', (e) => {
+  const next = reduce(state, e);
+  if (next === state) return;
   // The app resets the window to a default size for every new request; make sure the real size is reported again.
   if (e.type === 'started') lastSize = '';
-  update(reduce(state, e));
+  update(next);
   if (autoSpeakId != null && state.id === autoSpeakId) {
     const ready = state.direction === 'en_to_ko' ? e.type === 'translation_done' && e.variant === 'primary' : e.type === 'started';
     if (ready) {
@@ -614,6 +633,7 @@ if (!inTauri) {
     tts_reading: () => {},
     panel_drag: () => {},
     panel_typing: () => {},
+    correction_open_snapshot: () => {location.href='correction.html?demo=snapshot';},
     anki_overview: ({ key }) => ({ connected: true, error: null, decks: ['Default', 'Korean', 'Korean::Games', 'Korean::Games::Elden Ring', 'Korean::YouTube'], suggestions: [{ deck: 'Korean::Games::Elden Ring', reason: 'what you chose last time in Elden Ring', exists: true }, { deck: 'Korean::Hades', reason: 'named after Hades', exists: false }, { deck: 'Korean', reason: 'your default deck', exists: true }], tags: ['maru', 'topik-1', 'pos::verb', 'app::elden-ring', 'added::2026-10'], existing: null, reverse: 'subdeck', app_name: 'Elden Ring', audio: true, key }),
     anki_add: ({ request }) => ({ result: 'added', deck: request.deck, reverse_deck: request.reverse === 'off' ? null : `${request.deck}::Reverse`, cards: request.reverse === 'off' ? 1 : 2, sync: true, note: null }),
     anki_add_example: () => true,

@@ -1,0 +1,7 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Maru — correct OCR text</title><link rel="stylesheet" href="correction.css"><script type="module" src="correction.js"></script></head>
+<body><main><header><h1>Correct recognised text</h1><p>Read the Korean in your snapshot, fix the text below, then translate it again.</p></header>
+<p id="program"></p><section class="observed"><span>OCR originally read</span><p id="observed"></p></section>
+<form id="form"><label for="text">Corrected text</label><textarea id="text" rows="3" spellcheck="false" lang="ko" placeholder="For example: 스킵"></textarea>
+<label class="remember"><input id="remember" type="checkbox">Remember this exact correction for this game / app</label>
+<p class="help">Applies to snapshots from the captured program. Live subtitles keep their current OCR behavior. An unchecked box does not remove an existing saved rule.</p>
+<p id="message" role="status" aria-live="polite"></p><footer><button id="forget" type="button" hidden>Forget saved rule</button><span></span><button id="cancel" type="button">Cancel</button><button id="apply" type="submit">Apply and retranslate</button></footer></form></main></body></html>

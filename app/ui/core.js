@@ -36,6 +36,7 @@ function updateWordStates(state, status) {
 
 /** Apply one engine event. Returns a new state object (the old one is not mutated). */
 export function reduce(prev, event) {
+  if (event.type === 'started' && prev.id != null && event.id <= prev.id) return prev;
   const state = structuredClone(prev);
   const deepId = state.deep?.id;
 
@@ -129,6 +130,11 @@ export function autoDeepTarget(state, id) {
 }
 
 export const closeDeep = (prev) => ({ ...structuredClone(prev), deep: null });
+
+/** Only captured OCR snapshots can be corrected from the panel's right-click menu. */
+export function snapshotCorrectionId(state) {
+  return state.capture?.source === 'ocr' && state.id != null ? state.id : null;
+}
 
 /**
  * What to print under a word.

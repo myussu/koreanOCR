@@ -15,6 +15,9 @@ pub(crate) struct Counters {
     waiting: AtomicUsize,
     active: AtomicUsize,
 }
+impl Counters {
+    pub(crate) fn counts(&self) -> (usize, usize) { (self.waiting.load(Ordering::Relaxed), self.active.load(Ordering::Relaxed)) }
+}
 
 pub(crate) struct Timing {
     counts: Arc<Counters>,

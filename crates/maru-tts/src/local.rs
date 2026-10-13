@@ -84,6 +84,8 @@ pub struct LocalTts {
 }
 
 impl LocalTts {
+    pub fn process_id(&self) -> Option<u32> { self.process.process_id() }
+    pub async fn stop(&mut self) -> Result<()> { self.process.stop().await.map_err(|e| TtsError::Spawn(e.to_string())) }
     pub async fn start(cfg: &TtsConfig, paths: &Paths) -> Result<Self> {
         let missing = missing(cfg, paths);
         if !missing.is_empty() {

@@ -160,6 +160,14 @@ pub struct ChildServer {
 }
 
 impl ChildServer {
+    /// Stop this owned child and wait for its exit; never search for other processes.
+    pub async fn stop(&mut self) -> Result<()> {
+        if self.child.try_wait().map_err(|e| LlmError::Spawn(e.to_string()))?.is_none() {
+            self.child.kill().await.map_err(|e| LlmError::Spawn(format!("could not stop the owned model: {e}")))?;
+        }
+        Ok(())
+    }
+    pub fn process_id(&self) -> Option<u32> { self.child.id() }
     /// Start `binary` with `args` (and `env`), without waiting for it to be ready.
     pub fn spawn(name: &str, binary: &std::path::Path, args: &[String], env: &[(String, String)]) -> Result<Self> {
         let mut cmd = Command::new(binary);
@@ -240,6 +248,11 @@ pub struct LlamaServer {
 pub const PORT_GRACE: Duration = Duration::from_secs(6);
 
 impl LlamaServer {
+    pub fn process_id(&self) -> Option<u32> { self.process.process_id() }
+    #[cfg(test)]
+    pub(crate) fn test_owned(process: ChildServer) -> Self {
+        Self { process, client: LlmClient::from_config(&LlmConfig::default()) }
+    }
     /// Start the server and return once it answers `/health` (model loaded).
     pub async fn start(cfg: &LlmConfig, paths: &Paths, ready_timeout: Duration) -> Result<Self> {
         Self::start_after(cfg, paths, ready_timeout, PORT_GRACE).await
@@ -280,6 +293,11 @@ impl LlamaServer {
 
     pub fn client(&self) -> LlmClient {
         self.client.clone()
+    }
+
+    /// Release the owned model before starting another on the same port.
+    pub async fn stop(&mut self) -> Result<()> {
+        self.process.stop().await
     }
 
     /// The last lines the server printed, for error messages.

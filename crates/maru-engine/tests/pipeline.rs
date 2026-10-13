@@ -62,7 +62,264 @@ async fn harness() -> Harness {
     harness_with(model, |_| {}).await
 }
 
+#[tokio::test]
+async fn failed_or_missing_requested_korean_registers_end_with_done_and_are_not_cached() {
+    for failed in [false, true] {
+        let h = harness_with(move |_, _| {
+            if failed { MockResponse { status: 503, chunks: vec![b"unavailable".to_vec()], delay_ms: 0 } }
+            else { MockResponse { status: 200, chunks: sse_answer(&["FORMAL: 감사합니다\n"]), delay_ms: 0 } }
+        }, |_| {}).await;
+        for _ in 0..2 {
+            let (_, rx) = h.engine.translate(Capture::typed("Thank you."));
+            let events = tokio::time::timeout(Duration::from_secs(1), collect(rx)).await.expect("a finished translation releases its follow-up");
+            assert!(matches!(events.last(), Some(Event::Done { .. })));
+            assert!(events.iter().any(|e| matches!(e, Event::Error { .. })));
+        }
+        assert_eq!(h.requests().len(), 2);
+        assert!(h.engine.history().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn an_unfinished_translation_is_not_added_to_cache_or_history() {
+    for tail in ["", "data: broken\n\ndata: [DONE]\n\n", "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n", "data: {\"error\":\"failed at EOF\"}"] {
+        let h = harness_with(move |path, body| {
+            if body.contains("Words:") { model(path, body) }
+            else { MockResponse { status: 200, chunks: vec![maru_llm::testing::sse_event("Partial."), tail.as_bytes().to_vec()], delay_ms: 0 } }
+        }, |_| {}).await;
+        for _ in 0..2 {
+            let events = collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+            assert!(events.iter().any(|e| matches!(e, Event::Error { .. })));
+            assert!(!events.iter().any(|e| matches!(e, Event::TranslationDone { .. })));
+            assert!(matches!(events.last(), Some(Event::Done { .. })));
+        }
+        assert_eq!(h.requests().iter().filter(|b| !b.contains("Words:")).count(), 2);
+        assert!(h.engine.history().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn a_korean_register_closed_before_a_later_stream_error_is_not_cached() {
+    let h = harness_with(|path, body| {
+        if body.contains("Words:") { model(path, body) }
+        else { MockResponse { status: 200, chunks: vec![maru_llm::testing::sse_event("POLITE: 감사합니다\nFORMAL: 감사드립니다\n"), b"data: {\"error\":\"failed at EOF\"}".to_vec()], delay_ms: 0 } }
+    }, |_| {}).await;
+    for _ in 0..2 {
+        let events = collect(h.engine.translate(Capture::typed("Thank you.")).1).await;
+        assert!(events.iter().any(|e| matches!(e, Event::Error { .. })));
+        assert!(matches!(events.last(), Some(Event::Done { .. })));
+    }
+    assert_eq!(h.requests().iter().filter(|b| b.contains("Translate into Korean")).count(), 2);
+    assert!(h.engine.history().is_empty());
+}
+
+#[tokio::test]
+async fn repeating_a_cached_translation_retries_failed_meanings_without_retranslating() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for source in [SENTENCE, "Thank you."] {
+        let gloss_calls = AtomicUsize::new(0);
+        let h = harness_with(move |path, body| {
+            if body.contains("Words:") && gloss_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                MockResponse { status: 200, chunks: vec![maru_llm::testing::sse_event("0|untrusted partial meaning|\n"), b"data: {\"error\":\"temporary failure\"}\n\n".to_vec()], delay_ms: 0 }
+            } else { model(path, body) }
+        }, |_| {}).await;
+        let first = collect(h.engine.translate(Capture::typed(source)).1).await;
+        assert!(first.iter().any(|e| matches!(e, Event::TranslationDone { .. })));
+        assert!(first.iter().any(|e| matches!(e, Event::Error { .. })));
+        let second = collect(h.engine.translate(Capture::typed(source)).1).await;
+        assert!(second.iter().any(|e| matches!(e, Event::Started { cached: true, .. })));
+        assert!(second.iter().any(|e| matches!(e, Event::Gloss { gloss, .. } if gloss.meaning == "I")));
+        assert!(!second.iter().any(|e| matches!(e, Event::Gloss { gloss, .. } if gloss.meaning == "untrusted partial meaning")));
+        assert_eq!(h.requests().iter().filter(|b| b.contains("Words:")).count(), 2);
+        assert_eq!(h.requests().iter().filter(|b| !b.contains("Words:")).count(), 1);
+        assert_eq!(h.engine.history().len(), 1);
+        collect(h.engine.translate(Capture::typed(source)).1).await;
+        assert_eq!(h.requests().len(), 3, "completed meanings are reusable too");
+    }
+}
+
+#[tokio::test]
+async fn only_missing_meanings_are_retried_when_a_finished_gloss_answer_omits_a_word() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let gloss_calls = AtomicUsize::new(0);
+    let h = harness_with(move |path, body| {
+        if body.contains("Words:") && gloss_calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            MockResponse { status: 200, chunks: sse_answer(&["0|I|\n"]), delay_ms: 0 }
+        } else if body.contains("Words:") {
+            MockResponse { status: 200, chunks: sse_answer(&["0|unrequested meaning|\n1|school|\n2|to study|\n"]), delay_ms: 0 }
+        } else { model(path, body) }
+    }, |_| {}).await;
+    collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+    let events = collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+    assert!(events.iter().any(|e| matches!(e, Event::Gloss { gloss, .. } if gloss.index == 1 && gloss.meaning == "school")));
+    assert!(!events.iter().any(|e| matches!(e, Event::Gloss { gloss, .. } if gloss.meaning == "unrequested meaning")));
+    let requests = h.requests();
+    let retry = requests.iter().rfind(|b| b.contains("Words:")).unwrap();
+    assert!(!retry.contains("0. 저는"), "a validated meaning is already cached: {retry}");
+    assert!(retry.contains("1. 학교에서") && retry.contains("2. 공부했어요"));
+    collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+    assert_eq!(h.requests().len(), 3);
+}
+
+#[tokio::test]
+async fn a_cached_answer_reannotates_words_and_requests_meanings_that_are_no_longer_known() {
+    let h = harness().await;
+    h.engine.set_known("학교", true).unwrap();
+    collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+    h.engine.set_known("학교", false).unwrap();
+    let events = collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+    assert!(events.iter().any(|e| matches!(e, Event::Gloss { gloss, .. } if gloss.index == 1 && gloss.meaning == "school")));
+    let requests = h.requests();
+    let retry = requests.iter().rfind(|b| b.contains("Words:")).unwrap();
+    assert!(retry.contains("1. 학교에서"));
+    assert!(!retry.contains("0. 저는") && !retry.contains("2. 공부했어요"));
+    assert_eq!(requests.len(), 3);
+}
+
+#[tokio::test]
+async fn a_live_request_stalled_before_headers_releases_its_slot_for_the_next_line() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let root = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move {
+        let (mut stalled, _) = listener.accept().await.unwrap();
+        let mut request = [0; 8192];
+        assert!(stalled.read(&mut request).await.unwrap() > 0);
+        let (mut next, _) = listener.accept().await.unwrap();
+        assert!(next.read(&mut request).await.unwrap() > 0);
+        next.write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n").await.unwrap();
+        for event in sse_answer(&["Next answer."]) { next.write_all(&event).await.unwrap(); }
+        next.shutdown().await.unwrap();
+        drop(stalled);
+    });
+    let mut cfg = Config::default();
+    cfg.llm.request_timeout_secs = 1;
+    cfg.continuous.max_in_flight = 1;
+    let client = LlmClient::new(&root, &cfg.llm);
+    let h = build(cfg, Some(client), None);
+    let (_, first) = h.engine.translate_live(live_line(SENTENCE));
+    let (_, next) = h.engine.translate_live(live_line("저는 학생이에요"));
+    let (first, next) = tokio::join!(collect(first), collect(next));
+    server.await.unwrap();
+    assert!(first.iter().any(|e| matches!(e, Event::Error { .. })));
+    assert!(matches!(first.last(), Some(Event::Done { .. })));
+    assert_eq!(text_of(&next, Variant::Primary), "Next answer.");
+    assert_eq!(h.engine.history().len(), 1);
+}
+
+#[tokio::test]
+async fn unfinished_live_answers_are_not_saved_as_context_cache_or_history() {
+    let h = harness_with(|_, _| MockResponse { status: 200, chunks: vec![maru_llm::testing::sse_event("Partial.")], delay_ms: 0 }, |_| {}).await;
+    for _ in 0..2 {
+        let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+        assert!(events.iter().any(|e| matches!(e, Event::Error { .. })));
+        assert!(!events.iter().any(|e| matches!(e, Event::TranslationDone { .. })));
+    }
+    assert_eq!(h.requests().len(), 2);
+    assert!(h.engine.history().is_empty());
+    assert!(h.requests().iter().all(|b| !b.contains("\"assistant\"")));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overlapping_live_answers_are_context_in_capture_order_instead_of_completion_order() {
+    let h = harness_with(|_, body| {
+        let value: serde_json::Value = serde_json::from_str(body).unwrap();
+        let source = value["messages"].as_array().unwrap().last().unwrap()["content"].as_str().unwrap();
+        MockResponse { status: 200, chunks: sse_answer(&["Answer."]), delay_ms: if source.contains(SENTENCE) { 150 } else { 0 } }
+    }, |c| c.continuous.max_in_flight = 2).await;
+    let (first, a) = h.engine.translate_live(live_line(SENTENCE));
+    let (second, b) = h.engine.translate_live(live_line("저는 학생이에요"));
+    collect(b).await;
+    collect(a).await;
+    assert_eq!(h.engine.history().iter().map(|i| i.id).collect::<Vec<_>>(), [second, first]);
+    collect(h.engine.translate_live(live_line("안녕하세요")).1).await;
+    let request: serde_json::Value = serde_json::from_str(h.requests().last().unwrap()).unwrap();
+    let previous: Vec<_> = request["messages"].as_array().unwrap().iter().filter(|m| m["role"] == "user").map(|m| m["content"].as_str().unwrap()).collect();
+    assert!(previous[0].contains(SENTENCE), "{previous:?}");
+    assert!(previous[1].contains("저는 학생이에요"), "{previous:?}");
+}
+
+#[tokio::test]
+async fn snapshots_reuse_the_live_translator_until_live_is_turned_off() {
+    use maru_core::live_model::LiveModel;
+    let main = spawn_mock(model).await;
+    let native = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![b"data: {\"content\":\"Local translation.\",\"stop\":true}\n\n".to_vec()], delay_ms: 0 }).await;
+    let mut cfg = Config::default();
+    cfg.continuous.translation.model = LiveModel::Milmmt;
+    let h = build_with_live(cfg.clone(), Some(LlmClient::new(&main.url, &cfg.llm)), None, Some(LlmClient::new(&native.url, &cfg.llm)));
+    h.engine.set_live_active(true);
+    for _ in 0..2 {
+        let (_, rx) = h.engine.translate(Capture::typed("저는 학교에서 공부했어요"));
+        let events = collect(rx).await;
+        assert!(events.iter().any(|e| matches!(e, Event::Breakdown { .. })));
+        assert!(events.iter().any(|e| matches!(e, Event::TranslationDone { text, .. } if text == "Local translation.")));
+        assert!(!events.iter().any(|e| matches!(e, Event::Gloss { .. })));
+    }
+    assert!(main.requests.lock().unwrap().is_empty());
+    assert_eq!(native.requests.lock().unwrap().len(), 2);
+    h.engine.set_live_active(false);
+    let (_, rx) = h.engine.translate(Capture::typed("저는 학교에서 공부했어요"));
+    let events = collect(rx).await;
+    assert!(events.iter().any(|e| matches!(e, Event::TranslationDone { text, .. } if text == "I studied at school.")));
+    assert!(events.iter().any(|e| matches!(e, Event::Gloss { .. })));
+    assert_eq!(native.requests.lock().unwrap().len(), 2);
+}
+
+#[tokio::test]
+async fn snapshots_prefer_the_configured_quality_server_and_failed_requests_fall_back_without_calling_local_gemma() {
+    use maru_core::live_model::LiveModel;
+    for failed in [false, true] {
+        let main = spawn_mock(model).await;
+        let remote = spawn_mock(move |path, body| {
+            if failed && path != "/health" { MockResponse { status: 500, chunks: vec![b"model unavailable".to_vec()], delay_ms: 0 } } else { model(path, body) }
+        }).await;
+        let native = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![b"data: {\"content\":\"Fallback.\",\"stop\":true}\n\n".to_vec()], delay_ms: 0 }).await;
+        let mut cfg = Config::default();
+        cfg.continuous.translation.model = LiveModel::Milmmt;
+        cfg.continuous.translation.snapshot_endpoint = Some(remote.url.clone());
+        cfg.continuous.translation.snapshot_model_name = "nas-gemma".into();
+        let h = build_with_live(cfg.clone(), Some(LlmClient::new(&main.url,&cfg.llm)), None, Some(LlmClient::new(&native.url,&cfg.llm)));
+        h.engine.set_live_active(true);
+        let (_,rx) = h.engine.translate(Capture::typed("저는 학교에서 공부했어요"));
+        let events = collect(rx).await;
+        assert!(main.requests.lock().unwrap().is_empty());
+        assert_eq!(native.requests.lock().unwrap().len(), usize::from(failed));
+        let expected = if failed { "Fallback." } else { "I studied at school." };
+        assert!(events.iter().any(|e| matches!(e, Event::TranslationDone {text,..} if text == expected)));
+        assert!(remote.requests.lock().unwrap().iter().any(|(_,b)| b.contains("nas-gemma")));
+    }
+}
+
+#[tokio::test]
+async fn live_native_context_is_opt_in_and_a_missing_live_model_does_not_use_gemma() {
+    use maru_core::live_model::LiveModel;
+    for context in [false, true] {
+        let main = spawn_mock(model).await;
+        let native = spawn_mock(|_, _| MockResponse { status:200,chunks:vec![b"data: {\"content\":\"Yes.\",\"stop\":true}\n\n".to_vec()],delay_ms:0 }).await;
+        let mut cfg=Config::default();cfg.continuous.translation.model=LiveModel::Milmmt;cfg.continuous.translation.dialogue_context=context;
+        let h=build_with_live(cfg.clone(),Some(LlmClient::new(&main.url,&cfg.llm)),None,Some(LlmClient::new(&native.url,&cfg.llm)));
+        h.engine.set_live_active(true);
+        for source in ["네.","왜요?"] {
+            let line=maru_engine::LiveLine {capture:Capture::typed(source),appeared:std::time::Instant::now(),ready_ms:0,ocr_ms:0};
+            let (_,rx)=h.engine.translate_live(line);collect(rx).await;
+        }
+        let requests=native.requests.lock().unwrap();
+        let body:serde_json::Value=serde_json::from_str(&requests[1].1).unwrap();
+        assert_eq!(body["prompt"].as_str().unwrap().contains("English: Yes."),context);
+        assert!(main.requests.lock().unwrap().is_empty());
+    }
+    let h=harness_with(model,|c|c.continuous.translation.model=LiveModel::HyMt2).await;
+    h.engine.set_live_active(true);
+    let (_,rx)=h.engine.translate(Capture::typed("네."));
+    assert!(collect(rx).await.iter().any(|e|matches!(e,Event::Error {..})));
+    assert!(h.requests().is_empty());
+}
+
 fn build(cfg: Config, llm: Option<LlmClient>, server: Option<MockServer>) -> Harness {
+    build_with_live(cfg, llm, server, None)
+}
+
+fn build_with_live(cfg: Config, llm: Option<LlmClient>, server: Option<MockServer>, live_llm: Option<LlmClient>) -> Harness {
     let dict = Dictionary::open_in_memory().unwrap();
     dict.import_kaikki(Cursor::new(KAIKKI), |_| {}).unwrap();
     dict.import_levels(Cursor::new("학교\t1\n")).unwrap();
@@ -78,6 +335,7 @@ fn build(cfg: Config, llm: Option<LlmClient>, server: Option<MockServer>) -> Har
         ocr: None,
         scan_ocr: None,
         live_ocr: None,
+        live_llm,
         labels: None,
     });
     Harness { engine, vocab, server }
@@ -100,6 +358,23 @@ async fn collect(mut rx: EventRx) -> Vec<Event> {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_corrected_snapshot_keeps_its_app_drops_stale_word_boxes_and_refuses_an_old_editor() {
+    let h=harness().await;
+    let mut capture=Capture::typed("ㅅ컵");capture.source=CaptureSource::Ocr;
+    capture.app=Some(AppInfo {exe:"game.exe".into(),title:"Game".into()});
+    capture.words=vec![maru_core::WordBox {text:"ㅅ컵".into(),rect:maru_core::Rect::new(1.0,2.0,30.0,12.0)}];
+    let (id,rx)=h.engine.translate(capture);collect(rx).await;
+    let (fixed,next,rx)=h.engine.correct_snapshot(id,"스킵",false).unwrap();
+    assert_eq!(fixed.text,"스킵");assert!(fixed.words.is_empty());assert_eq!(fixed.app.unwrap().exe,"game.exe");
+    let events=collect(rx).await;
+    assert!(events.iter().any(|e|matches!(e,Event::Started {capture,..} if capture.text=="스킵")));
+    assert!(h.engine.correct_snapshot(id,"다른것",false).is_err());
+    assert!(h.engine.correct_snapshot(next,"",false).is_err());
+    let (_,rx)=h.engine.translate(Capture::typed("학교"));collect(rx).await;
+    assert!(h.engine.correct_snapshot(next,"스킵",false).is_err());
+}
+
 fn names(events: &[Event]) -> Vec<&'static str> {
     events
         .iter()
@@ -116,6 +391,9 @@ fn names(events: &[Event]) -> Vec<&'static str> {
             Event::ScanStarted { .. } => "scan_started",
             Event::ScanItems { .. } => "scan_items",
             Event::ScanLabel { .. } => "scan_label",
+            Event::ScanCorrection { .. } => "scan_correction",
+            Event::ScanLabelsFinished { .. } => "scan_labels_finished",
+            Event::ScanSeparated { .. } => "scan_separated",
             Event::Timing { .. } => "timing",
             Event::Error { .. } => "error",
             Event::Done { .. } => "done",
@@ -416,6 +694,7 @@ async fn requests_wait_for_a_model_that_is_still_loading() {
         ocr: None,
         scan_ocr: None,
         live_ocr: None,
+        live_llm: None,
         labels: None,
     });
     assert_eq!(engine.llm_status(), LlmStatus::Starting);
@@ -454,6 +733,7 @@ async fn a_model_that_failed_to_start_explains_why() {
         ocr: None,
         scan_ocr: None,
         live_ocr: None,
+        live_llm: None,
         labels: None,
     });
     let events = collect(engine.translate(Capture::typed(SENTENCE)).1).await;
@@ -517,6 +797,10 @@ mod scan {
 
     async fn setup(lines: Vec<OcrLine>, with_model: bool, tweak: impl FnOnce(&mut Config), labels: Option<Arc<LabelCache>>) -> Setup {
         let server = if with_model { Some(spawn_mock(labeller).await) } else { None };
+        setup_with_server(lines, server, tweak, labels)
+    }
+
+    fn setup_with_server(lines: Vec<OcrLine>, server: Option<MockServer>, tweak: impl FnOnce(&mut Config), labels: Option<Arc<LabelCache>>) -> Setup {
         let mut cfg = Config::default();
         tweak(&mut cfg);
         let dict = Dictionary::open_in_memory().unwrap();
@@ -535,6 +819,7 @@ mod scan {
             ocr: None,
             scan_ocr: Some(Arc::new(FakeOcr(lines))),
             live_ocr: None,
+            live_llm: None,
             labels,
         });
         Setup { engine, vocab, server }
@@ -551,6 +836,335 @@ mod scan {
 
     fn model_labels(events: &[Event]) -> Vec<(u32, String)> {
         events.iter().filter_map(|e| if let Event::ScanLabel { item, label, .. } = e { Some((*item, label.clone())) } else { None }).collect()
+    }
+
+    fn completions(events: &[Event]) -> Vec<(Vec<u32>, Option<String>)> {
+        events.iter().filter_map(|e| if let Event::ScanLabelsFinished { items, error, .. } = e {
+            Some((items.clone(), error.clone()))
+        } else { None }).collect()
+    }
+
+    fn tight_words(words: &[&str]) -> Vec<OcrLine> {
+        let mut x=100.0;
+        words.iter().map(|text| {
+            let width=text.chars().count() as f32*14.0;
+            let out=OcrLine {text:(*text).into(),rect:Rect::new(x,100.0,width,22.0),words:vec![],confidence:0.99};
+            x+=width+2.0;out
+        }).collect()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sentence_join_keeps_word_boundaries_and_explanations_for_every_word() {
+        let server=spawn_mock(model).await;
+        let s=setup_with_server(tight_words(&["카메라의","각종","설정을","조정합니다"]),Some(server),|_|{},None);
+        let (id,rx)=s.engine.scan(SCREEN);collect(rx).await;
+        let events=collect(s.engine.join_scan_items(id,4,vec![3,1,0,2],false).await.unwrap()).await;
+        let joined=items_of(&events).remove(0);
+        assert_eq!(joined.text,"카메라의 각종 설정을 조정합니다");
+        assert_eq!(joined.join.as_ref().unwrap().parts.len(),4);
+        let (capture,single)=s.engine.capture_scan_item(id,joined.item).unwrap();
+        assert!(!single);assert_eq!(capture.app.as_ref().unwrap().exe,"game.exe");
+        assert!(s.engine.capture_scan_item(id,0).is_err(),"absorbed labels are no longer current");
+        let translated=collect(s.engine.translate(capture.clone()).1).await;
+        let words=translated.iter().find_map(|e|if let Event::Breakdown {eojeols,..}=e {Some(eojeols.clone())}else{None}).unwrap();
+        assert_eq!(words.len(),4);assert!(words.iter().all(|e|e.content));
+        assert!(translated.iter().any(|e|matches!(e,Event::TranslationDone {..})));
+        for word in words {
+            let deep=collect(s.engine.deep_dive(DeepDiveRequest {eojeol:word,sentence:capture.text.clone(),translation:None,meaning:None,app:capture.app.clone()}).1).await;
+            assert!(deep.iter().any(|e|matches!(e,Event::DeepDelta {..})));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_legacy_collapsed_join_is_spaced_and_can_be_separated_after_a_rescan() {
+        let cache=Arc::new(LabelCache::open_in_memory().unwrap());
+        cache.put_join("game.exe",&["카메라".into(),"설정".into()],"카메라설정",1);
+        cache.put_join("other.exe",&["카메라".into(),"설정".into()],"카메라설정",1);
+        let s=setup(tight_words(&["카메라","설정"]),true,|_|{},Some(cache.clone())).await;
+        let (id,rx)=s.engine.scan(SCREEN);let joined=items_of(&collect(rx).await).remove(0);
+        assert_eq!(joined.text,"카메라 설정");
+        assert_eq!(joined.join.as_ref().unwrap().parts.len(),2);
+        assert!(!s.engine.capture_scan_item(id,joined.item).unwrap().1);
+        let separated=collect(s.engine.separate_scan_item(id,joined.item).await.unwrap()).await;
+        assert_eq!(items_of(&separated).iter().map(|i|i.text.as_str()).collect::<Vec<_>>(),["카메라","설정"]);
+        assert!(items_of(&separated).iter().all(|i|i.item>joined.item));
+        assert!(s.engine.capture_scan_item(id,joined.item).is_err());
+        assert!(cache.joins_for("game.exe").is_empty());assert_eq!(cache.joins_for("other.exe").len(),1);
+        let again=items_of(&collect(s.engine.scan(SCREEN).1).await);
+        assert_eq!(again.len(),2);assert!(again.iter().all(|i|i.join.is_none()));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_explicit_single_word_join_keeps_its_spacing_choice_after_restart() {
+        let path=std::env::temp_dir().join(format!("maru-word-join-{}.db",std::process::id()));
+        let _=std::fs::remove_file(&path);
+        {
+            let cache=Arc::new(LabelCache::open(&path).unwrap());
+            let s=setup(tight_words(&["게","임"]),true,|_|{},Some(cache)).await;
+            let (id,rx)=s.engine.scan(SCREEN);collect(rx).await;
+            let joined=items_of(&collect(s.engine.join_scan_items(id,2,vec![0,1],true).await.unwrap()).await).remove(0);
+            assert_eq!(joined.text,"게임");assert!(joined.join.unwrap().as_word);
+            assert!(s.engine.capture_scan_item(id,2).unwrap().1);
+        }
+        {
+            let cache=Arc::new(LabelCache::open(&path).unwrap());
+            let s=setup(tight_words(&["게","임"]),true,|_|{},Some(cache)).await;
+            let joined=items_of(&collect(s.engine.scan(SCREEN).1).await).remove(0);
+            assert_eq!(joined.text,"게임");assert!(joined.join.unwrap().as_word);
+        }
+        let _=std::fs::remove_file(path);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn nested_legacy_rules_match_their_old_text_and_separate_to_all_original_pieces() {
+        let cache=Arc::new(LabelCache::open_in_memory().unwrap());
+        cache.put_join("game.exe",&["카메라".into(),"설정".into()],"카메라설정",1);
+        cache.put_join("game.exe",&["카메라설정".into(),"변경".into()],"카메라설정변경",2);
+        let s=setup(tight_words(&["카메라","설정","변경"]),true,|_|{},Some(cache.clone())).await;
+        let (id,rx)=s.engine.scan(SCREEN);let joined=items_of(&collect(rx).await).remove(0);
+        assert_eq!(joined.text,"카메라 설정 변경");assert_eq!(joined.join.as_ref().unwrap().rules.len(),2);
+        let restored=items_of(&collect(s.engine.separate_scan_item(id,joined.item).await.unwrap()).await);
+        assert_eq!(restored.len(),3);assert!(cache.joins_for("game.exe").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_sentence_join_preserves_a_nested_word_and_separation_forgets_both_rules() {
+        let cache=Arc::new(LabelCache::open_in_memory().unwrap());
+        let s=setup(tight_words(&["게","임","시작"]),true,|_|{},Some(cache.clone())).await;
+        let (id,rx)=s.engine.scan(SCREEN);collect(rx).await;
+        collect(s.engine.join_scan_items(id,3,vec![0,1],true).await.unwrap()).await;
+        let joined=items_of(&collect(s.engine.join_scan_items(id,4,vec![3,2],false).await.unwrap()).await).remove(0);
+        assert_eq!(joined.text,"게임 시작");assert_eq!(joined.join.unwrap().parts.len(),3);
+        let (next,rx)=s.engine.scan(SCREEN);let recalled=items_of(&collect(rx).await).remove(0);
+        assert_eq!(recalled.text,"게임 시작");
+        let restored=items_of(&collect(s.engine.separate_scan_item(next,recalled.item).await.unwrap()).await);
+        assert_eq!(restored.iter().map(|i|i.text.as_str()).collect::<Vec<_>>(),["게","임","시작"]);
+        assert!(cache.joins_for("game.exe").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn correcting_a_join_does_not_remove_its_separate_option_or_change_its_rule_key() {
+        let cache=Arc::new(LabelCache::open_in_memory().unwrap());
+        let s=setup(tight_words(&["가메라","설정"]),true,|_|{},Some(cache.clone())).await;
+        let (id,rx)=s.engine.scan(SCREEN);collect(rx).await;
+        collect(s.engine.join_scan_items(id,2,vec![0,1],false).await.unwrap()).await;
+        let corrected=items_of(&collect(s.engine.correct_scan(id,2,"카메라의 설정",false).unwrap()).await).remove(0);
+        assert!(corrected.join.is_some());assert!(!s.engine.capture_scan_item(id,corrected.item).unwrap().1);
+        let restored=items_of(&collect(s.engine.separate_scan_item(id,corrected.item).await.unwrap()).await);
+        assert_eq!(restored.iter().map(|i|i.text.as_str()).collect::<Vec<_>>(),["가메라","설정"]);
+        assert!(cache.joins_for("game.exe").is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn separation_deletes_only_its_exact_rule_when_another_rule_has_the_same_output() {
+        let cache=Arc::new(LabelCache::open_in_memory().unwrap());
+        cache.put_join("game.exe",&["새".into(),"게임".into()],"새 게임",1);
+        cache.put_join("game.exe",&["새게".into(),"임".into()],"새 게임",2);
+        let s=setup(tight_words(&["새","게임"]),true,|_|{},Some(cache.clone())).await;
+        let (id,rx)=s.engine.scan(SCREEN);let joined=items_of(&collect(rx).await).remove(0);
+        collect(s.engine.separate_scan_item(id,joined.item).await.unwrap()).await;
+        let left=cache.joins_for("game.exe");assert_eq!(left.len(),1);assert_eq!(left[0].parts,["새게","임"]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn duplicate_reused_or_stale_selections_are_refused_before_changing_labels() {
+        let cache=Arc::new(LabelCache::open_in_memory().unwrap());
+        let s=setup(tight_words(&["카메라","설정"]),false,|_|{},Some(cache.clone())).await;
+        let (id,rx)=s.engine.scan(SCREEN);collect(rx).await;
+        assert!(s.engine.join_scan_items(id,2,vec![0,0],false).await.is_err());
+        assert!(s.engine.join_scan_items(id,0,vec![0,1],false).await.is_err());
+        assert!(s.engine.capture_scan_item(id,0).is_ok());assert!(cache.joins_for("game.exe").is_empty());
+        let (_,rx)=s.engine.scan(SCREEN);collect(rx).await;
+        assert!(s.engine.join_scan_items(id,2,vec![0,1],false).await.is_err());
+        assert!(s.engine.capture_scan_item(id,0).is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_translation_does_not_trap_the_joined_label() {
+        let s=setup(tight_words(&["카메라","설정"]),false,|_|{},Some(Arc::new(LabelCache::open_in_memory().unwrap()))).await;
+        let (id,rx)=s.engine.scan(SCREEN);collect(rx).await;
+        let joined=items_of(&collect(s.engine.join_scan_items(id,2,vec![0,1],false).await.unwrap()).await).remove(0);
+        assert!(joined.join.is_some());
+        assert_eq!(items_of(&collect(s.engine.separate_scan_item(id,joined.item).await.unwrap()).await).len(),2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn separating_a_join_keeps_each_corrected_parts_original_ocr_for_remember_and_forget() {
+        let s=setup(tight_words(&["가메라","설정"]),false,|_|{},Some(Arc::new(LabelCache::open_in_memory().unwrap()))).await;
+        let (id,rx)=s.engine.scan(SCREEN);collect(rx).await;
+        let fixed=items_of(&collect(s.engine.correct_scan(id,0,"카메라",false).unwrap()).await).remove(0);
+        collect(s.engine.join_scan_items(id,3,vec![fixed.item,1],false).await.unwrap()).await;
+        let restored=items_of(&collect(s.engine.separate_scan_item(id,3).await.unwrap()).await);
+        let view=s.engine.ocr_correction_view(maru_engine::ocr_corrections::Target::Scan {id,item:restored[0].item}).unwrap();
+        assert_eq!(view.text,"카메라");assert_eq!(view.observed,"가메라");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stale_separation_cannot_delete_a_new_scan_or_its_saved_rules() {
+        let cache=Arc::new(LabelCache::open_in_memory().unwrap());
+        cache.put_join("game.exe",&["카메라".into(),"설정".into()],"카메라설정",1);
+        let s=setup(tight_words(&["카메라","설정"]),true,|_|{},Some(cache.clone())).await;
+        let (old,rx)=s.engine.scan(SCREEN);let old_item=items_of(&collect(rx).await).remove(0);
+        let (current,rx)=s.engine.scan(SCREEN);let current_item=items_of(&collect(rx).await).remove(0);
+        assert!(s.engine.separate_scan_item(old,old_item.item).await.is_err());
+        assert_eq!(cache.joins_for("game.exe").len(),1);
+        assert!(s.engine.capture_scan_item(current,current_item.item).is_ok());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_scan_label_keeps_its_original_game_when_the_overlay_becomes_foreground() {
+        use maru_platform::ScreenGrabber;
+        use std::sync::atomic::{AtomicUsize,Ordering};
+        struct ChangingForeground {calls:AtomicUsize}
+        impl ScreenGrabber for ChangingForeground {
+            fn grab(&self,_:Rect)->maru_platform::Result<image::RgbImage>{Ok(FakeScreen::blank(8,8))}
+            fn cursor(&self)->Option<maru_core::Point>{None}
+            fn screen_bounds(&self)->Rect{SCREEN}
+            fn foreground_app(&self)->Option<AppInfo>{
+                Some(AppInfo {exe:if self.calls.fetch_add(1,Ordering::SeqCst)==0 {"game.exe"}else{"maru-app.exe"}.into(),title:"Foreground".into()})
+            }
+        }
+        let screen=Arc::new(ChangingForeground {calls:AtomicUsize::new(0)});
+        let engine=Engine::new(EngineParts {config:Config::default(),analyzer:Analyzer::heuristic(),dict:None,
+            vocab:Arc::new(Vocab::open_in_memory(SrsConfig::default()).unwrap()),llm:None,llm_status:None,
+            platform:Platform {selection:Arc::new(FakeSelection::default()),screen:screen.clone(),os_ocr:None},
+            ocr:None,scan_ocr:Some(Arc::new(FakeOcr(tight_words(&["카메라","설정"])))),live_ocr:None,live_llm:None,labels:None});
+        let (id,rx)=engine.scan(SCREEN);collect(rx).await;
+        assert_eq!(screen.foreground_app().unwrap().exe,"maru-app.exe");
+        let (capture,_) = engine.capture_scan_item(id,0).unwrap();
+        assert_eq!(capture.app.unwrap().exe,"game.exe");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn pending_labels_finish_only_after_the_delayed_model_answer() {
+        let server = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["0|Inventory\n"]), delay_ms: 30 }).await;
+        let s = setup_with_server(vec![line("인벤토리", 100.0, 100.0)], Some(server), |_| {}, None);
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        assert_eq!(items_of(&events)[0].source, LabelSource::Pending);
+        let label = events.iter().position(|e| matches!(e, Event::ScanLabel { .. })).unwrap();
+        let finished = events.iter().position(|e| matches!(e, Event::ScanLabelsFinished { .. })).unwrap();
+        assert!(label < finished);
+        assert_eq!(completions(&events), vec![(vec![0], None)]);
+        assert!(finished < events.len() - 1, "loading ends before Done");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn declined_and_omitted_labels_finish_without_a_fake_model_failure() {
+        let server = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["0|?\n"]), delay_ms: 1 }).await;
+        let s = setup_with_server(vec![line("인벤토리", 100.0, 100.0), line("상점", 100.0, 200.0)], Some(server), |_| {}, None);
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        assert!(model_labels(&events).is_empty());
+        assert_eq!(completions(&events), vec![(vec![0, 1], None)]);
+        assert!(!events.iter().any(|e| matches!(e, Event::Error { .. })));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_failed_batch_reports_only_its_own_items_and_keeps_the_server_error() {
+        let server = spawn_mock(|_, body| {
+            if body.contains("항목 24") {
+                MockResponse { status: 503, chunks: vec![b"Model is unavailable".to_vec()], delay_ms: 1 }
+            } else {
+                let answer = (0..24).map(|n| format!("{n}|Label {n}\n")).collect::<String>();
+                MockResponse { status: 200, chunks: sse_answer(&[&answer]), delay_ms: 1 }
+            }
+        }).await;
+        let input = (0..26).map(|n| line(&format!("한국어 항목 {n}"), 100.0, 30.0 + n as f32 * 30.0)).collect();
+        let s = setup_with_server(input, Some(server), |_| {}, None);
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        let completed = completions(&events);
+        let failed = completed.iter().find(|(_, error)| error.is_some()).unwrap();
+        assert_eq!(failed.0, vec![24, 25]);
+        assert!(failed.1.as_ref().unwrap().contains("503"));
+        assert!(failed.1.as_ref().unwrap().contains("Model is unavailable"));
+        let ready = completed.iter().find(|(_, error)| error.is_none()).unwrap();
+        assert_eq!(ready.0, (0..24).collect::<Vec<_>>());
+        assert_eq!(model_labels(&events).len(), 24);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn an_incomplete_stream_finishes_the_unanswered_items_with_an_error() {
+        let server = spawn_mock(|_, _| MockResponse { status: 200,
+            chunks: vec![maru_llm::testing::sse_event("0|Inventory\n")], delay_ms: 1 }).await;
+        let s = setup_with_server(vec![line("인벤토리", 100.0, 100.0), line("상점", 100.0, 200.0)], Some(server), |_| {}, None);
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        assert_eq!(model_labels(&events), vec![(0, "Inventory".into())]);
+        let completed = completions(&events);
+        assert_eq!(completed[0].0, vec![0, 1]);
+        assert!(completed[0].1.is_some());
+        assert!(matches!(events.last(), Some(Event::Done { .. })));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_copy_of_a_repeated_text_stops_waiting_together() {
+        let s = setup(vec![line("인벤토리", 100.0, 100.0), line("인벤토리", 100.0, 200.0)], true, |_| {}, None).await;
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        assert_eq!(s.model_requests(), 1);
+        assert_eq!(completions(&events), vec![(vec![0, 1], None)]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_model_timeout_settles_the_pending_label_instead_of_leaving_it_loading() {
+        let server = spawn_mock(|_, _| {
+            let mut chunks = vec![b": waiting\n\n".to_vec()];
+            chunks.extend(sse_answer(&["0|Inventory\n"]));
+            MockResponse { status: 200, chunks, delay_ms: 1500 }
+        }).await;
+        let s = setup_with_server(vec![line("인벤토리", 100.0, 100.0)], Some(server),
+            |cfg| cfg.llm.request_timeout_secs = 1, None);
+        let events = collect(s.engine.scan(SCREEN).1).await;
+        assert!(model_labels(&events).is_empty());
+        let completed = completions(&events);
+        assert_eq!(completed[0].0, vec![0]);
+        let message = events.iter().find_map(|e| if let Event::Error { stage: Stage::Llm, message, .. } = e {
+            Some(message.clone())
+        } else { None }).unwrap();
+        assert_eq!(completed[0].1, Some(message));
+        assert!(matches!(events.last(), Some(Event::Done { .. })));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_join_finishes_only_its_new_item_under_the_original_scan_id() {
+        let s = setup(vec![line("새", 100.0, 100.0), line("게임", 230.0, 100.0)], true, |_| {}, None).await;
+        let (id, rx) = s.engine.scan(SCREEN);
+        let items = items_of(&collect(rx).await);
+        let pieces = items.iter().map(|i| maru_engine::joins::JoinPiece { text: i.text.clone(), rect: i.rect }).collect();
+        let events = collect(s.engine.scan_join(id, 4, pieces)).await;
+        assert_eq!(completions(&events), vec![(vec![4], None)]);
+        assert!(events.iter().all(|e| e.id() == id));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn correcting_a_scan_uses_new_item_ids_and_remembers_only_the_exact_program_text() {
+        use maru_engine::ocr_corrections::Target;
+        let labels=Arc::new(LabelCache::open_in_memory().unwrap());
+        let h=setup(vec![line("ㅅ컵",40.0,50.0)],true,|_|{},Some(labels.clone())).await;
+        let (id,rx)=h.engine.scan(SCREEN);let original=items_of(&collect(rx).await).remove(0);
+        let rx=h.engine.correct_scan(id,original.item,"확인",true).unwrap();
+        let events=collect(rx).await;
+        let fixed=items_of(&events).remove(0);
+        assert_ne!(fixed.item,original.item);
+        assert_eq!(fixed.rect,original.rect);
+        assert_eq!(fixed.text,"확인");
+        assert_eq!(completions(&events), vec![(vec![fixed.item], None)]);
+        assert!(events.iter().any(|e|matches!(e,Event::ScanCorrection {item,..} if *item==original.item)));
+        assert_eq!(labels.ocr_correction("game.exe","ㅅ컵").unwrap(),Some("확인".into()));
+        assert_eq!(labels.ocr_correction("other.exe","ㅅ컵").unwrap(),None);
+        let (next,rx)=h.engine.scan(SCREEN);let next_items=items_of(&collect(rx).await);
+        assert_eq!(next_items[0].text,"확인");
+        assert!(h.engine.correct_scan(id,fixed.item,"틀림",true).is_err());
+        assert_eq!(labels.ocr_correction("game.exe","ㅅ컵").unwrap(),Some("확인".into()));
+        h.engine.forget_ocr_fix(Target::Scan {id:next,item:next_items[0].item}).unwrap();
+        assert_eq!(labels.ocr_correction("game.exe","ㅅ컵").unwrap(),None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_one_time_scan_correction_does_not_create_a_saved_rule() {
+        let labels=Arc::new(LabelCache::open_in_memory().unwrap());
+        let h=setup(vec![line("ㅅ컵",40.0,50.0)],false,|_|{},Some(labels.clone())).await;
+        let (id,rx)=h.engine.scan(SCREEN);let item=items_of(&collect(rx).await)[0].item;
+        let events=collect(h.engine.correct_scan(id,item,"스킵",false).unwrap()).await;
+        assert_eq!(items_of(&events)[0].text,"스킵");
+        assert_eq!(labels.ocr_correction("game.exe","ㅅ컵").unwrap(),None);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -708,6 +1322,9 @@ mod scan {
         assert_eq!(items_of(&events)[0].label, "school");
         let errors: Vec<_> = events.iter().filter(|e| matches!(e, Event::Error { stage: Stage::Llm, .. })).collect();
         assert_eq!(errors.len(), 1);
+        let completed = completions(&events);
+        assert_eq!(completed[0].0, vec![0, 1]);
+        assert!(completed[0].1.as_ref().unwrap().contains("unavailable"));
         assert_eq!(names(&events).last(), Some(&"done"));
     }
 
@@ -744,6 +1361,7 @@ mod scan {
             ocr: None,
             scan_ocr: None,
             live_ocr: None,
+            live_llm: None,
             labels: None,
         });
         let events = collect(engine.scan(SCREEN).1).await;
@@ -769,6 +1387,57 @@ fn ankiconnect(_path: &str, body: &str) -> MockResponse {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_incomplete_anki_add_is_reported_and_retried_without_audio_or_another_note() {
+    use maru_engine::anki_flow::{AnkiAddOptions, AnkiAdded};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let created = Arc::new(AtomicBool::new(false));
+    let fail = Arc::new(AtomicBool::new(true));
+    let adds = Arc::new(AtomicUsize::new(0));
+    let (seen, broken, calls) = (created.clone(), fail.clone(), adds.clone());
+    let server = spawn_mock(move |path, body| {
+        let request: serde_json::Value = serde_json::from_str(body).unwrap();
+        let action = request["action"].as_str().unwrap();
+        let result = match action {
+            "findNotes" => Some(if seen.load(Ordering::Acquire) { serde_json::json!([77]) } else { serde_json::json!([]) }),
+            "addNote" => { calls.fetch_add(1, Ordering::SeqCst); seen.store(true, Ordering::Release); Some(serde_json::json!(77)) },
+            "changeDeck" if broken.load(Ordering::Acquire) => return MockResponse {status:200,chunks:vec![br#"{"result":null,"error":"temporary move failure"}"#.to_vec()],delay_ms:0},
+            _ => None,
+        };
+        result.map_or_else(|| ankiconnect(path,body), |result| MockResponse {status:200,chunks:vec![serde_json::json!({"result":result,"error":null}).to_string().into_bytes()],delay_ms:0})
+    }).await;
+    let mut cfg=Config::default();cfg.learning.anki.enabled=true;cfg.learning.anki.url=server.url;cfg.learning.anki.sync_after_add=false;
+    let h=build(cfg,None,None);
+    h.vocab.record_lookup(&maru_srs::LookupInfo {key:"학교".into(),surface:"학교".into(),meaning:Some("school".into()),..Default::default()},1).unwrap();
+    let options=||AnkiAddOptions {key:"학교".into(),deck:"Korean".into(),tags:vec![],reverse:maru_core::config::ReverseMode::Subdeck,app:Some("game.exe".into()),word_audio:None,sentence_audio:None};
+    let result=h.engine.anki_add(options()).await.unwrap();
+    assert!(matches!(result,AnkiAdded::Added {warning:Some(_),cards:0,..}));
+    assert_eq!(h.engine.anki_count().unwrap(),1);
+    fail.store(false,Ordering::Release);
+    let permit=h.engine.begin_anki_add("학교","Korean").await.unwrap();
+    assert!(!permit.needs_audio());
+    assert!(h.engine.begin_anki_add("학교","Korean").await.is_err());
+    let result=h.engine.finish_anki_add(permit,options()).await.unwrap();
+    assert!(matches!(result,AnkiAdded::Added {warning:None,cards:2,reverse_deck:Some(_),..}));
+    assert_eq!(adds.load(Ordering::SeqCst),1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_anki_refresh_clears_missing_progress_and_a_failed_refresh_preserves_it() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let fail=Arc::new(AtomicBool::new(false));let flag=fail.clone();
+    let server=spawn_mock(move |_,_|MockResponse {status:200,chunks:vec![if flag.load(Ordering::Acquire) { br#"{"result":null,"error":"unavailable"}"#.to_vec() } else { br#"{"result":[],"error":null}"#.to_vec() }],delay_ms:0}).await;
+    let mut cfg=Config::default();cfg.learning.anki.enabled=true;cfg.learning.anki.url=server.url;
+    let h=build(cfg,None,None);
+    h.vocab.set_anki_state("학교",Some(45.0),1).unwrap();
+    h.engine.anki_refresh().await.unwrap();
+    assert_eq!(h.vocab.get("학교").unwrap().unwrap().anki_interval,None);
+    h.vocab.set_anki_state("학교",Some(45.0),2).unwrap();
+    fail.store(true,Ordering::Release);
+    assert!(h.engine.anki_refresh().await.is_err());
+    assert_eq!(h.vocab.get("학교").unwrap().unwrap().anki_interval,Some(45.0));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
     use maru_engine::anki_flow::{AnkiAddOptions, AnkiAdded};
     let anki = spawn_mock(ankiconnect).await;
@@ -787,7 +1456,7 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
 
     let opts = AnkiAddOptions { key: "학교".into(), deck: " Korean :: Games ".into(), tags: before.tags.clone(), reverse: before.reverse, app: Some("hades.exe".into()), word_audio: None, sentence_audio: None };
     let added = h.engine.anki_add(opts).await.unwrap();
-    assert!(matches!(&added, AnkiAdded::Added { deck, reverse_deck: Some(r), cards: 2, sync: true } if deck == "Korean::Games" && r == "Korean::Games::Reverse"), "{added:?}");
+    assert!(matches!(&added, AnkiAdded::Added { deck, reverse_deck: Some(r), cards: 2, sync: true, warning: None } if deck == "Korean::Games" && r == "Korean::Games::Reverse"), "{added:?}");
 
     let word = h.vocab.get("학교").unwrap().unwrap();
     assert!(word.saved && word.anki_interval == Some(0.0), "the word is saved and in Anki");
@@ -960,7 +1629,7 @@ fn ocr_engine(cpu_ocr: bool, normal: Arc<CountingOcr>, live: Option<Arc<Counting
         vocab: Arc::new(Vocab::open_in_memory(SrsConfig::default()).unwrap()),
         llm: None, llm_status: None,
         platform: Platform { selection: Arc::new(FakeSelection::default()), screen: Arc::new(FakeScreen::new(vec![FakeScreen::blank(100, 30)])), os_ocr: None },
-        ocr: Some(normal), scan_ocr: None, live_ocr: live.map(|o| o as Arc<dyn maru_ocr::OcrEngine>), labels: None,
+        ocr: Some(normal), scan_ocr: None, live_ocr: live.map(|o| o as Arc<dyn maru_ocr::OcrEngine>), labels: None, live_llm: None,
     })
 }
 

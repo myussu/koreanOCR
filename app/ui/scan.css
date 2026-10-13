@@ -47,6 +47,7 @@ html, body {
 .lab.dot:hover .t { display: block; }
 
 /* picked to be joined */
+.joining .lab { cursor: crosshair; }
 .lab.sel { border-color: #fbbf24; box-shadow: 0 0 0 2px rgba(251, 191, 36, 0.75), 0 1px 3px rgba(0, 0, 0, 0.5); z-index: 6; }
 
 /* Join / Split */
@@ -63,27 +64,10 @@ html, body {
 }
 #chip button { all: unset; box-sizing: border-box; height: 26px; cursor: pointer; font: 600 12px/26px "Segoe UI", system-ui, sans-serif; }
 #chip .main { padding: 0 6px 0 13px; border-radius: 13px 0 0 13px; }
+#chip .word { padding: 0 8px; border-left: 1px solid rgba(27, 20, 5, 0.2); }
+#chip .word[hidden] { display: none; }
 #chip .cancel { width: 24px; text-align: center; border-radius: 0 13px 13px 0; opacity: 0.7; }
 #chip button:hover { background: rgba(0, 0, 0, 0.12); opacity: 1; }
-
-/* delete this label */
-.lab .x {
-  display: none;
-  position: absolute;
-  right: -7px;
-  top: -8px;
-  width: 15px;
-  height: 15px;
-  padding: 0;
-  border: 1px solid #fff;
-  border-radius: 50%;
-  background: #b42318;
-  color: #fff;
-  font: 11px/13px system-ui, sans-serif;
-  text-align: center;
-  cursor: pointer;
-}
-.lab:hover .x { display: block; }
 
 #toast {
   position: fixed;

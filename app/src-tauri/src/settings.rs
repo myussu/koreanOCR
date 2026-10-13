@@ -27,6 +27,7 @@ pub struct SettingsView {
     pending_restart: Vec<String>,
     /// The lite profile is on because of the environment variable, whatever the file says.
     lite_from_env: bool,
+    live_models: Vec<maru_engine::live_models::ModelFile>,
 }
 
 fn read_text(state: &AppState) -> Res<String> {
@@ -51,6 +52,7 @@ pub fn get_settings(state: S) -> Res<SettingsView> {
         pending_restart: pending_restart(&state, &now),
         lite_from_env: std::env::var("MARU_LITE").is_ok_and(|v| matches!(v.trim().to_ascii_lowercase().as_str(), "1" | "true" | "yes" | "on")),
         path: path.display().to_string(),
+        live_models: maru_engine::live_models::available(&state.services.paths),
     })
 }
 
@@ -77,6 +79,7 @@ fn check_hotkeys(cfg: &Config) -> Res<()> {
         ("speak", &k.speak),
         ("history", &k.history),
         ("dismiss", &k.dismiss),
+        ("launcher", &k.launcher),
     ];
     let mut seen: Vec<(Shortcut, &str)> = Vec::new();
     for (action, text) in table {
@@ -97,6 +100,19 @@ pub fn save_settings(app: AppHandle, state: S, changes: Map<String, Value>) -> R
     let patched = settings::patch(&read_text(&state)?, &changes).map_err(|e| e.to_string())?;
     let new = patched.config.clone();
     check_hotkeys(&new)?;
+    if patched.changed.iter().any(|p| p.starts_with("continuous.translation.")) {
+        if let Some(path) = new.continuous.translation.selected_path() {
+            maru_engine::live_models::validate_file(path)?;
+        }
+        if let Some(endpoint) = &new.continuous.translation.snapshot_endpoint {
+            if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+                return Err("The snapshot server address must start with http:// or https://.".into());
+            }
+            if new.continuous.translation.snapshot_model_name.trim().is_empty() {
+                return Err("Enter the model name your snapshot server expects.".into());
+            }
+        }
+    }
 
     if let Some(dir) = path.parent() {
         std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -121,6 +137,9 @@ pub fn save_settings(app: AppHandle, state: S, changes: Map<String, Value>) -> R
             flow::refresh_tray(&app, &state);
         }
         let _ = app.emit_to(windows::PANEL, "maru-config", ());
+        if patched.changed.iter().any(|p| p == "ui.launcher") {
+            crate::launcher::show(&app, new.ui.launcher);
+        }
     }
     Ok(SaveResult { changed: patched.changed, restart: pending_restart(&state, &new), warnings })
 }

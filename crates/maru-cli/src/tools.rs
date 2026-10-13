@@ -459,7 +459,7 @@ mod tests {
     }
 
     fn scan_item(n: u32, text: &str, label: &str, source: maru_core::LabelSource) -> maru_core::ScanItem {
-        maru_core::ScanItem { item: n, rect: maru_core::Rect::new(10.0 * n as f32, 20.0, 60.0, 18.0), text: text.into(), label: label.into(), source, known: false }
+        maru_core::ScanItem { item: n, rect: maru_core::Rect::new(10.0 * n as f32, 20.0, 60.0, 18.0), text: text.into(), label: label.into(), source, known: false, join: None }
     }
 
     #[tokio::test]

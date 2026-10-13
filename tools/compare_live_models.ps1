@@ -7,10 +7,11 @@ param(
     [string]$Server,
     [ValidateRange(1, 100)][int]$Runs = 3,
     [string]$GameState = 'unspecified',
-    [ValidateSet('hy-mt', 'maru', 'hy-mt2')][string]$CandidatePrompt = 'hy-mt',
-    [ValidateSet('matched', 'tencent')][string]$CandidateSampling = 'matched',
+    [ValidateSet('hy-mt', 'maru', 'hy-mt2', 'lfm', 'index', 'milmmt', 'milmmt-context', 'translate-gemma-sub', 'lmt')][string]$CandidatePrompt = 'hy-mt',
+    [ValidateSet('matched', 'tencent', 'lfm', 'greedy')][string]$CandidateSampling = 'matched',
     [switch]$RollingContext,
-    [string]$File
+    [string]$File,
+    [ValidateRange(0, 100)][int]$ContextLines = 4
 )
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path $PSScriptRoot -Parent
@@ -28,7 +29,7 @@ foreach ($path in @($reportPath, "$reportPath.gpu.csv", "$reportPath.console.log
 }
 $parent = Split-Path $reportPath -Parent
 [IO.Directory]::CreateDirectory($parent) | Out-Null
-$cliArgs = @('--verbose', 'bench-live-models', '--baseline', $Baseline, '--candidate', $Candidate, '--out', $reportPath, '-n', "$Runs", '--game-state', $GameState, '--candidate-prompt', $CandidatePrompt, '--candidate-sampling', $CandidateSampling)
+$cliArgs = @('--verbose', 'bench-live-models', '--baseline', $Baseline, '--candidate', $Candidate, '--out', $reportPath, '-n', "$Runs", '--game-state', $GameState, '--candidate-prompt', $CandidatePrompt, '--candidate-sampling', $CandidateSampling, '--context-lines', "$ContextLines")
 if ($Server) { $cliArgs += @('--server', $Server) }
 if ($RollingContext) { $cliArgs += '--rolling-context' }
 if ($File) { $cliArgs += @('--file', $File) }

@@ -22,6 +22,19 @@ reverse card (English → Korean) in a `::Reverse` subdeck. Maru reads your inte
 enough fade from the panel. Needs the AnkiConnect add-on (`2055492159`); log in to AnkiWeb inside Anki and Settings →
 Anki *Sync* triggers it. See `docs/config.example.toml`.
 
+To test with your AnkiWeb account, open Anki desktop with AnkiConnect, sign in and complete your normal sync there.
+In Maru Settings → Anki, enable **Review in Anki**, save and restart, then **Check Anki**. Maru uses its own `Maru Korean`
+note type; legacy `Basic` settings already map to that type without modifying Anki's built-in Basic model. Add a word
+from a deep dive to a test deck, then use **Sync now** and inspect it on AnkiWeb. **Refresh progress** reads your current
+Anki intervals immediately. Suspended or deleted cards no longer retain old Anki-based fading; local saves and manual
+known marks stay intact. The Review count is tracked Anki membership, separate from Maru's local review queue.
+See [Anki's syncing instructions](https://docs.ankiweb.net/manual/syncing) and [M-24](docs/MANUAL_TESTS.md#m-24-anki-add-recovery-and-learning-progress).
+
+Adding validates the word, note type and existing note before requesting audio. Repeated submissions are refused while
+an add is running. If a note was created but setting up its cards failed, the result says so and retains a local recovery
+record. Retry **Add to Anki** to complete that note's card setup without creating another note or requesting audio again.
+Spoken audio can still load the configured voice for a genuinely new word; uncheck it for the initial game-memory test.
+
 > Status: the engine, command line and overlay are implemented and tested, but the Windows-specific parts and the
 > Korean model quality could only be checked on a real machine. See **[What is verified](#what-is-verified)**.
 
@@ -186,6 +199,49 @@ If PowerShell blocks scripts, invoke it with a process-only bypass:
 Use a new report path each time. Compare latency **and** translation meaning; then follow
 [M-15](docs/MANUAL_TESTS.md#m-15-live-translation-model-comparison) before judging another game's subtitle quality.
 
+For versioned dialogue/evidence packs, use the [live benchmark material guide](docs/LIVE_BENCHMARK.md).
+`tools/prepare_live_benchmark.py` freezes existing local inputs, preserves source hashes and separates reviewed dialogue,
+authored meaning checks and unverified transcript drafts. It never downloads or changes app settings. The local v2.2 pack
+adds missing Elden Ring context and a small Sekiro validation sample; its English references still need bilingual review.
+The [candidate research queue](docs/LIVE_MODEL_CANDIDATES.md) records model sizes, evidence and native-prompt requirements.
+
+`tools/bench_live_candidates.py` adds isolated comparisons for Tower+, official TranslateGemma, Seed-X-PPO, EXAONE,
+Konan and Kanana using the existing llama-server and Python 3.11+ standard library. Supply approved local GGUFs; it never
+downloads. For example: `python tools/bench_live_candidates.py --baseline BASELINE.gguf --candidate CANDIDATE.gguf
+--server PATH/llama-server.exe --file CORPUS.jsonl --out NEW_FOLDER --profile tower -n 3` (one command line).
+It saves exact requests, raw outputs, errors, model/tool hashes, paired Gemma timings and GPU telemetry.
+`--context-lines 4 --context-mode rolling` tests experimental earlier dialogue; Seed and TranslateGemma accept zero
+context only. `--gpu-layers 0 --threads 4` tests the candidate on CPU with device/KV/operator offload disabled;
+the Gemma controls remain on GPU. No installed model is selected by this tool. See the benchmark guide for limits.
+The `sub` profile uses the published Sub-model subtitle blocks. `translategemma-context` separately experiments with
+completed structured translation turns; it does not change the native zero-context TranslateGemma comparison.
+The runner puts CUDA's generated cache files inside its new report folder. Use `--cuda-cache-path TEST_CACHE_FOLDER`
+to share a test cache across comparisons; the process environment is recorded and the parent environment is unchanged.
+Run its dependency-free checks with `python -m unittest discover -s tools -p test_bench_live_candidates.py`.
+
+For an independently approved local MiLMMT v1.0 GGUF, use `--candidate-prompt milmmt --candidate-sampling greedy --context-lines 0`.
+This diagnostic uses Xiaomi's plain Korean-to-English completion prompt (no chat template), temperature 0 and top-k 1.
+It requires zero context; context experiments are not part of this published prompt. The live output cap is retained and capped
+or incomplete streams are recorded as errors. This does not select MiLMMT for the app.
+
+For an experimental dialogue-context comparison, use `--candidate-prompt milmmt-context --candidate-sampling greedy`
+with `--context-lines 1` or `4`; add `--rolling-context` to use each model's own prior translations. The PowerShell wrapper
+accepts `-CandidatePrompt milmmt-context -CandidateSampling greedy -ContextLines 4 -RollingContext`. Earlier Korean/English
+pairs are completed plain translation examples, followed by the current untranslated line. This extension is not Xiaomi's
+published context template. Fixed references are an optimistic control; rolling answers expose error propagation.
+
+QuickMT has a separate CPU-only diagnostic because its CTranslate2 model is not a GGUF. After approval for the model and native
+test dependencies, create an isolated Python environment with `python -m venv data/live-diagnostics/quickmt-venv`, then install
+`ctranslate2==4.8.2 sentencepiece==0.2.1` using that environment's `Scripts/python.exe -m pip install` command. Supply a local
+QuickMT model folder (weights, config, vocabulary files and source/target SentencePiece tokenizers); the benchmark never downloads.
+Run `tools/compare_quickmt_cpu.ps1 -Python ENV/Scripts/python.exe -Model MODEL_FOLDER -File CORPUS.jsonl -Out NEW_FOLDER`
+with `-BeamSize 1`, `2`, or `5`, `-ComputeType int8` or `float32`, and `-Threads 4`. It records sequential batch-size-one CPU
+calls, warm-up separately, translations, timing, errors and GPU telemetry when available. Beam 1 records first decoded text;
+beam search records completion only. There is no chat context, sentence splitting, answer cache, HTTP service, OCR or overlay.
+For its dependency-free logic checks, run `python -m unittest discover -s tools -p test_bench_quickmt.py`.
+`tools/download_translation_tests.py --out NEW_MODEL_FOLDER` is a separate, opt-in downloader for these two candidates;
+use it only after approving the downloads. It pins repository revisions and verifies published hashes for large model files.
+
 For an existing local [HY-MT2 GGUF](https://huggingface.co/tencent/Hy-MT2-1.8B-GGUF), add `--candidate-prompt hy-mt2`
 to use its published English translation/context templates. Sampling remains matched by default. Add
 `--candidate-sampling tencent` to use temperature `0.7`, top-p `0.6`, top-k `20`, and repetition penalty `1.05` for the
@@ -195,6 +251,27 @@ sampling, temperature and server arguments. The wrapper accepts `-CandidatePromp
 Run matched and Tencent settings into separate new folders to distinguish a model improvement from a sampling effect.
 The Tencent option also supports the MT1.5 prompt for a fair follow-up; it refuses the Maru candidate prompt.
 
+Other existing local candidates have separate diagnostic profiles: `--candidate-prompt lfm --candidate-sampling lfm`
+uses [LFM2 KoEn's](https://huggingface.co/gyung/lfm2-1.2b-koen-mt-v8-rl-10k-merged-GGUF) English translation system instruction
+and temperature `0.3`; `--candidate-prompt index --candidate-sampling greedy` uses
+[Index Translate's](https://huggingface.co/IndexTeam/Index-Translate-2B) Chinese Korean-to-English instruction and temperature `0`,
+with thinking disabled by the local client. These options do not download or select models for the app. First run with
+`--context-lines 0` to check the published single-source prompts, then with four prior lines. LFM and Index use preceding chat
+pairs in that second run, an experimental context format rather than a published context template. All candidates retain the
+live output cap; unspecified samplers stay at server defaults. The wrapper also accepts `-ContextLines 0` (default `4`).
+Use a reviewed custom `--file` corpus with exact visible Korean and a separate faithful meaning reference; English game
+localization can differ from the Korean. Record video/dataset provenance and report each game's results separately.
+
+For local Translate Gemma 4 Sub E4B/E2B GGUFs, use `--candidate-prompt translate-gemma-sub --candidate-sampling greedy`.
+The diagnostic uses the publisher's subtitle system instruction, neutral style and separate `[PREVIOUS_SOURCE]`,
+`[PREVIOUS_TRANSLATION]` and `[CURRENT_SOURCE]` blocks. It adds no speaker identity or glossary. Start with zero history,
+then four reference lines and `--rolling-context` to check each model's own earlier answers.
+For a local LMT-60 GGUF, use `--candidate-prompt lmt --candidate-sampling greedy`; its published user-only single-source
+instruction is preserved, while preceding chat pairs are experimental. Greedy streaming does not reproduce the publisher's
+five-beam example. Both profiles use temperature 0, top-k 1 and the live output cap, preserve unwanted labels in review,
+and reject incomplete, malformed or token-capped streams. The wrapper accepts `-CandidatePrompt translate-gemma-sub` or
+`lmt` with `-CandidateSampling greedy`. Downloads still require approval; these diagnostics do not select an app model.
+
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
 
 ## Game menus: screen labels
@@ -203,8 +280,10 @@ Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless
 
 * **Fast the second time.** The dictionary's meaning appears at once; labels you have seen before come back instantly from a local memory (`labels.db`, kept per game); only genuinely new strings go to the model, in one batched request that streams in line by line. Words you already know are faded (or hidden, per `gloss_mode`).
 * **Dense menus.** Each label tries positions around its text and avoids covering any other text or label; if there is no room it shrinks, and as a last resort becomes a dot that opens when you point at it.
-* **Stays out of the game's way.** The label layer ignores the mouse everywhere except directly over a label. Click a label for its breakdown (a single word opens its deep dive); hover for a small **×** (or right-click) to delete one that is in the way; `Ctrl+Alt+Esc` clears everything.
-* **Join what the detector cut in two.** Sometimes one phrase is read as two separate pieces (a wide gap, two colours) and each gets its own label. **Shift+click** the pieces, then press **Join**: they become one label, read in order and translated as one text. The join is remembered for that program, so the next scan of the same screen makes it by itself; a joined label is picked the same way and **Split** undoes it and forgets it. Joins only apply to pieces that sit next to each other, as they did when you joined them, and never in another program.
+* **Loading and failures are distinct.** Pulsing dots mean a label is waiting for translation, including a slow NAS response. An amber **!** means the request failed or timed out; hover for its reason. A static **?** means the request finished without a translation. **Refresh labels** tries again. Existing translations stay visible if a model refinement fails; reduced-motion preferences disable the pulsing.
+* **Stays out of the game's way.** The label layer ignores the mouse everywhere except directly over a label. Click a label for its breakdown (a single word opens its deep dive); right-click for **Correct Korean OCR…** or **Hide this label**; `Ctrl+Alt+Esc` clears everything.
+* **Join what the detector cut in two.** Use floating **Join words** (or Shift+click) to pick pieces, then press **Join**. Words retain spaces even when their boxes touch: `카메라` + `설정` becomes `카메라 설정`. Use the chip's **One word** button only for fragments such as `게` + `임` → `게임`. Joins and their spacing choice are remembered for that program when pieces sit next to each other.
+* **Separate a joined label.** Right-click → **Separate joined label** restores the original boxes and forgets the join, including saved joins from earlier sessions and joins you corrected. Selecting a joined label also offers **Separate** on the chip. Existing collapsed joins are rebuilt with word boundaries on rescan; they do not need to be recreated before separating. Sentence joins use the full snapshot analysis, with individually clickable words and deep dives.
 * **Fixed translations.** Put game terms in an app profile's `glossary` and they are used verbatim and never sent to the model.
 * **Try it on a screenshot first:** `maru scan menu.png --boxes found.png` lists what is found and labelled, and outlines it, without any overlay.
 * **Lighter beside a game.** `lite = true` in `config.toml` (or `MARU_LITE=1` for one run) turns the OCR reading model off and swaps in a smaller translation model; see `[lite_profile]`.
@@ -236,9 +315,48 @@ positions, so they are a candidate for a "double-check" mode rather than a repla
    (constant system prompts, `--cache-reuse`); thinking is switched off.
 4. Selecting text is read **exactly** through UI Automation (no OCR error, no OCR time); OCR is the fallback.
 5. Live subtitles read a line as soon as two reads in a row agree (or the picture holds still), without waiting for a fade to finish, read a moving scene without text slowly, and ignore one-character OCR jitter. They also notice lettering the instant it appears (a cheap check for bright-next-to-dark contrast, which a moving 3D backdrop does not produce), so even a one-second subtitle over a busy cutscene is read straight away and taken down as soon as it goes. Their translation is its own lane: translation only (no word breakdown), the earlier lines as chat turns, a short answer cap and low temperature. The normal translation is not touched.
-6. Repeated lines come from a cache; words you know are not sent for glossing at all.
+6. Repeated lines reuse completed translations; missing word meanings are retried without retranslating. Words you know
+   are not sent for glossing at all.
+
+Model requests time out while waiting for response headers or stalled output (`llm.request_timeout_secs`, 60 seconds
+by default). Incomplete, malformed or token-capped answers show an error and are excluded from cache and history.
+English-to-Korean requests also finish with an error if the requested register is missing. Late events cannot replace
+a newer panel answer; overlapping live translations retain dialogue context in capture order.
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the extension points.
+
+## Correcting snapshot OCR
+
+In a region snapshot's translation panel or on a whole-screen scan label, **right-click → Correct Korean OCR…**.
+The editor shows what OCR originally read: replace `ㅅ컵` with `스킵`, for example, and press
+**Apply and retranslate**. It reuses the captured text and area; it does not capture a new screen or change the live watcher.
+Stale editors are refused after a newer snapshot/scan replaces their source. Old word boxes are discarded for corrected text.
+
+Left-click opens the label's explanation; correction and **Hide this label** live in the right-click menu. The floating
+menu's **Label screen** button toggles labels on/off (green means on). While labels are on, **Refresh labels** reads the
+screen again, and **Join words** enables selection: click each word, then press the **Join** chip to form one translated
+sentence. Joining returns to ordinary left-click behavior; press Join words again or cancel to exit selection without
+joining. Shift+click joining and the tray/`Ctrl+Alt+S` rescan action remain available.
+
+**Remember this exact correction for this game / app** is optional and unchecked for new rules. Remembered fixes apply
+before the translation/cache lookup, to the exact detected text in the captured executable only. They are not substring
+replacements or fuzzy spelling rules. Games running through the same executable, such as `eden.exe`, share that scope.
+**Forget saved rule** removes the remembered mapping; unchecking Remember merely applies the current edit once.
+See [M-25](docs/MANUAL_TESTS.md#m-25-snapshot-ocr-corrections).
+
+The different kinds of remembered data have different lifetimes:
+
+* **Translation cache:** at most 256 results in RAM, keyed by normalized source text, direction, register and profile
+  name/glossary/hint. Live translation has separate entries, including the chosen live model. Surrounding dialogue is
+  not part of the key. Special live-model/quality-server snapshots currently bypass the ordinary translation cache.
+* **Recent history:** bounded in-memory entries (300 by default), cleared on exit. A new uncached translation adds a
+  corrected entry without erasing the earlier one; ordinary cache hits replay in the panel without adding another
+  history entry. Context is also temporary, kept per program for up to 15 minutes.
+* **Screen labels:** short translations persist in `labels.db`, with a normalized text key and program scope. A matching
+  label from another program can be a fallback for common UI text. These are not durable full-sentence history.
+* **OCR rules:** exact, program-scoped detected-text → corrected-text mappings persist separately in `labels.db`.
+  They never use cross-program fallback. Vocabulary, learning contexts and Anki recovery records persist in `vocab.db`;
+  actual Anki notes and reviews live in your Anki collection.
 
 ## What is verified
 
@@ -290,3 +408,101 @@ AGENTS.md CLAUDE.md   rules for anyone (person or agent) changing the code; CLAU
 .github/  workflows: ci.yml (build + tests), tts-server.yml (builds the speech server)
 old/      the original Python prototype, kept for reference
 ```
+
+
+### Live model trials and floating controls
+
+Settings now has categories and search, with staged Save/Discard edits. In **Live subtitles**, use
+**Test connection** beside the snapshot server fields to check the entered address and model before saving.
+The same button appears in **Translation model**. It sends a fixed Korean greeting with a translation instruction,
+shows the server's reply and elapsed time, and reports connection/model errors. It may load the server model;
+it does not save settings or load a local Maru model. Allow up to 60 seconds for a cold server, then retry if needed.
+You can enter just an IP or hostname and press **Detect server**: Maru checks ports **11434, 1234 and 8080**
+and offers the server's models in a dropdown. **Test connection** also detects a bare address first; choose a model
+if its name differs from the current field. Explicit ports and custom URL prefixes are preserved. Selecting a server
+or model stages ordinary edits; **Save** and the usual restart still apply them. Manual model names remain available.
+**Find LAN servers** first lists your local Windows IPv4 networks. Choose one and press **Search this network**
+to search those three ports with progress and **Cancel search**. Searches are limited to private networks of 256
+addresses or fewer; a larger network shows the specific /24 portion that will be searched. Cancelled LAN searches
+keep already found servers. Discovery sends metadata requests only, without inference or model downloads, and does
+not run automatically when Settings opens. Authentication, custom ports and isolated networks may need manual setup.
+For a real-game trial, choose **HY-MT2 7B Q4_K_M**, **MiLMMT 4B Q6_K**, **HY-MT2 1.8B Q4_K_M** or
+**LFM2 KoEn 1.2B Q5_K_M**. The cards discover the already downloaded
+benchmark files in a development checkout, or files in Maru's `data/models/live/` folder; you can paste an
+explicit GGUF path instead. No model is downloaded by this page. Save and restart Maru to apply model changes.
+GPU is fastest; the CPU option uses four threads by default. Dialogue context is experimental and off by default
+because earlier model answers sometimes introduced meaning errors. Keep the same clip and subtitle area for comparisons.
+
+For a tight GPU budget, try HY-MT2 1.8B first. Its preset uses one slot, a 1,024-token context and smaller batch buffers;
+LFM2 uses one slot and a 2,048-token context. In a model-only test on the RTX 5070 Ti, dedicated VRAM peaked at
+1.44 GB and 1.13 GB respectively (decimal GB). Both made meaning errors; LFM2 changed more names, roles and instructions.
+These are optional choices, not changes to your saved model. Keep experimental dialogue context off for the first trial.
+The hybrid OCR vision reader is an additional cost: 2.36 GB for the measured subtitle crop, bringing the two owned-server
+totals to approximately 3.80 GB / 3.48 GB before the game, desktop and Maru itself. **Use CPU PP-OCR for live subtitles**
+bypasses that reader for live mode, with a separate recognition-quality tradeoff. Other crop sizes and GPUs can differ.
+See [M-22](docs/MANUAL_TESTS.md#m-22-small-live-models-and-remote-deep-dive-recovery) for the real-game check.
+
+With a configured external main model, a missing or failed local live translator no longer disables normal remote
+screen labels or deep dives after a restart. Remote request failures keep the offline breakdown and can be retried;
+they do not ask you to install a local model just because the optional live model is unloaded.
+
+The floating **마** button opens the tray actions above a borderless game: live toggle, area selection, snapshots,
+hover, screen labels, speech, history/review/status/settings and Quit. Drag the button to move it; its position is
+remembered. **Ctrl+Alt+M** or the tray's **Show / hide floating controls** brings it back after Hide. You can change
+that shortcut or turn startup visibility off in Settings. Transparent space passes clicks through, and the controls
+are excluded from captures. Exclusive fullscreen and the new layout still need a real-PC check (M-17).
+
+The menu also shows the selected **live translator and device**, **live OCR mode/readiness**, and how many lines are
+translating or waiting, including pending lines after live is turned off. CPU PP-OCR shows when an unused vision reader
+is still resident from another feature. The VRAM bar continues to include all apps, including the game.
+
+Before a cutscene, leave live off and let pending requests finish, then click **Prepare live session**. It loads and
+warms the selected translator and OCR with a fixed Korean greeting and a bundled synthetic subtitle image. Progress
+shows translator/OCR preparation and any failure. It does not capture your screen, enable live, add history/context,
+load speech or use the snapshot quality server. If your main translator is external and selected for live, that server
+receives the fixed greeting. Preparation reduces first-use work but does not guarantee every image shape or later
+subtitle will be fast. Turn live on after it reports Prepared. Preparing is optional; ordinary on-demand loading remains.
+
+**Release idle models** reclaims memory from Maru's owned local translator, OCR reader and voice. Active requests and
+loads keep their leases; the translator and hybrid reader needed by live capture remain resident while live is on.
+With CPU PP-OCR live selected, an unused reader from a snapshot can be released. The menu says what was released or kept;
+external servers, model files, history and settings are retained. Stop live and let pending work finish to release all
+idle servers. The next request reloads a released model, so it can take longer. See [M-23](docs/MANUAL_TESTS.md#m-23-explicit-model-preparation-release-and-live-status).
+
+While live subtitles are on, Korean snapshots reuse the selected live translator and show the offline breakdown
+and dictionary meanings. They do not load local Gemma for richer analysis. An optional **Snapshot quality server**
+address and model name sends snapshot/deep-dive text and context to that explicitly configured server; leave it blank
+to stay local. If it is unavailable, Korean snapshots fall back to local translation plus offline meanings. Turning
+live off restores snapshots to the usual `[llm]` Gemma setup, loaded on the next request. Switching waits for active
+model streams and can take time to load the weights. Pending subtitles remain in history; after live is turned off,
+lines not yet started use the restored main model. English-to-Korean and model explanations need the quality server
+or live mode off. Main-model live mode keeps its existing prompts and capabilities. OCR and speech can still have
+separate model processes. Current trial instructions and verification limits are in [M-17](docs/MANUAL_TESTS.md#m-17-live-model-settings-snapshot-routing-and-floating-controls).
+
+### Resources and local debug recording
+
+Opening Maru, Settings, or Resources does not load the local translation, OCR vision, or speech models.
+Live subtitles load the selected translator when switched on; other translation requests load Gemma when needed.
+OCR waits for its configured vision reader on first use, and speech loads its voice on first use. Enabling
+**Use CPU PP-OCR for live subtitles** bypasses that vision reader for live mode; other features keep their OCR setup.
+The first request can therefore take longer. Once loaded, models remain available for later requests; translation
+model switching still unloads the previous owned translator. The CLI keeps its existing startup behavior.
+
+Open **Resources** in the hub or floating menu to see CPU, process RAM, GPU activity, dedicated VRAM and shared GPU
+memory for Maru and its owned translation, OCR-reader and speech servers. The main and selected live model have separate
+rows; unloaded or external models have no local measurements. PP-OCR and Windows OCR run inside Maru, so their resource
+cost is included in the Maru row. GPU activity is the busiest engine, not a percentage that can be added across rows.
+Memory counters are estimates and shared allocations can overlap; missing readings say **Unavailable**.
+
+The floating menu's VRAM bar includes **all applications**, including the game. With several GPUs it shows the greatest
+valid VRAM occupancy and names that adapter. **High** starts at 80%, **critical** at 95%; these are visual thresholds,
+not a diagnosis of a bottleneck. Unsupported and stale readings never appear as a green zero.
+
+Counters update about once per second while Resources or the expanded menu is visible. **Record resource session**
+keeps sampling after the view closes and writes timestamps, process/model identities, queue depth and live/panel request
+timings to `data/resource-logs/resources-*.jsonl`; the page shows the exact path. It does not copy subtitle or error text.
+Stop recording before sending the file with `maru-app.log`. Logs are limited to 16 MiB per session and 64 MiB total;
+old logs are retained, so move them yourself if the folder reaches its limit. **Pause monitoring** stops recording and
+counter collection; Resume starts monitoring on demand again. Pause/recording controls reset when Maru restarts and need
+no config edit or model download. Compare the same scene with monitoring paused, visible, and recording to measure its
+actual cost while playing. See [M-18](docs/MANUAL_TESTS.md#m-18-resource-monitor-and-vram-menu-bar).

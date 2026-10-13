@@ -57,10 +57,12 @@ impl LabelCache {
                  PRIMARY KEY (scope, parts)
              );",
         )?;
+        crate::ocr_corrections::init_store(&conn)?;
+        crate::scan_joining::init_store(&conn)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
 
@@ -120,6 +122,8 @@ impl LabelCache {
             params![scope, keys.join(PART_SEPARATOR), joined.trim(), now],
         ) {
             tracing::warn!("could not remember a join: {e}");
+        } else {
+            let _ = conn.execute("DELETE FROM join_spacing WHERE scope=?1 AND parts=?2", params![scope, keys.join(PART_SEPARATOR)]);
         }
     }
 
@@ -147,7 +151,10 @@ impl LabelCache {
             .query_map(params![scope], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
             .map(|rows| rows.filter_map(Result::ok).filter(|(_, j)| key(j) == wanted).map(|(p, _)| p).collect())
             .unwrap_or_default();
-        doomed.iter().filter(|parts| conn.execute("DELETE FROM joins WHERE scope = ?1 AND parts = ?2", params![scope, parts]).unwrap_or(0) > 0).count()
+        doomed.iter().filter(|parts| {
+            let _ = conn.execute("DELETE FROM join_spacing WHERE scope=?1 AND parts=?2", params![scope, parts]);
+            conn.execute("DELETE FROM joins WHERE scope = ?1 AND parts = ?2", params![scope, parts]).unwrap_or(0) > 0
+        }).count()
     }
 
     pub fn len(&self) -> usize {

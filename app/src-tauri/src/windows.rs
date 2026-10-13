@@ -115,7 +115,8 @@ pub fn show_scan(app: &AppHandle, monitor: Rect) {
 
 /// Remove every scan label and hide the layer.
 pub fn hide_scan(app: &AppHandle, state: &AppState) {
-    let _ = tauri::Emitter::emit_to(app, SCAN, "maru-scan-clear", ());
+    let scan_id = state.scan().id;
+    let _ = tauri::Emitter::emit_to(app, SCAN, "maru-scan-clear", serde_json::json!({"scanId":scan_id}));
     if let Some(win) = app.get_webview_window(SCAN) {
         let _ = win.set_ignore_cursor_events(true);
         let _ = win.hide();
@@ -207,7 +208,8 @@ pub fn open_picker(app: &AppHandle) -> tauri::Result<()> {
         .build()?;
     win.set_position(PhysicalPosition::new(v.x as i32, v.y as i32))?;
     win.set_size(PhysicalSize::new(v.w as u32, v.h as u32))?;
-    win.show()?;
+    crate::launcher::pause_for_picker(app);
+    if let Err(error) = win.show() { crate::launcher::resume_after_picker(app); return Err(error); }
     win.set_focus()?;
     Ok(())
 }
@@ -216,6 +218,7 @@ pub fn close_picker(app: &AppHandle) {
     if let Some(w) = app.get_webview_window(PICKER) {
         let _ = w.close();
     }
+    crate::launcher::resume_after_picker(app);
 }
 
 /// Review / history / status window (a normal, focusable window).

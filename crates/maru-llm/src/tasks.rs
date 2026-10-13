@@ -7,7 +7,7 @@
 use maru_core::event::{DeepSection, Variant};
 use maru_core::{Gloss, Register};
 
-use crate::Result;
+use crate::{LlmError, Result};
 use crate::client::{ChatOpts, LlmClient};
 use crate::demux::{LabelDemux, LineSplitter};
 use crate::prompts::{self, GlossWordPrompt, PromptContext};
@@ -302,6 +302,10 @@ impl LlmClient {
         let mut stream = EnKoStream::new();
         self.stream_chat(&messages, &ChatOpts::default(), &mut |d| stream.feed(d, sink)).await?;
         stream.finish(sink);
+        let primary = EnKoSection::Text(Variant::from_register(req.register));
+        if !stream.texts.iter().any(|(section, text)| *section == primary && !clean_text(text).is_empty()) {
+            return Err(LlmError::Api("the model did not return the requested Korean register".into()));
+        }
         Ok(())
     }
 
@@ -333,8 +337,7 @@ impl LlmClient {
     /// Fill the KV cache with each task's system prompt so the first real request is fast.
     pub async fn warm_up(&self) {
         for messages in prompts::warmup() {
-            let opts = ChatOpts { max_tokens: Some(1), ..Default::default() };
-            if let Err(e) = self.stream_chat(&messages, &opts, &mut |_| {}).await {
+            if let Err(e) = self.stream_warmup(&messages).await {
                 tracing::debug!("warm-up request failed: {e}");
                 return;
             }
@@ -517,5 +520,12 @@ mod tests {
         let reqs = server.requests.lock().unwrap();
         assert_eq!(reqs.len(), 5);
         assert!(reqs.iter().all(|(_, b)| b.contains("\"max_tokens\":1")));
+    }
+
+    #[tokio::test]
+    async fn intentional_one_token_warmups_still_prepare_every_prompt() {
+        let server = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![b"data: {\"choices\":[{\"delta\":{\"content\":\"x\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n".to_vec()], delay_ms: 0 }).await;
+        client(&server.url).warm_up().await;
+        assert_eq!(server.requests.lock().unwrap().len(), 5);
     }
 }

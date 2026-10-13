@@ -118,6 +118,8 @@ impl Capturer {
 
     /// OCR everything inside a user-drawn rectangle.
     pub async fn region(&self, rect: Rect) -> Result<Capture, CaptureError> {
+        let app = self.platform.screen.foreground_app();
+        let cursor = self.platform.screen.cursor();
         let out = self.ocr_rect(rect).await?;
         if out.is_empty() {
             return Err(CaptureError::NothingFound("no text recognised in that area".into()));
@@ -129,8 +131,8 @@ impl Capturer {
             source: CaptureSource::Ocr,
             rect: out.bounds(),
             words: out.words(),
-            cursor: self.platform.screen.cursor(),
-            app: self.platform.screen.foreground_app(),
+            cursor,
+            app,
             confidence: Some(conf),
         })
     }

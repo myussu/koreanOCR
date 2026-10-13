@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanDeck, deckChoices, tagOf, addTags, removeTag, intervalText, addedText, reverseChoice } from '../anki.js';
+import { cleanDeck, deckChoices, tagOf, addTags, removeTag, intervalText, addedText, reverseChoice, canSubmitAnki, ankiSettingsPending, ankiWordCounts } from '../anki.js';
 
 const decks = ['Default', 'Korean', 'Korean::Games', 'Korean::Games::Elden Ring', 'Korean::YouTube', 'Spanish'];
 const sugg = [
@@ -8,6 +8,27 @@ const sugg = [
   { deck: 'Korean::Hades', reason: 'named after Hades', exists: false },
   { deck: 'Korean', reason: 'your default deck', exists: true },
 ];
+
+test('keyboard submission stops while an add is busy or Anki is unavailable', () => {
+  const state={busy:false,loading:false,overview:{connected:true}};
+  assert.equal(canSubmitAnki(state),true);
+  assert.equal(canSubmitAnki({...state,busy:true}),false);
+  assert.equal(canSubmitAnki({...state,loading:true}),false);
+  assert.equal(canSubmitAnki({...state,overview:{connected:false}}),false);
+  assert.match(addedText({result:'added',cards:0,deck:'Korean'}),/awaiting confirmation/);
+});
+
+test('Anki checks wait for saved changes that still need a restart',()=>{
+  assert.equal(ankiSettingsPending({},['learning.anki.enabled']),true);
+  assert.equal(ankiSettingsPending({'learning.anki.deck':'Korean'},[]),true);
+  assert.equal(ankiSettingsPending({},['ocr.backend']),false);
+});
+
+test('Anki membership counts do not reuse the local saved-word count',()=>{
+  const s={vocab:{total:50,saved:30,known:10},anki_words:2};
+  assert.deepEqual(ankiWordCounts(s),[['words seen',50],['tracked in Anki',2],['known',10]]);
+  assert.equal(ankiWordCounts({...s,anki_words:null})[1][1],'—');
+});
 
 test('deck names are tidied like the app does', () => {
   assert.equal(cleanDeck(' Korean :: Games ::'), 'Korean::Games');

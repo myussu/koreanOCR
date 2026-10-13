@@ -10,6 +10,9 @@ use maru_srs::{AddRequest, Added, WordRecord, now_secs, tag_of};
 use serde::Serialize;
 
 use crate::engine::{Engine, EngineError, Result};
+#[path = "anki_add.rs"]
+mod adding;
+pub use adding::AnkiAddPermit;
 
 /// A deck worth offering for a word, and why.
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -150,7 +153,7 @@ pub struct ExistingInfo {
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
 pub enum AnkiAdded {
-    Added { deck: String, reverse_deck: Option<String>, cards: usize, sync: bool },
+    Added { deck: String, reverse_deck: Option<String>, cards: usize, sync: bool, warning: Option<String> },
     Exists { note_id: u64, deck: String, interval_days: f32 },
 }
 
@@ -203,44 +206,21 @@ impl Engine {
             Ok(d) => d,
             Err(e) => return Ok(base(&[], Some(e.to_string()), None)),
         };
-        let existing = anki.find(key).await.ok().flatten().map(|n| ExistingInfo { note_id: n.note_id, deck: n.deck, interval_days: n.interval_days });
+        let existing = match anki.find(key).await {
+            Ok(note) => note,
+            Err(e) => return Ok(base(&decks, Some(e.to_string()), None)),
+        };
+        let pending = self.inner.vocab.pending_add(key, &cfg.url, &cfg.note_type)?;
+        let existing = existing.filter(|n| pending.as_ref().is_none_or(|p| p.note_id != n.note_id))
+            .map(|n| ExistingInfo { note_id: n.note_id, deck: n.deck, interval_days: n.interval_days });
         Ok(base(&decks, None, existing))
     }
 
     /// Add a word to Anki. Remembers the deck for the program the word came from, marks the word
     /// saved, and asks Anki to sync with AnkiWeb a moment later (once, however many words came in).
     pub async fn anki_add(&self, opts: AnkiAddOptions) -> Result<AnkiAdded> {
-        let anki = self.anki_client()?;
-        let word = self.word(&opts.key)?;
-        let contexts = self.inner.vocab.contexts(&opts.key, 2)?;
-        let deck = clean_deck(&opts.deck);
-        if deck.is_empty() {
-            return Err(EngineError::Other("choose a deck first".into()));
-        }
-        let req = AddRequest {
-            pronunciation: Some(maru_lang::pronounce::pronounce_word(&word.key)).filter(|p| *p != word.key),
-            word,
-            contexts,
-            deck: deck.clone(),
-            tags: opts.tags,
-            reverse: opts.reverse,
-            word_audio: opts.word_audio,
-            sentence_audio: opts.sentence_audio,
-            source: opts.app.as_deref().map(|a| app_display_name(a, self.inner.cfg.profile_for(a))).filter(|n| !n.is_empty()),
-        };
-        match anki.add(&req).await.map_err(anki_error)? {
-            Added::Exists(n) => Ok(AnkiAdded::Exists { note_id: n.note_id, deck: n.deck, interval_days: n.interval_days }),
-            Added::New { deck, reverse_deck, cards, .. } => {
-                let now = now_secs();
-                let _ = self.inner.vocab.remember_deck(&deck, opts.app.as_deref(), now);
-                let _ = self.inner.vocab.set_anki_state(&req.word.key, Some(0.0), now);
-                let sync = anki.config().sync_after_add;
-                if sync {
-                    self.schedule_anki_sync();
-                }
-                Ok(AnkiAdded::Added { deck, reverse_deck, cards, sync })
-            }
-        }
+        let permit = self.begin_anki_add(&opts.key, &opts.deck).await?;
+        self.finish_anki_add(permit, opts).await
     }
 
     /// Put another sentence on a word's existing card. `false` if it was there already.
@@ -281,17 +261,20 @@ impl Engine {
     /// Read how every card of ours stands in Anki and tell the vocabulary: words held for weeks become
     /// known, so their glosses fade. Returns how many words Anki has.
     pub async fn anki_refresh(&self) -> Result<usize> {
+        let _gate = self.inner.anki_add_gate.lock().await;
         let anki = self.anki_client()?;
         let states = anki.states().await.map_err(anki_error)?;
         let now = now_secs();
-        for s in &states {
-            // A suspended card says nothing about what you know; a card still being learned is 0 days.
+        let progress = states.iter().map(|s| {
             let interval = if s.queue < 0 { None } else if s.card_type == 2 { Some(s.interval_days) } else { Some(0.0) };
-            if let Some(days) = interval {
-                self.inner.vocab.set_anki_state(&s.word, Some(days), now)?;
-            }
-        }
+            (s.word.clone(), interval)
+        }).collect::<Vec<_>>();
+        self.inner.vocab.replace_anki_progress(&progress, now)?;
         Ok(states.len())
+    }
+
+    pub fn anki_count(&self) -> Result<u32> {
+        Ok(self.inner.vocab.anki_count()?)
     }
 
     /// Cards due now and new cards waiting, for the Review tab.

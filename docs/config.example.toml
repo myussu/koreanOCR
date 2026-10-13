@@ -1,5 +1,7 @@
 # Maru configuration. Every setting is optional; delete what you do not need.
 # Location: %APPDATA%\maru\Maru\config\config.toml  (run `maru config path` to see yours)
+# The app loads configured local GPU models on demand; opening Settings loads none.
+# First translation, snapshot OCR, or speech use can wait for its model. CLI startup is unchanged.
 
 # Run lighter beside a game (also: set the environment variable MARU_LITE=1 for one run).
 # It turns the OCR reading model off, uses one model slot and a smaller context, and swaps in the
@@ -23,9 +25,11 @@ hover      = "Ctrl+Alt+H"       # toggle hover mode: rest the pointer on a word
 continuous = "Ctrl+Alt+C"       # toggle live mode for subtitles / dialogue boxes (on the last area)
 continuous_area = "Ctrl+Alt+Shift+C"  # choose a different area for live mode, and start it there
 scan       = "Ctrl+Alt+S"       # label every Korean text on the screen (game menus); press again to rescan
+# Floating Label screen toggles visibility; Refresh labels rescans, and Join words enables ordinary-click selection.
 speak      = "Ctrl+Alt+P"       # translate the selection and read it aloud (again while reading: stop). Needs [tts]
 history    = "Ctrl+Alt+L"
 dismiss    = "Ctrl+Alt+Escape"  # hides the panel and the screen labels (a bare Escape would be hijacked in every other app)
+launcher   = "Ctrl+Alt+M"       # show / hide floating quick controls
 
 [llm]
 # Let llama-server download and cache the model on first run (`maru setup llm` does it up front).
@@ -43,6 +47,7 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 parallel = 2          # translation and word meanings are generated at the same time
 gpu_layers = "all"
 context_lines = 4     # how many previous lines the model sees for continuity
+request_timeout_secs = 60 # chat: waiting for response headers or stalled output; active streams may take longer overall
 
 [ocr]
 backend = "auto"      # auto | paddle | windows
@@ -68,6 +73,8 @@ sync_after_add = true       # ask Anki to sync with AnkiWeb a few seconds after 
 tags = ["maru"]             # on every card
 auto_tags = true            # + level (topik-1), pos::verb, app::<program>, added::<year-month>
 refresh_minutes = 30        # read card intervals back from Anki (0 = only at start-up)
+# Settings → Anki → Refresh progress also reads intervals explicitly, including missing/suspended cards.
+# Local saved words remain separate from tracked Anki membership; unfinished note setup can be retried.
 # api_key = "..."           # only if you set one in AnkiConnect
 
 [ui]
@@ -75,6 +82,8 @@ placement = "auto"    # auto | below | above
 font_size_px = 18
 show_romanization = true
 show_pronunciation = true
+launcher = true               # show floating controls at startup; tray/shortcut can restore them
+# Resource monitoring/recording controls are transient in the hub Resources tab, not config settings.
 
 [continuous]
 cpu_ocr = false       # experimental CPU PP-OCR for live only; skips the vision reader but leaves other features alone
@@ -87,6 +96,26 @@ linger_ms = 1500      # how long a translation stays after the original line is 
 context_lines = 4     # earlier lines the model sees, for pronouns and names
 history_len = 300     # lines kept for review after a cutscene
 # region = { x = 480.0, y = 900.0, w = 960.0, h = 120.0 }   # saved automatically if you set it from the tray
+
+[continuous.translation]
+# Local test models for live Korean-to-English. Save and restart; no downloads start in Settings.
+# Floating controls: Prepare live session warms the saved live model/OCR explicitly; Release idle models unloads owned
+# idle servers, which reload on next use. These actions add no setting and do not change the selections below.
+model = "main"                # main | hy_mt2 | milmmt | hy_mt2_small | lfm; main preserves the existing task
+# hy_mt2_path = "D:/models/Hy-MT2-7B-Q4_K_M.gguf"
+# milmmt_path = "D:/models/MiLMMT-46-4B-v1.0.Q6_K.gguf"
+# hy_mt2_small_path = "D:/models/Hy-MT2-1.8B-Q4_K_M.gguf"
+# lfm_path = "D:/models/lfm2-1.2b-koen-mt-v8-rl-10k-merged-Q5_K_M.gguf"
+# Small HY-MT2: 1024-token context; LFM2: 2048. Both use one slot and smaller batch buffers.
+# These reduce translator VRAM, not OCR/speech memory. Keep context off for the initial quality trial.
+device = "gpu"                # gpu | cpu; applies only to the optional live models
+cpu_threads = 4               # 1..32; CPU disables device, KV and operator offload
+dialogue_context = false      # experimental own-answer history; meaning regressions occurred in tests
+# Optional quality server for snapshots/deep dive while live is on. If set, text/context leave this PC.
+# snapshot_endpoint = "http://192.168.18.217:11434"
+snapshot_model_name = "maru"   # exact model name, e.g. from ollama list
+# No server: live translator + offline meanings, without loading local Gemma.
+# Live off: snapshots return to the normal [llm] setup on demand.
 
 # Per-application behaviour. `exe` is the program's file name.
 [[profile]]

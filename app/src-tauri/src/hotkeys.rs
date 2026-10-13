@@ -17,6 +17,7 @@ enum Action {
     Speak,
     History,
     Dismiss,
+    Launcher,
 }
 
 /// One action may have several keys: `"Ctrl+Alt+T | F6"` (a comma followed by a space also works;
@@ -51,6 +52,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
         (keys.speak, Action::Speak),
         (keys.history, Action::History),
         (keys.dismiss, Action::Dismiss),
+        (keys.launcher, Action::Launcher),
     ];
     let mut problems = Vec::new();
     for (text, action) in table.into_iter().flat_map(|(text, action)| alternatives(&text).into_iter().map(move |t| (t, action))) {
@@ -68,7 +70,8 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
                 return;
             }
             let (app, state) = (app.clone(), state.clone());
-            match action {
+            // A shortcut can open the hub or picker; WebView2 needs the event thread free.
+            tauri::async_runtime::spawn(async move { match action {
                 Action::Translate => flow::translate_selection(app, state),
                 Action::Region => {
                     let _ = windows::open_picker(&app);
@@ -82,7 +85,8 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
                     let _ = windows::open_hub(&app, "history");
                 }
                 Action::Dismiss => flow::dismiss_all(&app, &state),
-            }
+                Action::Launcher => crate::launcher::toggle(&app),
+            }});
         });
         if let Err(e) = result {
             problems.push(format!("could not register {text}: {e} (another program may be using it; change it in config.toml)"));

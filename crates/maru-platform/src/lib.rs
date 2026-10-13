@@ -6,6 +6,8 @@
 
 pub mod block;
 pub mod testing;
+pub mod resources;
+pub mod network;
 #[cfg(windows)]
 pub mod windows;
 

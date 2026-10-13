@@ -36,6 +36,7 @@ pub fn notice(app: &AppHandle, state: &AppState, anchor: Option<Point>, level: &
 pub fn pump(app: AppHandle, mut rx: EventRx) {
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
+            crate::resources::event(&app, &event, "panel");
             let done = matches!(event, Event::Done { .. });
             let _ = app.emit_to(PANEL, "maru-event", &event);
             if done {
@@ -131,12 +132,16 @@ pub fn scan_screen(app: AppHandle, state: Arc<AppState>) {
         s.origin = (monitor.x, monitor.y);
         s.rects.clear();
         s.interactive = false;
+        s.id = None;
+        s.join_mode = false;
     }
     windows::show_scan(&app, monitor);
     refresh_tray(&app, &state);
-    let (_, mut rx) = state.engine().scan(monitor);
+    let (id, mut rx) = state.engine().scan(monitor);
+    state.scan().id = Some(id);
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
+            if !state.scan().accepts_events(id) { break; }
             let done = matches!(event, Event::Done { .. });
             let _ = app.emit_to(windows::SCAN, "maru-scan", &event);
             if done {
@@ -152,6 +157,7 @@ pub fn scan_join(app: AppHandle, state: Arc<AppState>, scan_id: u64, item: u32, 
     let mut rx = state.engine().scan_join(scan_id, item, pieces);
     tauri::async_runtime::spawn(async move {
         while let Some(event) = rx.recv().await {
+            if !state.scan().accepts_events(scan_id) { break; }
             let done = matches!(event, Event::Done { .. });
             let _ = app.emit_to(windows::SCAN, "maru-scan", &event);
             if done {
@@ -299,16 +305,19 @@ fn pump_live(app: AppHandle, state: Arc<AppState>, id: u64, mut rx: EventRx, spo
             let _ = app.emit_to(windows::LIVE, "maru-live", band);
         };
         while let Some(event) = rx.recv().await {
+            crate::resources::event(&app, &event, "live");
             match event {
                 Event::Translation { delta, .. } => {
                     text.push_str(&delta);
                     send(&text, false);
                 }
                 Event::TranslationDone { text: full, .. } => {
+                    crate::launcher::translation_error(&app, None);
                     text = full;
                     send(&text, true);
                 }
                 Event::Error { message, .. } => {
+                    crate::launcher::translation_error(&app, Some(message.clone()));
                     tracing::warn!("live translation: {message}");
                     if !state.live_error_shown.swap(true, std::sync::atomic::Ordering::Relaxed) {
                         notice(&app, &state, None, "error", format!("Live subtitles could not be translated: {message}"));
@@ -322,6 +331,7 @@ fn pump_live(app: AppHandle, state: Arc<AppState>, id: u64, mut rx: EventRx, spo
 }
 
 fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
+    crate::launcher::translation_error(&app, None);
     let mut handle = match state.engine().start_continuous(region) {
         Ok(h) => h,
         Err(e) => return notice(&app, &state, None, "error", e.to_string()),
@@ -330,6 +340,7 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
     // The handle owns the stop switch: keep it in state; dropping it ends the watcher.
     if let Ok(mut slot) = state.continuous.lock() {
         *slot = Some(handle);
+        state.engine().set_live_active(true);
     }
     state.live_error_shown.store(false, std::sync::atomic::Ordering::Relaxed);
     let monitor = windows::monitor_rect(&app, Point { x: region.x + region.w / 2.0, y: region.y + region.h / 2.0 });
@@ -368,6 +379,7 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
 
 pub fn toggle_continuous(app: &AppHandle, state: &Arc<AppState>) {
     if state.stop_continuous() {
+        crate::launcher::translation_error(app, None);
         windows::hide_live(app);
         refresh_tray(app, state);
         notice(app, state, None, "info", "Live subtitles off.");

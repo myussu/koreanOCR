@@ -28,11 +28,13 @@ use crate::vlm_ocr::{PADDLE_VL_PROMPT, VlmOcr};
 pub struct BootOptions {
     /// Spawn `llama-server` (in the background) when a model is configured.
     pub start_llm: bool,
+    /// Interactive front ends leave GPU models unloaded until a feature requests them.
+    pub defer_models: bool,
 }
 
 impl Default for BootOptions {
     fn default() -> Self {
-        Self { start_llm: true }
+        Self { start_llm: true, defer_models: false }
     }
 }
 
@@ -53,16 +55,23 @@ pub struct Services {
     /// Updates as the speech server starts (a remote one is just checked); `Disabled` when speech is off.
     pub tts_status: watch::Receiver<LlmStatus>,
     /// Keeps the local `tts-server` alive.
-    tts_server: Arc<Mutex<Option<maru_tts::local::LocalTts>>>,
+    pub(crate) tts_server: Arc<Mutex<Option<maru_tts::local::LocalTts>>>,
     /// Keeps `llama-server` alive; it is killed when `Services` is dropped.
-    server: Arc<Mutex<Option<LlamaServer>>>,
+    pub(crate) server: Arc<Mutex<Option<LlamaServer>>>,
     /// Same, for the OCR reading model.
-    vision_server: Arc<Mutex<Option<LlamaServer>>>,
+    pub(crate) vision_server: Arc<Mutex<Option<LlamaServer>>>,
+    pub(crate) model_runtime: Option<Arc<maru_llm::model_runtime::ModelRuntime>>,
+    pub(crate) deferred_vision: Option<Arc<crate::deferred_models::DeferredModel>>,
+    pub(crate) deferred_speech: Option<Arc<crate::deferred_models::DeferredModel>>,
+    pub(crate) model_controls: crate::model_controls::ModelControls,
 }
 
 impl Services {
     pub fn llm_status(&self) -> LlmStatus {
         self.llm_status.borrow().clone()
+    }
+    pub fn live_llm_status(&self) -> LlmStatus {
+        self.model_runtime.as_ref().map(|r| r.status()).unwrap_or_else(|| self.llm_status())
     }
     pub async fn wait_for_llm(&mut self) -> LlmStatus {
         let _ = self.llm_status.wait_for(|s| !matches!(s, LlmStatus::Starting)).await;
@@ -78,6 +87,17 @@ impl Services {
     pub fn tts_status(&self) -> LlmStatus {
         self.tts_status.borrow().clone()
     }
+    pub fn vision_on_demand(&self) -> bool { self.deferred_vision.is_some() }
+    pub fn speech_on_demand(&self) -> bool { self.deferred_speech.is_some() }
+    pub async fn ensure_speech(&self) -> Result<(), String> {
+        if let Some(model) = &self.deferred_speech { model.ensure_loaded().await?; }
+        match self.tts_status() {
+            LlmStatus::Ready => Ok(()),
+            LlmStatus::Starting => Err("The voice is still loading; try again in a moment.".into()),
+            LlmStatus::Failed(why) => Err(format!("The voice is not available: {why}")),
+            LlmStatus::Disabled => Err("Speech is off.".into()),
+        }
+    }
     /// The local speech server is up (always false for a remote one).
     pub fn tts_server_running(&self) -> bool {
         self.tts_server.lock().map(|mut s| s.as_mut().is_some_and(|s| s.is_running())).unwrap_or(false)
@@ -86,7 +106,7 @@ impl Services {
         self.vision_server.lock().map(|s| s.is_some()).unwrap_or(false)
     }
     pub fn llm_server_running(&self) -> bool {
-        self.server.lock().map(|s| s.is_some()).unwrap_or(false)
+        self.model_runtime.as_ref().is_some_and(|r| r.is_running()) || self.server.lock().map(|s| s.is_some()).unwrap_or(false)
     }
 }
 
@@ -287,6 +307,10 @@ fn choose_ocr(cfg: &Config, paths: &Paths, platform: &Platform, notes: &mut Vec<
 
 /// Build the engine. Never fails: problems become entries in [`Services::notes`].
 pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
+    boot_with_platform(paths, cfg, opts, None).await
+}
+
+pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOptions, platform: Option<Platform>) -> Services {
     let mut notes = Vec::new();
     let (cfg, lite) = cfg.effective();
     if lite {
@@ -333,7 +357,7 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
     };
 
     tracing::info!("boot: setting up screen access (UI Automation, Windows OCR)");
-    let platform = {
+    let platform = if let Some(platform) = platform { platform } else {
         let blocking = tokio::task::spawn_blocking(Platform::native).await;
         blocking.unwrap_or_else(|_| Platform::native())
     };
@@ -392,22 +416,51 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         }
     };
 
-    // Vision reader: PP-OCR finds the lines, PaddleOCR-VL reads them better. It loads in the
-    // background; until it is ready (or if it never is) the gate makes OCR plain PP-OCR.
+    // Vision reader: interactive boot waits until snapshot OCR needs it; CLI boot stays eager.
     let (vision_tx, vision_rx) = watch::channel(LlmStatus::Disabled);
     let vision_server: Arc<Mutex<Option<LlamaServer>>> = Arc::new(Mutex::new(None));
     let vision_ready = Arc::new(AtomicBool::new(false));
     let use_vision = opts.start_llm && cfg.ocr.vision_reader && ocr.is_some() && vision::installed(&paths);
+    let deferred_vision = (use_vision && opts.defer_models).then(|| {
+        let (paths, llm, server) = (paths.clone(), cfg.llm.clone(), vision_server.clone());
+        let stop_server = server.clone();
+        crate::deferred_models::DeferredModel::restartable(vision_tx.clone(), move || {
+            let (paths, llm, server) = (paths.clone(), llm.clone(), server.clone());
+            async move {
+                match vision::start(&paths, vision::launch_plans(&paths, &llm, &[]), |_, _| {}).await {
+                    Some((model, _)) => {
+                        *server.lock().unwrap_or_else(|p| p.into_inner()) = Some(model);
+                        Ok(())
+                    }
+                    None => Err("PaddleOCR-VL did not start (run `maru --verbose doctor` for details)".into()),
+                }
+            }
+        }, move || {
+            let server = stop_server.clone();
+            async move {
+                let owned = server.lock().unwrap_or_else(|p| p.into_inner()).take();
+                if let Some(mut owned) = owned { owned.stop().await.map_err(|e| e.to_string())?; }
+                Ok(())
+            }
+        })
+    });
     if cfg.ocr.vision_reader && ocr.is_some() && !vision::installed(&paths) && opts.start_llm {
         notes.push("OCR: PaddleOCR-VL is not installed; run `maru setup ocr-vl` for noticeably more accurate letters.".into());
     }
     let ocr = if use_vision {
-        let _ = vision_tx.send(LlmStatus::Starting);
-        notes.push("OCR: PaddleOCR-VL reader is loading in the background (PP-OCR alone until it is ready)".into());
+        if opts.defer_models {
+            notes.push("OCR: PaddleOCR-VL loads on the first OCR request; the optional CPU live reader bypasses it.".into());
+        } else {
+            let _ = vision_tx.send(LlmStatus::Starting);
+            notes.push("OCR: PaddleOCR-VL reader is loading in the background (PP-OCR alone until it is ready)".into());
+        }
         ocr.map(|detector| {
             let url = format!("http://127.0.0.1:{}", vision::PORT);
             let reader = Arc::new(VlmOcr::new(&url, &vision::base_config(&cfg.llm), PADDLE_VL_PROMPT));
-            let gated = Arc::new(vision::GatedOcr::new(reader, vision_ready.clone()));
+            let gated: Arc<dyn OcrEngine> = match &deferred_vision {
+                Some(model) => Arc::new(crate::deferred_models::DeferredOcr { inner: reader, model: model.clone() }),
+                None => Arc::new(vision::GatedOcr::new(reader, vision_ready.clone())),
+            };
             Arc::new(HybridOcr::new(detector, gated)) as Arc<dyn OcrEngine>
         })
     } else {
@@ -418,7 +471,7 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
     let source = ModelSource::from_config(&cfg.llm);
     let (status_tx, status_rx) = watch::channel(LlmStatus::Disabled);
     let server: Arc<Mutex<Option<LlamaServer>>> = Arc::new(Mutex::new(None));
-    let llm = if cfg.llm.endpoint.is_some() {
+    let mut llm = if cfg.llm.endpoint.is_some() {
         notes.push(format!("Language model: external endpoint {}", cfg.llm.endpoint.as_deref().unwrap_or("")));
         let _ = status_tx.send(LlmStatus::Ready);
         Some(LlmClient::from_config(&cfg.llm))
@@ -429,6 +482,38 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         notes.push("Language model: not configured. Set [llm] hf_repo or model_path in config.toml, then run `maru setup llm`.".into());
         None
     };
+
+    let mut model_runtime = None;
+    let mut live_llm = None;
+    let alternate = cfg.continuous.translation.model != maru_core::live_model::LiveModel::Main;
+    if alternate && opts.start_llm {
+        match crate::live_models::local_config(&cfg) {
+            Ok(local) => {
+                let main = (cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart).then(|| cfg.llm.clone());
+                // A local live model's lifecycle must not gate the independent remote main client.
+                let runtime_status = if cfg.llm.endpoint.is_some() { watch::channel(LlmStatus::Disabled).0 } else { status_tx.clone() };
+                let runtime = maru_llm::model_runtime::ModelRuntime::new(main, local.clone(), paths.clone(), runtime_status);
+                if cfg.llm.endpoint.is_none() {
+                    llm = llm.map(|c| c.with_runtime(runtime.clone(), maru_llm::model_runtime::ModelRole::Main));
+                }
+                live_llm = Some(LlmClient::from_config(&local).with_runtime(runtime.clone(), maru_llm::model_runtime::ModelRole::Live));
+                if cfg.llm.endpoint.is_none() { let _ = status_tx.send(LlmStatus::Disabled); }
+                notes.push("Live translation model: loaded on demand; local Gemma is unloaded when switching. Snapshots return to the normal model when live is off.".into());
+                model_runtime = Some(runtime);
+            }
+            Err(why) => {
+                notes.push(format!("Live translation model unavailable: {why}"));
+                if cfg.llm.endpoint.is_none() { let _ = status_tx.send(LlmStatus::Failed(why)); }
+            }
+        }
+    }
+    if !alternate && opts.start_llm && opts.defer_models && cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart {
+        let runtime = maru_llm::model_runtime::ModelRuntime::new(Some(cfg.llm.clone()), cfg.llm.clone(), paths.clone(), status_tx.clone());
+        llm = llm.map(|c| c.with_runtime(runtime.clone(), maru_llm::model_runtime::ModelRole::Main));
+        let _ = status_tx.send(LlmStatus::Disabled);
+        notes.push("Language model: configured; loads on the first translation request.".into());
+        model_runtime = Some(runtime);
+    }
 
     tracing::info!("boot: starting the engine");
     let engine = Engine::new(EngineParts {
@@ -442,10 +527,11 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         ocr,
         scan_ocr,
         live_ocr,
+        live_llm,
         labels: Some(labels),
     });
 
-    if opts.start_llm && cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart {
+    if !alternate && !opts.defer_models && opts.start_llm && cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart {
         let (engine, cfg, paths, server) = (engine.clone(), cfg.clone(), paths.clone(), server.clone());
         tokio::spawn(async move {
             let timeout = Duration::from_secs(cfg.llm.ready_timeout_secs);
@@ -468,7 +554,7 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
         });
     }
 
-    if use_vision {
+    if use_vision && !opts.defer_models {
         let (paths, llm, server, ready) = (paths.clone(), cfg.llm.clone(), vision_server.clone(), vision_ready.clone());
         tokio::spawn(async move {
             let plans = vision::launch_plans(&paths, &llm, &[]);
@@ -492,30 +578,30 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
     // so it starts in the background and is left out of game mode unless asked for.
     let (tts_tx, tts_rx) = watch::channel(LlmStatus::Disabled);
     let tts_server: Arc<Mutex<Option<maru_tts::local::LocalTts>>> = Arc::new(Mutex::new(None));
-    let tts = start_speech(&cfg, &paths, lite, opts.start_llm, &mut notes, tts_tx, tts_server.clone());
+    let (tts, deferred_speech) = start_speech(&cfg, &paths, lite, opts, &mut notes, tts_tx, tts_server.clone());
 
-    Services { engine, paths, notes, lite, tts, tts_status: tts_rx, tts_server, llm_status: status_rx, vision_status: vision_rx, server, vision_server }
+    Services { engine, paths, notes, lite, tts, tts_status: tts_rx, tts_server, llm_status: status_rx, vision_status: vision_rx, server, vision_server, model_runtime, deferred_vision, deferred_speech, model_controls: Default::default() }
 }
 
 fn start_speech(
     cfg: &Config,
     paths: &Paths,
     lite: bool,
-    start_servers: bool,
+    opts: BootOptions,
     notes: &mut Vec<String>,
     status: watch::Sender<LlmStatus>,
     server: Arc<Mutex<Option<maru_tts::local::LocalTts>>>,
-) -> Option<maru_tts::Tts> {
+) -> (Option<maru_tts::Tts>, Option<Arc<crate::deferred_models::DeferredModel>>) {
     use maru_core::config::TtsProvider;
     if !cfg.tts.enabled {
-        return None;
+        return (None, None);
     }
     let tts = match maru_tts::Tts::new(&cfg.tts, paths) {
         Ok(t) => t,
         Err(e) => {
             notes.push(format!("Speech: {e}"));
             let _ = status.send(LlmStatus::Failed(e.to_string()));
-            return None;
+            return (None, None);
         }
     };
     match cfg.tts.provider {
@@ -523,7 +609,7 @@ fn start_speech(
             notes.push(format!("Speech: from {}", tts.client().root()));
             let _ = status.send(LlmStatus::Starting);
             let client = tts.clone();
-            if start_servers {
+            if opts.start_llm {
                 tokio::spawn(async move {
                     let _ = status.send(match client.client().check().await {
                         Ok(()) => LlmStatus::Ready,
@@ -539,7 +625,27 @@ fn start_speech(
             } else if !maru_tts::local::installed(&cfg.tts, paths) {
                 notes.push("Speech: the local voice is not installed; run `maru setup tts`.".into());
                 let _ = status.send(LlmStatus::Failed("not installed (run `maru setup tts`)".into()));
-            } else if start_servers {
+            } else if opts.start_llm && opts.defer_models {
+                let (tts_cfg, paths) = (cfg.tts.clone(), paths.clone());
+                let stop_server = server.clone();
+                let model = crate::deferred_models::DeferredModel::restartable(status, move || {
+                    let (tts_cfg, paths, server) = (tts_cfg.clone(), paths.clone(), server.clone());
+                    async move {
+                        let model = maru_tts::local::LocalTts::start(&tts_cfg, &paths).await.map_err(|e| e.to_string())?;
+                        *server.lock().unwrap_or_else(|p| p.into_inner()) = Some(model);
+                        Ok(())
+                    }
+                }, move || {
+                    let server = stop_server.clone();
+                    async move {
+                        let owned = server.lock().unwrap_or_else(|p| p.into_inner()).take();
+                        if let Some(mut owned) = owned { owned.stop().await.map_err(|e| e.to_string())?; }
+                        Ok(())
+                    }
+                });
+                notes.push("Speech: local voice loads on the first speech request.".into());
+                return (Some(tts), Some(model));
+            } else if opts.start_llm {
                 let _ = status.send(LlmStatus::Starting);
                 let (tts_cfg, paths) = (cfg.tts.clone(), paths.clone());
                 tokio::spawn(async move {
@@ -559,7 +665,7 @@ fn start_speech(
             }
         }
     }
-    Some(tts)
+    (Some(tts), None)
 }
 
 /// Convenience: `<MARU_HOME or platform dir>/config.toml` → [`Config`].
@@ -623,6 +729,53 @@ mod tests {
             }
         }
         assert!(saw_breakdown);
+        std::fs::remove_dir_all(paths.config_file.parent().unwrap()).ok();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn interactive_boot_leaves_configured_gpu_models_unloaded_until_their_features_request_them() {
+        let paths = temp_paths("interactive");
+        paths.ensure().unwrap();
+        let mut cfg = Config::default();
+        cfg.ocr.backend = OcrBackend::Windows;
+        cfg.llm.hf_repo = Some("scripted/model".into());
+        cfg.llm.server_path = Some(paths.bin_dir.join("missing-translation-server"));
+        cfg.tts.enabled = true;
+        cfg.tts.server_path = Some(paths.bin_dir.join("missing-speech-server"));
+        // Installed placeholders suffice for startup discovery; no executable or weights run.
+        for file in [maru_tts::local::server_binary(&cfg.tts, &paths), maru_tts::local::talker_path(&cfg.tts, &paths), maru_tts::local::codec_path(&cfg.tts, &paths)] {
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, b"placeholder").unwrap();
+        }
+        for file in vision::FILES {
+            let file = vision::model_dir(&paths).join(file);
+            std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+            std::fs::write(file, b"placeholder").unwrap();
+        }
+        let services = boot(paths.clone(), cfg, BootOptions { defer_models: true, ..Default::default() }).await;
+        assert!(services.engine.has_llm());
+        assert_eq!(services.llm_status(), LlmStatus::Disabled);
+        assert_eq!(services.tts_status(), LlmStatus::Disabled);
+        assert!(services.speech_on_demand());
+        assert_eq!(services.vision_status(), LlmStatus::Disabled);
+        if services.engine.has_ocr() { assert!(services.vision_on_demand()); }
+        assert!(!services.llm_server_running() && !services.vision_server_running() && !services.tts_server_running());
+        assert!(services.resource_targets().iter().filter(|t| t.role != "app").all(|t| t.pid.is_none()));
+        // Reads and an idle interval cannot start the configured (unusable) executables.
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        assert_eq!(services.llm_status(), LlmStatus::Disabled);
+        let (_, mut events) = services.engine.translate(maru_core::Capture::typed("안녕하세요"));
+        let mut reported = false;
+        while let Some(event) = events.recv().await {
+            reported |= matches!(event, maru_core::Event::Error { .. });
+            if matches!(event, maru_core::Event::Done { .. }) { break; }
+        }
+        assert!(reported);
+        assert!(matches!(services.llm_status(), LlmStatus::Failed(_)));
+        assert_eq!(services.tts_status(), LlmStatus::Disabled, "translation never requests speech");
+        assert!(services.ensure_speech().await.is_err());
+        assert!(matches!(services.tts_status(), LlmStatus::Failed(_)));
+        drop(services);
         std::fs::remove_dir_all(paths.config_file.parent().unwrap()).ok();
     }
 

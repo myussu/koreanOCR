@@ -191,10 +191,11 @@ impl Vocab {
         if !has_interval {
             conn.execute("ALTER TABLE words ADD COLUMN anki_interval REAL", [])?;
         }
+        crate::anki_store::init(&conn)?;
         Ok(Self { conn: Mutex::new(conn), cfg })
     }
 
-    fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
+    pub(crate) fn conn(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|p| p.into_inner())
     }
 

@@ -32,7 +32,7 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
             let panel = windows::panel_rect(&app);
             let over_panel = visible && panel.is_some_and(|r| r.contains(cursor));
 
-            if hover_mode && !over_panel {
+            if hover_mode && !over_panel && !crate::launcher::over_controls(&app, cursor) {
                 if let Some(at) = dwell.update(Instant::now(), cursor) {
                     flow::hover_at(app.clone(), state.clone(), at);
                 }
@@ -60,7 +60,7 @@ pub fn spawn(app: AppHandle, state: Arc<AppState>) {
 const SCAN_POLL: Duration = Duration::from_millis(12);
 
 /// The scan overlay is click-through, so the game stays playable under it; this switches it to
-/// accept the mouse only while the pointer is over a label (to click it, or its delete button).
+/// accept the mouse only while the pointer is over a label, its action menu or the join chip.
 pub fn spawn_scan_hits(app: AppHandle, state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         let screen = state.engine().platform().screen.clone();

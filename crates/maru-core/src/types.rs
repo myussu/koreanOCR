@@ -352,4 +352,23 @@ pub struct ScanItem {
     pub source: LabelSource,
     /// Every content word in it is one you already know: show it faded, or not at all.
     pub known: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub join: Option<ScanJoin>,
+}
+
+/// An original label box, retained so joining can be undone without reading the screen again.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScanPart {
+    pub text: String,
+    pub rect: Rect,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub observed: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ScanJoin {
+    pub parts: Vec<ScanPart>,
+    /// Exact saved rule keys, including nested joins; separation does not delete other rules with the same text.
+    pub rules: Vec<Vec<String>>,
+    pub as_word: bool,
 }

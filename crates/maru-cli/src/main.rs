@@ -379,7 +379,7 @@ fn read_text(parts: &[String]) -> Result<String> {
 }
 
 async fn services(paths: &Paths, cfg: Config, start_llm: bool) -> Services {
-    boot(paths.clone(), cfg, BootOptions { start_llm }).await
+    boot(paths.clone(), cfg, BootOptions { start_llm, ..Default::default() }).await
 }
 
 async fn run_events(mut rx: maru_engine::EventRx, json: bool) -> usize {

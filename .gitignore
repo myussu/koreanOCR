@@ -8,6 +8,7 @@ __pycache__/
 *.png
 !docs/**/*.png
 !app/ui/**/*.png
+!crates/maru-engine/assets/live-warmup.png
 /models/
 /data/
 *.gguf

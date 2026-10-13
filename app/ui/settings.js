@@ -4,6 +4,10 @@
 // never re-renders the page (that would drop the cursor): each field updates itself.
 
 import { invoke } from './bridge.js';
+import { ankiSettingsPending } from './anki.js';
+import { LIVE_MODELS, modelEdits, matchesSetting } from './settings-live-core.js';
+import { connectionFields, connectionKey, canTestConnection, connectionResult, connectionPaths, needsServerDetection } from './settings-connection-core.js';
+import { discoveryControls } from './settings-discovery.js';
 import { SECTIONS, isVisible, appliesLive, labelFor, toEditor, fromEditor, withEdit, withReset, shown, isDefault, valueAt, splitKeys, joinKeys, comboFromEvent, keyRisk } from './settings-core.js';
 
 function h(tag, props = {}, ...kids) {
@@ -23,69 +27,14 @@ function h(tag, props = {}, ...kids) {
 
 const ensureStyles = () => {
   if (document.getElementById('settings-style')) return;
-  document.head.append(
-    h('style', { id: 'settings-style' }, `
-    .set-sec { margin: 22px 0 6px; }
-    .set-sec h3 { margin: 0 0 4px; font-size: 16px; }
-    .set-sec .intro { color: var(--muted); font-size: 12.5px; margin: 0 0 8px; line-height: 1.45; }
-    .set-row { display: grid; grid-template-columns: 1fr minmax(210px, 300px); gap: 4px 18px; align-items: center; padding: 9px 2px; border-bottom: 1px solid var(--line); }
-    .set-row.keysrow { grid-template-columns: minmax(170px, 1fr) minmax(300px, 440px); }
-    .set-row .name { font-size: 14px; }
-    .set-row .name .tag { margin-left: 6px; font-size: 10.5px; padding: 0 6px; border-radius: 999px; background: var(--chip); color: var(--muted); }
-    .set-row .name .tag.restart { color: var(--warn); }
-    .set-row .help { color: var(--muted); font-size: 12px; margin-top: 1px; line-height: 1.35; }
-    .set-row.changed .name::before { content: "● "; color: var(--accent); }
-    .set-ctl { display: flex; gap: 8px; align-items: center; justify-content: flex-end; min-width: 0; }
-    .set-ctl input[type=text], .set-ctl input[type=number], .set-ctl select { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 5px 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); }
-    .set-ctl input[type=number] { max-width: 110px; flex: none; }
-    .set-ctl input[type=range] { flex: 1; accent-color: var(--accent); }
-    .set-ctl .val { min-width: 62px; text-align: right; font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
-    .set-ctl .unit { color: var(--muted); font-size: 12px; white-space: nowrap; }
-    .reset { all: unset; cursor: pointer; color: var(--muted); padding: 0 4px; font-size: 14px; visibility: hidden; }
-    .reset.on { visibility: visible; }
-    .reset:hover { color: var(--accent); }
-    .sw { position: relative; width: 38px; height: 22px; flex: none; }
-    .sw input { position: absolute; inset: 0; opacity: 0; margin: 0; cursor: pointer; }
-    .sw i { position: absolute; inset: 0; border-radius: 999px; background: var(--line); transition: background .15s; pointer-events: none; }
-    .sw i::after { content: ""; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: #fff; transition: transform .15s; }
-    .sw input:checked + i { background: var(--accent); }
-    .sw input:checked + i::after { transform: translateX(16px); }
-    .sw input:focus-visible + i { outline: 2px solid var(--accent); outline-offset: 2px; }
-    .keys { display: flex; gap: 6px; align-items: flex-start; justify-content: flex-end; }
-    .keys .list { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
-    .keys .k { display: inline-flex; align-items: center; gap: 4px; background: var(--chip); border-radius: 7px; padding: 2px 4px 2px 8px; font-size: 12.5px; font-family: ui-monospace, Consolas, monospace; }
-    .keys .k button { all: unset; cursor: pointer; color: var(--muted); padding: 0 4px; border-radius: 5px; }
-    .keys .k button:hover { color: var(--bad); }
-    .keys .k.warn { outline: 1px solid var(--warn); }
-    .keys .add { font-size: 12px; }
-    .keys .add.listening { background: var(--accent); color: #fff; border-color: var(--accent); }
-    .keys-note { grid-column: 1 / -1; font-size: 11.5px; color: var(--warn); text-align: right; }
-    .set-row[hidden] { display: none; }
-    .test-row { display: flex; gap: 10px; align-items: center; margin: 10px 0 2px; flex-wrap: wrap; }
-    .test-row .res { font-size: 12.5px; color: var(--muted); }
-    .test-row .res.bad { color: var(--bad); }
-    .adv-toggle { all: unset; cursor: pointer; color: var(--muted); font-size: 12.5px; padding: 6px 2px; }
-    .adv-toggle:hover { color: var(--accent); }
-    .banner { margin: 14px 0 0; padding: 10px 14px; border-radius: 10px; font-size: 13px; }
-    .banner.restart { background: rgba(217, 119, 6, 0.12); border: 1px solid var(--warn); display: flex; gap: 12px; align-items: center; }
-    .banner.restart div { flex: 1; }
-    .banner.ok { background: rgba(21, 128, 61, 0.10); color: var(--good); }
-    .banner.bad { background: rgba(180, 35, 24, 0.10); color: var(--bad); }
-    .savebar { position: sticky; bottom: 0; margin: 20px -22px -40px; padding: 11px 22px; background: var(--bg); border-top: 1px solid var(--line); display: flex; gap: 10px; align-items: center; z-index: 5; }
-    .savebar .msg { flex: 1; font-size: 13px; color: var(--muted); }
-    .savebar .msg.bad { color: var(--bad); }
-    .comp td:nth-child(2) { width: 46%; }
-    .cmd { font-family: ui-monospace, Consolas, monospace; font-size: 12px; background: var(--chip); border-radius: 6px; padding: 2px 7px; }
-    .file-row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-top: 6px; font-size: 12.5px; color: var(--muted); }
-  `),
-  );
+  document.head.append(h('link', { id:'settings-style', rel:'stylesheet', href:'settings.css' }));
 };
 
 const btn = (text, onclick, cls = '') => h('button', { class: `btn ${cls}`, onclick, text });
 
 export async function settingsView() {
   ensureStyles();
-  const root = h('div');
+  const root = h('div', {class:'settings-page'});
   let data = await invoke('get_settings');
   const status = await invoke('status').catch(() => null);
   let draft = {};
@@ -93,6 +42,18 @@ export async function settingsView() {
   let capturing = null; // { path, stop }
   const updaters = [];
   const open = new Set(); // sections with Advanced expanded
+  const connectionChecks = new Map();
+  const discoveryStates = new Map();
+  let disposed=false;
+  root.dispose=()=>{disposed=true;stopCapture();for(const state of discoveryStates.values())if(state.busy)state.stop?.();};
+  let category = 'live', query = '', saving = false;
+  const sidebar = h('aside', {class:'settings-sidebar', 'aria-label':'Settings categories'});
+  const content = h('div');
+  const search = h('input', {class:'settings-search', type:'search', placeholder:'Search settings…', 'aria-label':'Search settings', oninput:e=>{query=e.target.value; rebuildAll();}});
+  root.canLeave = () => {
+    if (!Object.keys(draft).length && !saving) { stopCapture(); return true; }
+    message = {kind:'bad',text:'Save or discard your changes before leaving Settings.'}; refreshAll(); return false;
+  };
 
   const refreshAll = () => updaters.forEach((u) => u());
 
@@ -224,6 +185,7 @@ export async function settingsView() {
     const build = () => {
       holder.classList.toggle('changed', field.path in draft);
       holder.replaceChildren(...(field.type === 'keys' ? [name, ...[].concat(ctl.el)] : [name, ctl.el]));
+      for(const input of holder.querySelectorAll('input,select')) input.setAttribute('aria-label',field.label);
     };
     build();
     updaters.push(() => {
@@ -257,7 +219,10 @@ export async function settingsView() {
     if (pending.length) {
       const names = [...new Set(pending.map(labelFor))];
       banner.append(
-        h('div', { class: 'banner restart' }, h('div', {}, h('b', { text: 'Restart to apply: ' }), names.slice(0, 6).join(', '), names.length > 6 ? ` and ${names.length - 6} more` : '', '. The language model loads again afterwards.'), btn('Restart Maru', () => invoke('restart_app'), 'primary')),
+        h('div', { class: 'banner restart' }, h('div', {}, h('b', { text: 'Restart to apply: ' }), names.slice(0, 6).join(', '), names.length > 6 ? ` and ${names.length - 6} more` : '', '.'), btn('Restart Maru', () => {
+          if(Object.keys(draft).length){message={kind:'bad',text:'Save or discard the unsaved changes before restarting.'};refreshAll();return;}
+          invoke('restart_app').catch(e=>{message={kind:'bad',text:String(e)};refreshAll();});
+        }, 'primary')),
       );
     }
     if (data.lite_from_env) banner.append(h('div', { class: 'banner restart' }, 'MARU_LITE is set in the environment, so game mode is on whatever this page says.'));
@@ -267,13 +232,15 @@ export async function settingsView() {
     const n = Object.keys(draft).length;
     msg.className = `msg${message?.kind === 'bad' ? ' bad' : ''}`;
     msg.textContent = message ? message.text : n ? `${n} unsaved change${n === 1 ? '' : 's'}` : 'All changes are saved';
-    saveBtn.disabled = n === 0;
-    discardBtn.disabled = n === 0;
+    saveBtn.disabled = n === 0 || saving;
+    discardBtn.disabled = n === 0 || saving;
     saveBtn.style.opacity = discardBtn.style.opacity = n === 0 ? 0.5 : 1;
   }
   updaters.push(drawBar);
 
   async function save() {
+    if(saving)return;
+    saving=true; root.inert=true; message={kind:'ok',text:'Saving…'};refreshAll();
     try {
       const r = await invoke('save_settings', { changes: draft });
       const live = r.changed.filter(appliesLive).length;
@@ -285,20 +252,26 @@ export async function settingsView() {
     } catch (e) {
       message = { kind: 'bad', text: String(e) };
       refreshAll();
+    } finally {
+      saving=false;root.inert=false;refreshAll();
     }
   }
 
-  const fieldRows = (section, advanced) => section.fields.filter((f) => !!f.advanced === advanced).map((f) => {
+  const fieldRows = (section, advanced) => section.fields.filter((f) => f.path !== 'continuous.translation.model' && matchesSetting(f,query) && (!!query || !!f.advanced === advanced)).flatMap((f) => {
     const r = row(f);
     rows.set(f.path, r);
-    return r;
+    return ['llm.model_name','continuous.translation.snapshot_model_name'].includes(f.path) ? [r, serverTest(section.id)] : [r];
   });
 
   function rebuildAll() {
+    stopCapture();
     updaters.length = 0;
     rows.clear();
     drawBanner();
-    const sections = SECTIONS.map((s) => {
+    sidebar.replaceChildren(...[...SECTIONS, {id:'components',title:'Installed resources',fields:[]}].map(s=>btn(s.title,()=>{category=s.id;query='';search.value='';rebuildAll();})));
+    [...sidebar.children].forEach((b,i)=>b.setAttribute('aria-current',String(!query && category===[...SECTIONS,{id:'components'}][i].id)));
+    const wanted = SECTIONS.filter(s=>query ? s.fields.some(f=>matchesSetting(f,query)) : s.id===category);
+    const sections = wanted.map((s) => {
       const adv = s.fields.some((f) => f.advanced);
       const advBox = h('div');
       const draw = () => {
@@ -308,15 +281,75 @@ export async function settingsView() {
       };
       const toggle = h('button', { class: 'adv-toggle', onclick: () => (open.has(s.id) ? open.delete(s.id) : open.add(s.id), draw(), refreshAll()) });
       const body = fieldRows(s, false);
-      if (adv) draw();
-      return h('section', { class: 'set-sec' }, h('h3', { text: s.title }), s.intro && h('p', { class: 'intro', text: s.intro }), body, adv && toggle, adv && advBox, s.action === 'tts-test' && ttsTest(), s.action === 'anki' && ankiActions());
+      if (adv && !query) draw();
+      return h('section', { class: 'set-sec' }, h('h3', { text: s.title }), s.intro && h('p', { class: 'intro', text: s.intro }), s.id==='live' && liveCards(), body, adv && !query && toggle, adv && !query && advBox, s.action === 'tts-test' && ttsTest(), s.action === 'anki' && ankiActions());
     });
     updaters.push(drawBar);
-    root.replaceChildren(banner, h('h2', { text: 'Settings', style: 'margin:0' }), ...sections, components(), fileRow(), bar);
+    content.replaceChildren(...[...sections, !query && category==='components' && components(), !query && category==='components' && fileRow(), query && !sections.length && h('p',{class:'settings-empty',text:'No settings match this search.'})].filter(el=>el!==false && el!==''));
+    if(!root.children.length) root.append(h('header',{class:'settings-head'},h('div',{},h('h2',{text:'Settings'}),h('p',{text:'Make Maru fit the way you read and play.'})),search),banner,h('div',{class:'settings-grid'},sidebar,content),bar);
     refreshAll();
   }
 
+  function liveCards() {
+    const selected=shown(draft,data.values,data.defaults,'continuous.translation.model');
+    const values=Object.fromEntries(LIVE_MODELS.filter(m=>m.path).map(m=>[m.path,shown(draft,data.values,data.defaults,m.path)]));
+    const cards=LIVE_MODELS.map(m=>h('button',{class:'live-card','aria-pressed':String(selected===m.id),onclick:()=>{
+      for(const [path,v] of Object.entries(modelEdits(m.id,values,data.live_models))) draft=withEdit(draft,data.values,path,v);
+      message=null;rebuildAll();
+    }},h('span',{class:'model-tag',text:m.tag}),h('strong',{text:m.name}),h('small',{text:m.note}),m.path && h('small',{text:values[m.path]||data.live_models?.find(f=>f.model===m.id)?.path?'Local file available':'Choose a local GGUF file below'})));
+    return h('div',{},h('div',{class:'live-cards','aria-label':'Live translation models'},cards),h('p',{class:'live-note',text:'The lightweight choices leave more GPU memory for a game, with more translation errors. Their tested GGUF files use smaller runtime buffers. Choose GPU or CPU below, save and restart. Only one owned local translation model is kept loaded. OCR and speech have separate memory costs.'}));
+  }
+
   // ───────────── speech test ─────────────
+
+  function serverTest(section) {
+    const fields = () => connectionFields(section, p => shown(draft,data.values,data.defaults,p));
+    const edit=(path,value)=>{draft=withEdit(draft,data.values,path,value);message=null;rows.get(path)?.rebuildField();refreshAll();};
+    if(!discoveryStates.has(section))discoveryStates.set(section,{});
+    const discoveryState=discoveryStates.get(section);
+    const discovery=discoveryControls({section,state:discoveryState,fields,edit,refresh:refreshAll,disposed:()=>disposed});
+    updaters.push(discovery.sync);
+    const result = h('span', {class:'res', role:'status', 'aria-live':'polite'});
+    const button = btn('Test connection', async () => {
+      let args = fields();
+      if (!canTestConnection(args) || connectionChecks.get(section)?.busy || discoveryState.busy) return;
+      const state = {key:connectionKey(args), busy:true, phase:needsServerDetection(args.endpoint) ? 'discovery' : 'inference', result:null};
+      connectionChecks.set(section,state);
+      refreshAll();
+      try {
+        await discovery.resolveForTest();
+        const current=fields();
+        if(disposed || args.modelName!==current.modelName || args.reasoningEffort!==current.reasoningEffort)throw Error('Settings changed during discovery. Test the current values again.');
+        args=current;state.key=connectionKey(args);state.phase='inference';refreshAll();
+        const reply = await invoke('test_model_connection', args);
+        if(reply.endpoint && state.key===connectionKey(fields()) && !disposed){
+          const paths=connectionPaths(section);state.key=connectionKey({...args,endpoint:reply.endpoint});edit(paths.endpoint,reply.endpoint);
+        }
+        state.result = {kind:'ok', text:`Connected · model replied in ${(reply.took_ms/1000).toFixed(1)} s: ${reply.reply}`};
+      } catch (e) {
+        if(state.phase==='discovery' && discoveryState.selected===fields().endpoint)state.key=connectionKey(fields());
+        state.result = {kind:'bad', text:`Connection failed: ${String(e)}`};
+      } finally {
+        state.busy=false;
+        refreshAll();
+      }
+    });
+    const sync = () => {
+      const args=fields(), state=connectionChecks.get(section);
+      // Editing invalidates the old result, even if the fields are changed back later.
+      if(state && state.key!==connectionKey(args)) state.result=null;
+      const reply=connectionResult(state,args);
+      button.disabled=!!state?.busy || !!discoveryState.busy || !canTestConnection(args);
+      button.textContent=state?.busy ? 'Testing…' : 'Test connection';
+      result.className=`res${reply?.kind==='bad' ? ' bad' : ''}`;
+      result.textContent=state?.busy ? state.phase==='discovery' ? 'Detecting the model server…' : 'Waiting for the server model (up to 60 s)…' : reply?.text ?? '';
+    };
+    updaters.push(sync);
+    return h('div',{class:'server-test', 'data-connection':section},
+      discovery.el,
+      h('div',{class:'help',text:'Tests the address and model entered above before saving. Sends only “안녕하세요.” with a translation instruction; the server may load its model.'}),
+      h('div',{class:'test-row'},button,result));
+  }
 
   function ttsTest() {
     const res = h('span', { class: 'res' });
@@ -367,13 +400,14 @@ export async function settingsView() {
       });
     const check = run('Check Anki', 'anki_check', (r) => r);
     const sync = run('Sync now', 'anki_sync', () => 'Asked Anki to sync with AnkiWeb. Anki shows its own progress.');
+    const progress = run('Refresh progress', 'anki_refresh', (n) => `Read ${n} words from Anki; local learning progress is updated.`);
     const sync_ = () => {
-      const dirty = Object.keys(draft).some((p) => p.startsWith('learning.anki.'));
-      check.disabled = sync.disabled = dirty;
-      check.title = sync.title = dirty ? 'Save first, then restart: these use the settings Maru started with' : '';
+      const dirty = ankiSettingsPending(draft,data.pending_restart);
+      check.disabled = sync.disabled = progress.disabled = dirty;
+      check.title = sync.title = progress.title = dirty ? 'Save first, then restart: these use the settings Maru started with' : '';
     };
     updaters.push(sync_);
-    return h('div', { class: 'test-row' }, check, sync, res);
+    return h('div', { class: 'test-row' }, check, sync, progress, res);
   }
 
   // ───────────── components and the file ─────────────
