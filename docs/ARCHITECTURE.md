@@ -240,6 +240,9 @@ read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
   `…several_senses…`, `…first_sense…`, `…spanish…`, `coverage…`), `anki.rs` (note type upgrade), `mine.test.mjs`,
   `tools/test_build_nikl.py`. Real Anki: M-41. The decision itself is two pure functions, `senses::questions` (what a
   model is asked) and `senses::decide` (what each word gets from the dictionary and the answers), shared with the
+  voice comparison likewise stays outside the app: `maru tts-eval --candidate` (`maru-cli/src/tts.rs::parse_candidate`)
+  puts other OpenAI-style speech servers on the listening page, and `tools/supertonic_server.py` is one for Supertonic 3.
+  The meaning
   comparison tools: `Engine::card_words` / `maru dict senses` (a line's words and senses), `maru bench --cards` (each
   connection decides them), `tools/rerank_senses.py` (a CPU reranker instead of a model) and
   `tools/build_card_review.py` (the blind review page and its separate key; `tools/test_card_review.py`).

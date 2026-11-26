@@ -150,6 +150,10 @@ enum Command {
         /// Your own sentences, one per line.
         #[arg(long, value_name = "FILE")]
         sentences: Option<PathBuf>,
+        /// Another speech server to put on the same page beside your voice, to compare; repeat for several.
+        /// `Name=http://address[,voice=…][,model=…]`, any OpenAI-style server (such as tools/supertonic_server.py).
+        #[arg(long, value_name = "NAME=URL")]
+        candidate: Vec<String>,
     },
     /// Install what Maru needs: with no subcommand, a wizard that picks it for this PC.
     Setup {
@@ -661,8 +665,8 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             tts::speak(&paths, &cfg, &read_text(&text)?, &out).await?;
             Ok(0)
         }
-        Command::TtsEval { out, voice, endpoint, api_key, model, language, instructions, sentences } => {
-            tts::eval(&paths, &cfg, tts::EvalOptions { out, voices: voice, endpoint, api_key, model, language, instructions, sentences_file: sentences }).await?;
+        Command::TtsEval { out, voice, endpoint, api_key, model, language, instructions, sentences, candidate } => {
+            tts::eval(&paths, &cfg, tts::EvalOptions { out, voices: voice, endpoint, api_key, model, language, instructions, sentences_file: sentences, candidates: candidate }).await?;
             Ok(0)
         }
         Command::Setup { cmd } => {
