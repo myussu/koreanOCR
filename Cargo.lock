@@ -1681,6 +1681,7 @@ dependencies = [
  "maru-srs",
  "maru-tts",
  "reqwest",
+ "serde",
  "serde_json",
  "tar",
  "tokio",

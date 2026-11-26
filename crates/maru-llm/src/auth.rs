@@ -1,4 +1,5 @@
-//! Authentication and Azure's v1 request dialect; ordinary local servers keep their requests.
+//! Authentication and each hosted service's request dialect (Azure, Gemini, Anthropic's OpenAI-compatible
+//! endpoint); ordinary local servers keep their requests.
 use crate::{LlmError, Result};
 use maru_core::config::LlmConfig;
 use maru_core::external_servers::{ServerKey, ServerProvider};
@@ -9,7 +10,17 @@ use serde_json::Value;
 pub(crate) struct Authentication {
     pub provider: ServerProvider,
     key: Option<ServerKey>,
+    /// Anthropic's OpenAI-compatible endpoint, saved as an ordinary OpenAI-compatible server: it is told apart by
+    /// its address, so a connection saved before Maru knew about it works without being edited.
+    anthropic: bool,
 }
+
+/// `https://api.anthropic.com`, with or without `/v1`.
+fn is_anthropic(root: &str) -> bool {
+    let host = root.split_once("://").map_or(root, |(_, rest)| rest).split(['/', ':']).next().unwrap_or_default();
+    host.eq_ignore_ascii_case("api.anthropic.com")
+}
+
 impl Authentication {
     pub fn from_config(cfg: &LlmConfig, root: &str) -> Self {
         if cfg.endpoint.is_none() {
@@ -21,6 +32,7 @@ impl Authentication {
                 .api_key
                 .clone()
                 .filter(|key| !key.as_str().trim().is_empty()),
+            anthropic: cfg.provider == ServerProvider::Openai && is_anthropic(root),
         };
         if cfg
             .endpoint
@@ -36,7 +48,7 @@ impl Authentication {
     }
     /// A hosted API: no `/health`, no Ollama routes or fields, and it always needs a key.
     pub fn cloud(&self) -> bool {
-        matches!(self.provider, ServerProvider::Azure | ServerProvider::Gemini)
+        matches!(self.provider, ServerProvider::Azure | ServerProvider::Gemini) || self.anthropic
     }
     pub fn root(&self, root: &str) -> String {
         if self.provider == ServerProvider::Gemini {
@@ -56,6 +68,10 @@ impl Authentication {
     pub fn chat_route(&self) -> &'static str {
         if self.provider == ServerProvider::Gemini { "/chat/completions" } else { "/v1/chat/completions" }
     }
+    /// Where the list of models lives under [`Self::root`].
+    pub fn models_route(&self) -> &'static str {
+        if self.provider == ServerProvider::Gemini { "/models" } else { "/v1/models" }
+    }
     pub fn request(&self, request: RequestBuilder) -> Result<RequestBuilder> {
         let Some(key) = &self.key else {
             if self.provider == ServerProvider::Azure {
@@ -65,6 +81,9 @@ impl Authentication {
             }
             if self.provider == ServerProvider::Gemini {
                 return Err(LlmError::Api("Enter the Gemini API key in Settings.".into()));
+            }
+            if self.anthropic {
+                return Err(LlmError::Api("Enter the Anthropic API key in Settings.".into()));
             }
             return Ok(request);
         };
@@ -83,6 +102,12 @@ impl Authentication {
         let Some(fields) = body.as_object_mut() else { return };
         if self.cloud() {
             fields.remove("keep_alive");
+        }
+        if self.anthropic {
+            // Current Claude models answer 400 to any temperature below 1, and the endpoint ignores
+            // `reasoning_effort`: without them the first request of every run is not wasted on a refusal.
+            fields.remove("temperature");
+            fields.remove("reasoning_effort");
         }
         if self.provider == ServerProvider::Azure {
             if let Some(limit) = fields.remove("max_tokens") {
@@ -107,6 +132,36 @@ impl Authentication {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn claude(endpoint: &str, key: Option<&str>) -> Authentication {
+        let cfg = LlmConfig { endpoint: Some(endpoint.into()), api_key: key.map(|k| k.to_string().into()), ..Default::default() };
+        Authentication::from_config(&cfg, endpoint)
+    }
+
+    #[test]
+    fn anthropics_compatible_endpoint_is_a_hosted_service_not_a_local_server() {
+        for endpoint in ["https://api.anthropic.com", "https://api.anthropic.com/v1/", "https://API.anthropic.com/v1"] {
+            let auth = claude(endpoint, Some("sk-test"));
+            assert!(auth.cloud(), "{endpoint}: no health probe, no keep-alive, no Ollama routes");
+            assert_eq!((auth.root(endpoint).to_lowercase().as_str(), auth.chat_route()), ("https://api.anthropic.com", "/v1/chat/completions"));
+            let mut body = json!({ "model": "claude-sonnet-5-5", "stream": true, "temperature": 0.1, "max_tokens": 80, "reasoning_effort": "none", "keep_alive": "15m", "stream_options": { "include_usage": true } });
+            auth.body(&mut body);
+            assert_eq!(body, json!({ "model": "claude-sonnet-5-5", "stream": true, "max_tokens": 80, "stream_options": { "include_usage": true } }), "what current Claude models refuse or ignore is left out");
+        }
+        let missing = claude("https://api.anthropic.com", None).request(reqwest::Client::new().get("https://api.anthropic.com")).unwrap_err().to_string();
+        assert!(missing.contains("Anthropic API key"), "{missing}");
+    }
+
+    #[test]
+    fn another_openai_compatible_server_keeps_its_fields_whatever_its_name() {
+        for endpoint in ["http://192.168.1.20:11434", "https://anthropic.example.org", "https://api.anthropic.com.example.org"] {
+            let auth = claude(endpoint, None);
+            assert!(!auth.cloud(), "{endpoint}");
+            let mut body = json!({ "temperature": 0.1, "reasoning_effort": "none", "keep_alive": "15m" });
+            auth.body(&mut body);
+            assert_eq!(body, json!({ "temperature": 0.1, "reasoning_effort": "none", "keep_alive": "15m" }));
+        }
+    }
     #[tokio::test]
     async fn an_explicit_different_client_root_does_not_inherit_a_configured_cloud_key() {
         let server = crate::testing::spawn_mock(|_, _| crate::testing::MockResponse {
@@ -273,6 +328,7 @@ mod tests {
         let auth = Authentication {
             provider: ServerProvider::Azure,
             key: None,
+            ..Default::default()
         };
         for base in [
             "https://example.azure.com",
@@ -290,7 +346,7 @@ mod tests {
     }
     #[test]
     fn gemini_uses_its_versioned_openai_route_and_keeps_sampling_and_thinking_fields() {
-        let auth = Authentication { provider: ServerProvider::Gemini, key: Some("k".to_string().into()) };
+        let auth = Authentication { provider: ServerProvider::Gemini, key: Some("k".to_string().into()), ..Default::default() };
         for base in ["https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta/openai/"] {
             assert_eq!(auth.root(base), "https://generativelanguage.googleapis.com/v1beta/openai");
         }
@@ -325,6 +381,7 @@ mod tests {
             let auth = Authentication {
                 provider,
                 key: Some("private-key".to_string().into()),
+                ..Default::default()
             };
             let request = auth
                 .request(

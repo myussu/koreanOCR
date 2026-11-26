@@ -551,6 +551,12 @@ plus additive `provider`/`api_key` (or `snapshot_provider`/`snapshot_api_key`); 
 Only library edits apply live; active connection changes retain Save/restart. The settings patch accepts inline tables
 only for the new library array and preserves unrelated comments. Legacy configs default to no keys/library and the old
 OpenAI-compatible protocol. Keys serialize into local config, but Debug and authenticated error output redact them.
+Anthropic's OpenAI-compatible endpoint has no provider of its own: a server saved as OpenAI-compatible whose host is
+`api.anthropic.com` is recognised by `auth.rs` and handled as a hosted service (key required; `temperature`,
+`reasoning_effort` and `keep_alive` left out of the body; no `/health` probe, hold or release), so a connection saved
+before this works unedited. `LlmClient::{counting_tokens, tokens_used, list_models}` are additive and used only by the
+CLI (`maru-cli/src/connections.rs`: `maru connection list|test|models`, `maru bench --live --connection`): a counting
+client asks for `stream_options.include_usage` and adds up the last count of each reply; other clients send what they did.
 `maru-llm/auth.rs` attaches Bearer or Azure `api-key` headers, disables redirects when carrying a key, and normalizes
 Azure resource/v1 roots and Gemini's `/v1beta/openai` base (whose chat route has no `/v1`: `Authentication::chat_route`).
 Azure chat uses `max_completion_tokens`; default `none` reasoning is omitted for Azure. Hosted providers (`cloud()`:
