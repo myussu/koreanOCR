@@ -526,6 +526,49 @@ See [M-31](docs/MANUAL_TESTS.md#m-31-borderless-controls-wheel-and-saved-area-re
 See [M-32](docs/MANUAL_TESTS.md#m-32-wheel-manager-handoff-and-manual-reading-feedback) for manager focus,
 controller behavior and manual-reading feedback checks.
 
+## Building a test set from your own games
+
+To find out whether an OCR change really helps *your* games, you need a few hundred subtitles with their true text. Turn on
+Settings → Live subtitles → Advanced → **Save the subtitles it reads** (`[continuous] save_reads = true`), restart live mode and play: every line
+the watcher reads is saved as a picture plus the reader's draft text under `<data folder>\evalset\raw\<game>\` (`maru doctor` prints the data folder).
+Nothing leaves your PC and nothing is saved while the setting is off. The pictures are the raw material; the true text is still written by you:
+
+1. *(Optional, recommended)* Get a second opinion on every picture: `maru eval-ocr <data folder>\evalset\raw --engine paddle-vl --write-drafts`
+   (needs `maru setup ocr-vl`; it writes `name.paddle-vl.txt` beside each unlabelled picture and scores nothing).
+2. Open `tools\label_review.html` in Edge or Chrome, press **Open the folder…** and pick `evalset\raw`. For each picture the box starts with the
+   strongest reading; fix it so it says exactly what is on screen and press **Enter**. Pictures where the readers disagree come first, because
+   that is where a draft is most likely to be wrong. **Alt+U** marks a picture you cannot read. Labels are saved as `name.txt` next to the picture.
+3. Score on it: `maru eval-ocr <data folder>\evalset\raw --engine paddle` (it reads the game folders below it).
+
+`tools/sample_subtitle_frames.py` makes the same kind of pictures from a screen recording (and covers subtitles the watcher never noticed).
+
+**From recordings, without typing every line first.** `python tools/find_subtitles.py clip.mp4 --band 200:760:1520:300 --want 110 --out found.txt`
+finds the moments when lettering holds still in the lower part of the picture (by its pixels, not by OCR, so the test is not
+chosen by the reader being tested) and `python tools/sample_subtitle_frames.py clip.mp4 found.txt --crop x:y:w:h --out <data
+folder>\evalset\raw\<game> --frames 1 --prefix a` cuts one unlabelled picture per moment (needs ffmpeg and numpy). Then let
+readers draft them and keep what two independent ones agree on as a *provisional* label:
+
+```
+maru eval-ocr <set> --engine paddle hybrid --write-drafts
+maru eval-ocr <set> --engine connection --connection "Claude=claude-sonnet-5-5" --write-drafts --draft-tag outside
+python tools/provisional_labels.py <set> --outside outside --local hybrid paddle --set-aside <data folder>\evalset\set-aside
+```
+
+The second command **sends the pictures to that hosted service** (a saved connection, see `maru connection list`) and prints the
+tokens it used; leave it out to keep everything on this PC, and label by hand. A provisional label (`name.provisional.txt`) is
+text the outside reader and a local reader both read, ignoring spaces and punctuation: nobody has looked at it, and the pictures
+readers agree on are the easy ones. `maru eval-ocr` ignores it unless you ask (`--labels provisional` or `all`) and then says
+so on every table. `tools\label_review.html` starts each box with it, so confirming is one press of **Enter**; what you confirm
+becomes `name.txt` and counts as yours.
+
+**Comparing OCR pieces.** `python tools/compare_ocr.py <data folder>\evalset\raw` scores today's setup and every candidate
+whose files are on this PC, one after another, and prints for each: letter error, exact lines, missed lines, lost digits,
+flipped negations, time per picture (median and 95th percentile), peak memory and video memory, game by game, and how many
+subtitles it reads better and worse than today's with a sign test. It takes about half an hour for 550 pictures;
+`--tables` prints the tables again from the saved runs, `--only NAME` runs a few (`maru eval-report today.json other.json
+--split held-out` does the same for any reports saved with `--save-report`). Close games first, or the times mean
+little. What was measured so far, and why nothing was switched on, is in [docs/reports/run-3.md](docs/reports/run-3.md).
+
 ## Game menus: screen labels
 
 Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless-windowed games; an exclusive-fullscreen game cannot be drawn over), finds every piece of Korean text, and puts a short English label beside each.
@@ -582,6 +625,26 @@ On a first set of Korean screenshots PaddleOCR-VL misread far less than PP-OCR (
 blocks of text; a general chat model (Gemma 4) "corrected" clean text into different sentences and is not usable as OCR.
 `hybrid` runs PP-OCR (lines and positions) and PaddleOCR-VL (whole-image reading) together and matches them by text.
 (Feeding the vision model one crop per line was tried and was much worse: crops carry pieces of neighbouring lines.)
+
+To score PP-OCR on **your game's subtitles** (the kind of picture live mode reads), build a labelled set (see *Building a test set* below), then:
+
+* `maru eval-ocr <set> --engine paddle` prints the pictures it got wrong and a summary: **letter error** (spaces and punctuation ignored, because a
+  missing comma does not change a translation; the rate with punctuation is shown beside it), exact lines, missed lines, lost digits, and lines where a
+  negation was lost or added. Several frames of one subtitle count once, and the result is broken down by game (one folder each), by the tags you gave
+  pictures, and by a fixed dev / held-out split that keeps a whole scene on one side (`--split dev` to experiment, `--split held-out` to judge).
+* To see whether a change helps: `--save-report before.json` first, make the change, then `--compare before.json`. It counts how many *subtitles* got
+  better and worse and gives a sign test, because a lower average alone can be a few lucky lines. Several engines in one run are compared the same way.
+* `--scale 2` makes PP-OCR enlarge each picture first, as the experimental `[continuous] ocr_scale = 2` does for live subtitles (default `1`, off). On the
+  one cutscene tried it made no real difference (slightly worse), so it stays off until a test on your own games shows a clear gain.
+
+One run can swap a piece of the reader to try it: `--det FILE` (another detector), `--rec FILE --dict FILE` (another
+recogniser and its character list), `--det-tuning 0.2,0.45,1.4` (the detector's own thresholds), `--device directml:0`,
+`--reader-dir FOLDER` (another reading model for `hybrid` and `paddle-vl`: one `.gguf`, its `mmproj` `.gguf` and, if it has
+one, `chat_template.jinja`; `--vlm-prompt` gives its instruction, `--reader-html` strips the tags of one that answers in HTML).
+To keep one, the same choices exist as settings under `[ocr]` (`det_model`, `rec_model`, `dict_path`, `det_score_threshold`,
+`det_box_threshold`, `det_unclip_ratio`, `reader_dir`, `reader_prompt`, `reader_args`, `reader_html`; see
+`docs/config.example.toml`). They are unset by default, and the app has not been run with any of them yet.
+
 If a model will not start, run it yourself and use `--engine endpoint --vlm-endpoint http://127.0.0.1:8080`
 (`--vlm-args "…"` passes extra flags such as `--jinja --chat-template-file …`). Vision models return text only, no word
 positions, so they are a candidate for a "double-check" mode rather than a replacement for PP-OCR's geometry.

@@ -270,6 +270,22 @@ pub struct OcrConfig {
     /// CPU threads PP-OCR may use for one read. 0 = ONNX Runtime's choice (every core: the quickest single read,
     /// but live subtitles then compete with the game for all of them).
     pub threads: u32,
+    /// The detector's own tuning, for a detector file made with other values than PP-OCRv5's: how sure a pixel must be
+    /// (0.3), how sure a whole box (0.6), and how far a box is widened around its text (2.0). PP-OCRv6 detectors are
+    /// published with 0.2, 0.45 and 1.4. Unset keeps the usual values.
+    pub det_score_threshold: Option<f32>,
+    pub det_box_threshold: Option<f32>,
+    pub det_unclip_ratio: Option<f32>,
+    /// A folder with another reading model to pair with PP-OCR in place of PaddleOCR-VL-1.5: one `.gguf`, its projector
+    /// (a `.gguf` with `mmproj` in its name) and, if the model needs one, `chat_template.jinja`. Unset uses the model
+    /// `maru setup ocr-vl` installs.
+    pub reader_dir: Option<PathBuf>,
+    /// The instruction that reading model was trained with (PaddleOCR-VL: `OCR:`, the default).
+    pub reader_prompt: Option<String>,
+    /// Extra `llama-server` arguments that model needs.
+    pub reader_args: Vec<String>,
+    /// That model answers in HTML (Surya does): Maru takes the tags out.
+    pub reader_html: bool,
 }
 
 impl Default for OcrConfig {
@@ -283,6 +299,13 @@ impl Default for OcrConfig {
             min_confidence: 0.80,
             vision_reader: true,
             threads: 0,
+            det_score_threshold: None,
+            det_box_threshold: None,
+            det_unclip_ratio: None,
+            reader_dir: None,
+            reader_prompt: None,
+            reader_args: Vec::new(),
+            reader_html: false,
         }
     }
 }
@@ -486,11 +509,21 @@ pub struct ContinuousConfig {
     /// Optional local model for live subtitles; main preserves existing behaviour.
     #[serde(default)]
     pub translation: crate::live_model::LiveTranslationConfig,
+    /// PP-OCR reads the subtitle area at this many times its size (1 = as it is, the default). A tight strip around a
+    /// subtitle is tall enough to escape the automatic enlargement small crops get, while its lettering is still small.
+    /// Experimental and not shown to help: on one cutscene, scored without spaces and punctuation, 2 was better on 2 subtitles and
+    /// worse on 4 of 13 (an earlier "gain" was punctuation). Measure it on your own game (`maru eval-ocr <folder> --scale 2
+    /// --compare <report>`) before turning it on.
+    pub ocr_scale: f32,
+    /// Keep a picture and a draft text file of every line the watcher reads, under `<data>/evalset/raw/<game>/`, so you can
+    /// write down what the subtitles really say and score OCR changes on your own games. Off by default; nothing leaves the
+    /// PC. See docs/MANUAL_TESTS.md (M-48).
+    pub save_reads: bool,
 }
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false, translation: Default::default() }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false, translation: Default::default(), ocr_scale: 1.0, save_reads: false }
     }
 }
 

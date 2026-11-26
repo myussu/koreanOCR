@@ -21,6 +21,7 @@ fn engine() -> Option<PaddleOcr> {
         device: std::env::var("MARU_TEST_OCR_DEVICE").unwrap_or_else(|_| "cpu".into()),
         detect_side: std::env::var("MARU_TEST_OCR_SIDE").ok().and_then(|n| n.parse().ok()),
         threads: std::env::var("MARU_TEST_OCR_THREADS").ok().and_then(|n| n.parse().ok()),
+        det_tuning: Default::default(),
     };
     Some(PaddleOcr::load(&cfg).expect("models load"))
 }

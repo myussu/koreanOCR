@@ -48,6 +48,7 @@ mod reading_change;
 pub mod respace;
 pub mod vision;
 pub mod hardware;
+pub mod harvest;
 pub mod hybrid_ocr;
 pub mod joins;
 pub mod plan;

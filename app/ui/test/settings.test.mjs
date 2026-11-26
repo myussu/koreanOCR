@@ -32,6 +32,17 @@ test('internal names are gone from what the page says', () => {
   }
 });
 
+test('saving what is read and the enlargement sit with live subtitles, among the settings that rarely change', () => {
+  const live = SECTIONS.find((s) => s.id === 'live').fields;
+  for (const path of ['continuous.save_reads', 'continuous.ocr_scale']) {
+    const f = live.find((x) => x.path === path);
+    assert.ok(f?.advanced, `${path} is an advanced setting of Live subtitles`);
+    assert.deepEqual(f.uses, [FEATURES.live]);
+  }
+  assert.equal(controlKind(field('continuous.save_reads')), 'switch');
+  assert.equal(controlKind(field('continuous.ocr_scale')), 'typed');
+});
+
 test('there are three kinds of control, and a choice is never a drop-down', () => {
   assert.equal(controlKind(field('learning.gloss_mode')), 'choice');
   assert.equal(controlKind(field('tasks.live.connection')), 'choice');

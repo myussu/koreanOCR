@@ -29,6 +29,10 @@ pub struct VlmOcr {
     root: String,
     cfg: LlmConfig,
     prompt: String,
+    /// `(replies, input tokens, output tokens)` the server reported, when asked to count ([`VlmOcr::counting_tokens`]).
+    used: Option<std::sync::Mutex<(u64, u64, u64)>>,
+    /// The model answers in HTML (`<p>…<br/>…</p>`): its tags are taken out before the text is used.
+    html: bool,
 }
 
 impl VlmOcr {
@@ -38,7 +42,24 @@ impl VlmOcr {
         cfg.temperature = 0.0;
         cfg.max_tokens = cfg.max_tokens.max(1024);
         cfg.request_timeout_secs = cfg.request_timeout_secs.max(120);
-        Self { root: root.to_string(), cfg, prompt: prompt.to_string() }
+        Self { root: root.to_string(), cfg, prompt: prompt.to_string(), used: None, html: false }
+    }
+
+    /// For a model that answers in HTML (Surya): read its `<br>` as line breaks and drop the other tags.
+    pub fn answering_html(mut self, html: bool) -> Self {
+        self.html = html;
+        self
+    }
+
+    /// Ask the server for token counts on every read, to add up what reading a set of pictures with a hosted model cost.
+    pub fn counting_tokens(mut self) -> Self {
+        self.used = Some(Default::default());
+        self
+    }
+
+    /// `(replies, input tokens, output tokens)` reported so far; zeros unless [`Self::counting_tokens`] was asked for.
+    pub fn tokens_used(&self) -> (u64, u64, u64) {
+        self.used.as_ref().map(|u| *u.lock().unwrap_or_else(|p| p.into_inner())).unwrap_or_default()
     }
 }
 
@@ -51,23 +72,63 @@ impl OcrEngine for VlmOcr {
         let url = data_url(image).map_err(OcrError::Run)?;
         let messages = [Message::user_with_image(self.prompt.clone(), url)];
         let opts = ChatOpts { max_tokens: Some(self.cfg.max_tokens), temperature: Some(0.0), stop: Vec::new(), log_timings: false };
-        let (root, cfg) = (self.root.clone(), self.cfg.clone());
+        let (root, cfg, count) = (self.root.clone(), self.cfg.clone(), self.used.is_some());
         // The engine trait is synchronous and may be called from inside a Tokio runtime, so the
         // request gets its own thread and a private current-thread runtime (and a fresh client,
         // whose connection pool must not outlive that runtime).
         let text = std::thread::scope(|scope| {
             scope
-                .spawn(move || -> std::result::Result<String, String> {
+                .spawn(move || -> std::result::Result<(String, (u64, u64, u64)), String> {
                     let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|e| e.to_string())?;
                     let client = LlmClient::new(&root, &cfg);
-                    rt.block_on(client.stream_chat(&messages, &opts, &mut |_| {})).map_err(|e| e.to_string())
+                    let client = if count { client.counting_tokens() } else { client };
+                    let text = rt.block_on(client.stream_chat(&messages, &opts, &mut |_| {})).map_err(|e| e.to_string())?;
+                    let used = client.tokens_used();
+                    Ok((text, (used.replies, used.input, used.output)))
                 })
                 .join()
                 .unwrap_or_else(|_| Err("the OCR request thread panicked".into()))
         })
         .map_err(OcrError::Run)?;
+        let (text, spent) = text;
+        if let Some(used) = &self.used {
+            let mut total = used.lock().unwrap_or_else(|p| p.into_inner());
+            *total = (total.0 + spent.0, total.1 + spent.1, total.2 + spent.2);
+        }
+        let text = if self.html { strip_markup(&text) } else { text };
         Ok(output_from_text(&text, image.width() as f32, image.height() as f32))
     }
+}
+
+/// The text of a small piece of HTML: `<br>` and the end of a paragraph become line breaks, other tags and a model's
+/// leftover end marker (`<|im_end|>`) go, and the few escaped characters come back. Anything that is not a tag
+/// (`3 < 5`, `<공격>`) is left as it is.
+pub fn strip_markup(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    let mut rest = html;
+    while let Some(open) = rest.find('<') {
+        out.push_str(&rest[..open]);
+        let after = &rest[open + 1..];
+        let tag_end = after.find('>').filter(|end| {
+            let inside = after[..*end].trim_start_matches('/');
+            inside.starts_with(|c: char| c.is_ascii_alphabetic() || c == '|') && !inside.contains('<')
+        });
+        match tag_end {
+            Some(end) => {
+                let name = after[..end].trim_start_matches('/').split(|c: char| !c.is_ascii_alphanumeric()).next().unwrap_or("").to_ascii_lowercase();
+                if name == "br" || (after.starts_with('/') && matches!(name.as_str(), "p" | "div" | "li" | "tr" | "h1" | "h2" | "h3" | "h4")) {
+                    out.push('\n');
+                }
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push('<');
+                rest = after;
+            }
+        }
+    }
+    out.push_str(rest);
+    out.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ")
 }
 
 /// The model's reply as OCR lines, with boxes spread evenly down the image.
@@ -127,6 +188,25 @@ fn base64(bytes: &[u8]) -> String {
 
 /// How long to wait for a vision model to download and load before giving up.
 pub const SERVER_READY: Duration = Duration::from_secs(900);
+
+#[cfg(test)]
+mod markup_tests {
+    use super::strip_markup;
+
+    #[test]
+    fn html_from_a_reading_model_becomes_plain_lines() {
+        assert_eq!(strip_markup("<p>폐하<br/>어제 제47구가 봉쇄됐습니다</p>"), "폐하\n어제 제47구가 봉쇄됐습니다\n");
+        assert_eq!(strip_markup("<p>모든 피해를<br><b>니웬</b>에 두 번째 기회를</p><|im_end|>").trim(), "모든 피해를\n니웬에 두 번째 기회를");
+        assert_eq!(strip_markup("<div data-label=\"Text\" data-bbox=\"0 0 10 10\">가 &amp; 나</div>").trim(), "가 & 나");
+    }
+
+    #[test]
+    fn what_is_not_a_tag_is_kept() {
+        assert_eq!(strip_markup("3 < 5 그리고 <공격> 버튼"), "3 < 5 그리고 <공격> 버튼");
+        assert_eq!(strip_markup("그냥 글"), "그냥 글");
+        assert_eq!(strip_markup("끝이 없는 < 표시"), "끝이 없는 < 표시");
+    }
+}
 
 #[cfg(test)]
 mod tests {

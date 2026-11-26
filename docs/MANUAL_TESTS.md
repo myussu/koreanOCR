@@ -167,6 +167,34 @@ screen capture, OCR and the app's other model resources, so its figures are not 
 **Why unverified:** fake-server tests establish scheduling and OCR isolation; the optional real-model recording replay can establish
 timings on that video, but neither exercises physical-screen capture, the overlay or game rendering during a real cutscene.
 
+## M-48 Save what you read (raw material for a test set)
+**Needs:** live subtitles working (M-3) and a cutscene with Korean subtitles.
+**Steps:** Settings → Live subtitles → Advanced → **Save the subtitles it reads**, restart live mode, watch a minute or two of a cutscene, then open
+`<data folder>\evalset\raw\<program name>\`.
+**Expect:** one `.png` and one `.json` per subtitle line the band showed (no repeats of the same line); the picture is the subtitle strip; the `.json`
+`draft` is what the band translated from; with the setting off, nothing new appears; playback does not stutter more than without it.
+**Bring:** the folder's file count against the number of lines you saw, one sample picture with its `.json`, and any frame drops you noticed.
+**Why unverified:** tested against a fake screen and fake reader only (pictures and drafts match the reported lines); not run on the real PC or with a real game.
+
+## M-49 Labelling saved pictures (the review page)
+**Needs:** a folder of pictures from M-48 on the real PC, Edge or Chrome, and (optional) PaddleOCR-VL installed (`maru setup ocr-vl`).
+**Steps:** `maru eval-ocr <data>\evalset\raw --engine paddle-vl --write-drafts`; open `tools\label_review.html`, press **Open the folder…**, pick `evalset\raw`
+(allow editing when the browser asks); label ten pictures with Enter, mark one with Alt+U, close the tab, reopen the folder.
+**Expect:** pictures where the readers differ come first; after reopening, the ones you did are counted as done and `.txt`, `.unreadable` files sit beside the pictures;
+the Korean typing box takes IME input without Enter confirming half a syllable; `maru eval-ocr <data>\evalset\raw --engine paddle` scores the labelled ones.
+**Bring:** the count line at the top of the page after ten pictures, and anything that was awkward to type or read.
+**Why unverified:** checked in Chromium on Linux against a stand-in for the folder picker (reading, writing and removing real files) and its `?demo` mode; the real folder picker, Windows paths and IME typing were not run.
+
+## M-50 Does enlarging the subtitle picture help PP-OCR on your game?
+**Needs:** labelled pictures of your game's subtitles (M-48 and M-49, or `tools/sample_subtitle_frames.py` on a recording), and the PP-OCR models.
+**Steps:** `maru eval-ocr <set> --engine paddle --save-report base.json`, then `maru eval-ocr <set> --engine paddle --scale 2 --compare base.json`
+(also `--scale 1.5`). Use `--split dev` to try things and `--split held-out` to judge.
+**Expect:** the comparison says "better on" clearly more subtitles than "worse on", with a sign-test p below 0.05, before you set `[continuous] ocr_scale = 2`.
+**Bring:** both summaries, the comparison, and what the game and its subtitle font look like (outlined, shadowed, plain).
+**Why unverified:** Claude measured it once, on one recorded cutscene (13 distinct subtitles, 49 pictures, Linux CPU, ONNX Runtime 1.31): letter error
+1.4% at scale 1 and 1.8% at scale 2 (better on 2 subtitles, worse on 4, the same on 7; p = 0.69). Earlier numbers that looked like a gain (4.5% down to
+3.9%) counted missing commas and question marks as reading errors and moved with the resize method; they are withdrawn. Not run on Windows, a real game or the live path.
+
 ---
 
 ## M-12 Live OCR duplicates and subtitle area
@@ -1240,6 +1268,73 @@ a meaning is *right* needs a reader. The Kiwi review page is unmarked.
    you choosing it. Judge the suggestions: in the run several were not dictionary forms.
 3. Mark `%APPDATA%\maru\Maru\data\run-2\kiwi-review\index.html`: is each dictionary form right for the line?
 
+## M-51 Label the game-subtitle test set, then get final OCR numbers
+
+**Needs:** the set run 3 left in `%APPDATA%\maru\Maru\data\evalset\raw` (544 pictures cut from recordings of Elden
+Ring, Sekiro, Stellar Blade, Ori and Xenoblade), Edge or Chrome, and `maru` built (`cargo build --release -p maru-cli`).
+
+**Why it is unverified:** only the 30 Elden Ring lines (89 pictures) carry labels a person checked. 408 pictures have a
+*provisional* label (`name.provisional.txt`: a hosted reader and a local reader read the same letters) that nobody has
+looked at, and 47 have none. On the 30 checked lines the rule gave no wrong label (0 of 85 pictures), which says little
+about the other four games' fonts. Provisional labels also favour today's readers by construction: a picture only gets
+one when PP-OCR or the hybrid already read it right, so a better candidate cannot show there.
+
+1. Open `tools\label_review.html`, press **Open the folder…**, pick `evalset\raw` and allow editing. Pictures whose
+   readers disagree come first. **Expect** the box to start with the provisional text where there is one.
+2. For each picture make the box say exactly what is on screen and press **Enter**; **Alt+U** for a picture that is not
+   a subtitle (Ori's map screen with "필터: 전체", an empty strip). On about ten Ori pictures the box starts with an
+   English remark from the hosted reader instead of a transcription: those are the ones to mark with Alt+U.
+3. `python tools\compare_ocr.py "%APPDATA%\maru\Maru\data\evalset\raw"` with no game running (about half an hour; it
+   prints the same tables as the report, now on your labels only). `--tables` prints them again without re-reading.
+4. **Expect** today's setup first in each table and one row per candidate. A candidate is worth switching to only if,
+   in the held-out table, it is "better, unlikely to be chance" and its time and video memory are within a quarter of today's.
+
+**Record:** how many provisional labels you had to change (the page's count line), the three tables, and the games
+where a candidate wins or loses.
+
+## M-52 Another detector, recogniser or reading model in the app
+
+**Needs:** the candidate files run 3 downloaded under `%APPDATA%\maru\Maru\data\models\ocr-candidates\` and
+`…\models\vlm\paddleocr-vl-1.6\`.
+
+**Why it is unverified:** the `[ocr]` options `det_model`, `rec_model`, `dict_path`, `det_score_threshold`,
+`det_box_threshold`, `det_unclip_ratio`, `reader_dir`, `reader_prompt`, `reader_args` and `reader_html` were exercised
+only through `maru eval-ocr` and unit tests. The app has never started with any of them, so loading the reader on first
+use, releasing it, and the Status notes with another reader are untested.
+
+1. In `config.toml` under `[ocr]` add `reader_dir = "C:/Users/<you>/AppData/Roaming/maru/Maru/data/models/vlm/paddleocr-vl-1.6"`
+   and restart Maru. **Expect** Status to show the reading model loading as before, and a capture to be read.
+2. Point `reader_dir` at an empty folder and restart. **Expect** the note "no reading model in …; PP-OCR reads alone",
+   and captures still read (by PP-OCR).
+3. Add `det_model = "…/models/ocr-candidates/pp-ocrv5-mobile-det/det.onnx"`, restart, run live subtitles on a
+   cutscene. **Expect** lines as before; note whether any are missed that the usual detector finds.
+4. Remove the lines again. **Expect** Maru exactly as it was.
+
+**Record:** the Status notes after each restart and anything that failed to load.
+
+## M-53 The two test-set settings in Settings → Live subtitles
+
+**Needs:** the app.
+
+**Why it is unverified:** after the merge with `main` the page was only looked at in headless Edge with demo values
+(the search finds "Save the subtitles it reads" and "Enlarge the subtitle area before reading it" under Live
+subtitles; both are advanced settings). Nobody has clicked or saved either.
+
+1. Settings → search "save the subtitles". Turn it on, Save, restart, run live subtitles for a minute. **Expect**
+   pictures under `…\data\evalset\raw\<program>\` (M-48), and none after turning it off again.
+2. Search "enlarge". **Expect** the value 1; 2 is accepted, 4 is refused with a reason.
+
+## M-54 OCR times with no game running
+
+**Needs:** the labelled set (M-51).
+
+**Why it is unverified:** while run 3 measured, a game left open on the PC (`ssbu.exe`) was using a little over one
+processor core and about a seventh of the graphics card. Every engine was measured under the same load, so the
+comparison between them holds, but the absolute times per picture are probably a little slower than on an idle PC.
+
+1. Close every game, then `python tools\compare_ocr.py "%APPDATA%\maru\Maru\data\evalset\raw" --only "PP-OCR alone (also" "1.6"`.
+2. **Record** the p50 and p95 columns for today's setup and the two others, next to the report's.
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.
@@ -1263,3 +1358,5 @@ Add a line per test run. An empty log means **nothing below has been checked on 
 | 2026-11-26 | M-46 card voice candidates (`maru tts-eval`, 50 lines, speech made fresh) | run by the agent; RTX 5070 Ti PC; the installed `tts-server` (Vulkan); Qwen3-TTS 1.7B CustomVoice Q8 and 0.6B CustomVoice Q8 (968,588,544 bytes, Apache-2.0) | measured, not listened to | 1.7B: ready in 1.7 s, about 3.9 GB of GPU memory, 11.0 s to make 68.2 s of speech, 3 of 50 lines needed another take. 0.6B: ready in 1.1 to 1.7 s, 2.9 to 3.2 GB, 16.7 s to make 99.4 s of speech, 10 of 50 needed another take and 2 stayed too long; its clips are about 1.5 times longer with more silence. The smaller model was not faster and saved about 1 GB. Supertonic 3 was not measured again (its package is not installed). Nobody listened. |
 | 2026-11-26 | M-44 Claude through Anthropic's own API (`maru connection test "Claude+native=…"`, `maru bench --live -n 2`, 20 lines × 2 passes, one request at a time) | run by the agent; the owner's saved Claude connection asked through `/v1/messages` and through the compatible endpoint | passed; measured | Both answered 40 of 40. Median ms to the first word / whole line: Haiku 506 / 615 native against 544 / 644 compatible; Sonnet 790 / 1,249 against 762 / 1,296. Input read from the prompt cache: 0 in every run (Maru's system prompts are shorter than the service caches). The connection editor's new kind was not used in the app. |
 | 2026-11-26 | M-45 caption receiver on its own (`captions_listen` example and `curl` on a spare port) | run by the agent; no browser, no YouTube | passed for the receiver only | A Korean line was accepted and printed, the same cue again was answered `duplicate`, a wrong code got 401, a request with a web page's `Origin` got 403. The extension was never loaded in a browser. |
+| 2026-11-26 | M-51 a test set from recordings and the OCR candidates on it (`tools/find_subtitles.py`, `sample_subtitle_frames.py`, `maru eval-ocr`, `tools/provisional_labels.py`, `tools/compare_ocr.py`) | run by the agent; RTX 5070 Ti PC, PP-OCR on the CPU, a measuring home with default settings; a game left open (`ssbu.exe`) used about one core throughout; 544 pictures of five games: 89 with checked labels (30 Elden Ring lines), 408 with provisional labels nobody has looked at, 47 unlabelled | measured; provisional except the 30 lines | Nothing was adopted. On the 30 checked lines no candidate differs from today's hybrid beyond chance (hybrid 0.6% letter error, PP-OCR alone 0.3%). On provisional labels, held-out half (212 subtitles): PP-OCR alone better on 26 and worse on 13 than the hybrid (p = 0.053) at 98 ms against 166; the hybrid with PaddleOCR-VL-1.6 better on 17, worse on 6 (p = 0.035); PP-OCRv6 and v5 mobile detectors read like today's within chance and take 38 to 64 ms; GLM-OCR, Nanonets-OCR2 and Surya 2.5 as readers are worse. The agreement rule gave no wrong label on the checked lines (0 of 85 pictures). See `docs/reports/run-3.md`. Not checked: the provisional labels, times on an idle PC (M-54), any of this in the app (M-52) |
+| 2026-11-26 | M-53 the two test-set settings in Settings (`hub.html?demo=1&settings=live&q=…`) | run by the agent; headless Edge, demo values, mocked commands | loads | The search finds "Save the subtitles it reads" (a switch, off) and "Enlarge the subtitle area before reading it" (a number, 1) under Live subtitles. Nobody clicked or saved anything |

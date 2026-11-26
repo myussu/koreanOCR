@@ -5,14 +5,14 @@
 //! `-hf repo` lookup cannot be trusted to find them. We download them ourselves (`maru setup
 //! ocr-vl`) and start the server the way the model card does: `-m … --mmproj … --temp 0`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use image::RgbImage;
 use maru_core::Paths;
-use maru_core::config::LlmConfig;
+use maru_core::config::{LlmConfig, OcrConfig};
 use maru_llm::LlamaServer;
 use maru_ocr::{OcrEngine, OcrError, OcrOutput, Result};
 
@@ -53,27 +53,73 @@ pub fn base_config(llm: &LlmConfig) -> LlmConfig {
     }
 }
 
-/// How to launch PaddleOCR-VL, most likely to work first; empty if it is not installed.
-///
-/// The second plan adds the chat template shipped in the repo and drops flash attention (older
-/// llama.cpp builds crashed without the template). `extra` is appended to both.
-pub fn launch_plans(paths: &Paths, llm: &LlmConfig, extra: &[String]) -> Vec<LlmConfig> {
-    if !installed(paths) {
-        return Vec::new();
+/// The files of a reading model: its weights, its projector and, if it ships one, its chat template.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ReaderFiles {
+    pub model: PathBuf,
+    pub mmproj: PathBuf,
+    pub template: Option<PathBuf>,
+}
+
+/// The reading model in `dir` (`[ocr] reader_dir`): the one `.gguf` with `mmproj` in its name is the projector, the other
+/// `.gguf` the model. None unless there is exactly one of each (a folder with two models would be a guess).
+pub fn reader_in(dir: &Path) -> Option<ReaderFiles> {
+    let mut ggufs: Vec<PathBuf> = std::fs::read_dir(dir)
+        .ok()?
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| p.extension().is_some_and(|e| e.eq_ignore_ascii_case("gguf")) && p.metadata().is_ok_and(|m| m.len() > 0))
+        .collect();
+    ggufs.sort();
+    let is_mmproj = |p: &PathBuf| p.file_name().is_some_and(|n| n.to_string_lossy().to_lowercase().contains("mmproj"));
+    let (mmproj, model): (Vec<_>, Vec<_>) = ggufs.into_iter().partition(is_mmproj);
+    let ([mmproj], [model]) = (mmproj.as_slice(), model.as_slice()) else { return None };
+    let template = Some(dir.join(TEMPLATE_FILE)).filter(|t| t.metadata().is_ok_and(|m| m.len() > 0));
+    Some(ReaderFiles { model: model.clone(), mmproj: mmproj.clone(), template })
+}
+
+/// The reading model Maru pairs with PP-OCR: the folder in `[ocr] reader_dir` when one is set, else the installed
+/// PaddleOCR-VL-1.5. None when its files are not there.
+pub fn reader(paths: &Paths, ocr: &OcrConfig) -> Option<ReaderFiles> {
+    match &ocr.reader_dir {
+        Some(dir) => reader_in(dir),
+        None => installed(paths).then(|| {
+            let dir = model_dir(paths);
+            ReaderFiles { model: dir.join(MODEL_FILE), mmproj: dir.join(MMPROJ_FILE), template: Some(dir.join(TEMPLATE_FILE)) }
+        }),
     }
-    let dir = model_dir(paths);
+}
+
+/// How to launch the reading model the settings ask for (see [`reader`]), with its extra arguments; empty if it is not there.
+pub fn configured_plans(paths: &Paths, ocr: &OcrConfig, llm: &LlmConfig) -> Vec<LlmConfig> {
+    reader(paths, ocr).map(|files| launch_plans_for(&files, llm, &ocr.reader_args)).unwrap_or_default()
+}
+
+/// How to launch PaddleOCR-VL, most likely to work first; empty if it is not installed.
+pub fn launch_plans(paths: &Paths, llm: &LlmConfig, extra: &[String]) -> Vec<LlmConfig> {
+    reader(paths, &OcrConfig::default()).map(|files| launch_plans_for(&files, llm, extra)).unwrap_or_default()
+}
+
+/// How to launch a reading model, most likely to work first.
+///
+/// The second plan adds the chat template shipped with the model, when there is one, and drops flash attention (older
+/// llama.cpp builds crashed without the template). `extra` is appended to both.
+pub fn launch_plans_for(files: &ReaderFiles, llm: &LlmConfig, extra: &[String]) -> Vec<LlmConfig> {
     let mut base = base_config(llm);
-    base.model_path = Some(dir.join(MODEL_FILE));
+    base.model_path = Some(files.model.clone());
     let with = |args: &[String]| {
         let mut c = base.clone();
         c.extra_args = args.iter().chain(extra).cloned().collect();
         c
     };
-    let common = ["--mmproj".to_string(), dir.join(MMPROJ_FILE).display().to_string(), "--temp".into(), "0".into()];
-    let mut with_template = with(&common);
-    with_template.extra_args.extend(["--jinja".to_string(), "--chat-template-file".into(), dir.join(TEMPLATE_FILE).display().to_string()]);
-    with_template.flash_attn = false;
-    vec![with(&common), with_template]
+    let common = ["--mmproj".to_string(), files.mmproj.display().to_string(), "--temp".into(), "0".into()];
+    let mut plans = vec![with(&common)];
+    if let Some(template) = &files.template {
+        let mut with_template = with(&common);
+        with_template.extra_args.extend(["--jinja".to_string(), "--chat-template-file".into(), template.display().to_string()]);
+        with_template.flash_attn = false;
+        plans.push(with_template);
+    }
+    plans
 }
 
 /// Try each launch plan in turn; the first server that becomes ready wins.
@@ -174,6 +220,32 @@ mod tests {
         assert!(flag(&second, "--chat-template-file").unwrap().ends_with(TEMPLATE_FILE));
         assert!(second.contains(&"--jinja".to_string()) && second.contains(&"--no-warmup".to_string()));
         assert_eq!(flag(&second, "-fa"), Some("off"));
+    }
+
+    #[test]
+    fn another_reading_model_is_found_in_its_folder_and_launched_with_its_own_files() {
+        let paths = scratch("other-reader");
+        let dir = paths.models_dir.join("vlm").join("other");
+        std::fs::create_dir_all(&dir).unwrap();
+        let ocr = OcrConfig { reader_dir: Some(dir.clone()), reader_args: vec!["--special".into()], ..Default::default() };
+        assert!(reader(&paths, &ocr).is_none() && configured_plans(&paths, &ocr, &LlmConfig::default()).is_empty(), "an empty folder is not a model");
+        std::fs::write(dir.join("Reader-Q8_0.gguf"), b"x").unwrap();
+        assert!(reader(&paths, &ocr).is_none(), "a model without its projector is not usable");
+        std::fs::write(dir.join("mmproj-Reader-Q8_0.gguf"), b"x").unwrap();
+        let files = reader(&paths, &ocr).unwrap();
+        assert!(files.model.ends_with("Reader-Q8_0.gguf") && files.mmproj.ends_with("mmproj-Reader-Q8_0.gguf") && files.template.is_none());
+
+        let plans = configured_plans(&paths, &ocr, &LlmConfig::default());
+        assert_eq!(plans.len(), 1, "no chat template in the folder, so no second way to start it");
+        let args = maru_llm::build_args(&plans[0], &maru_llm::ModelSource::from_config(&plans[0]).unwrap());
+        assert!(flag(&args, "-m").unwrap().ends_with("Reader-Q8_0.gguf") && flag(&args, "--mmproj").unwrap().ends_with("mmproj-Reader-Q8_0.gguf"));
+        assert!(args.contains(&"--special".to_string()), "its extra arguments are passed on");
+
+        std::fs::write(dir.join(TEMPLATE_FILE), b"{{ x }}").unwrap();
+        assert_eq!(configured_plans(&paths, &ocr, &LlmConfig::default()).len(), 2);
+        std::fs::write(dir.join("Second-Q4.gguf"), b"x").unwrap();
+        assert!(reader(&paths, &ocr).is_none(), "two models in one folder: Maru does not guess");
+        assert!(reader(&paths, &OcrConfig::default()).is_none(), "and the installed PaddleOCR-VL is still judged by its own files");
     }
 
     #[test]

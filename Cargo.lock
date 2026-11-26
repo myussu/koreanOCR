@@ -1678,6 +1678,7 @@ dependencies = [
  "maru-lang",
  "maru-llm",
  "maru-ocr",
+ "maru-platform",
  "maru-srs",
  "maru-tts",
  "reqwest",

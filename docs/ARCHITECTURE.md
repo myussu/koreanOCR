@@ -505,7 +505,32 @@ stale/colliding IDs and game scope), `event.rs` backward JSON parsing, `scan-cor
   The window is created hidden, click-through, never focused, and excluded from screen capture so OCR never reads the translation back.
   `live_idle` hides it after the fade. History → Live subtitles (`hub.js`, `live-core::liveHistory`) sorts by capture ID with latency,
   even when requests finish out of order. Other history views retain their existing ordering.
-* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`, `cpu_ocr`, `max_in_flight`, `filter_ocr_jitter`).
+* **Save what you read** (`harvest.rs`, `continuous::spawn_with`): with `[continuous] save_reads` the watcher keeps, for every line it reports, the exact
+  picture the reader got (cloned before the read, only when the switch is on) and a `.json` with the draft text, program, title, confidence and timings,
+  under `<data>/evalset/raw/<game>/` (`Engine::set_harvest_dir`, set at boot). Written on a blocking thread so the next subtitle is not delayed. It is the
+  raw material for a labelled test set (`maru eval-ocr`); it only sees lines the watcher noticed, so it cannot measure missed subtitles.
+* **Test-set tools** (`tools/`): `label_review.html` + `label-review-core.js` (the page's pure decisions: normalising, disagreement ordering, file grouping; tested by
+  `app/ui/test/label-review-core.test.mjs`) is an offline page that uses the File System Access API (Edge/Chrome) to label saved pictures; it writes `name.txt` (the label),
+  `name.unreadable` and `name.tags` beside each picture and reads `name.json` (live draft) and `name.<engine>.txt` (drafts from `maru eval-ocr --write-drafts`).
+  `sample_subtitle_frames.py` cuts the same kind of pictures from a recording with ffmpeg. `maru eval-ocr` reads the folders below the one it is given and skips
+  `.unreadable` pictures (`tools::load_images`, `load_cases`, `write_drafts`). Scoring is in `maru-cli/src/evalreport.rs` (pure, tested): letter error ignoring spaces
+  and punctuation (the old rate is shown as "with punctuation"), means over distinct subtitles, per game / tag / dev-held-out split (a scene never straddles it; FNV hash
+  of the scene key, mixed before one bit is taken so that the scenes of one game fall on both sides; a saved report is halved
+  again from its pictures' names, `split_of_picture`), digit and negation counts, `--save-report` / `--compare` (subtitle-by-subtitle better/worse with a sign test).
+  Run 3 added, for comparing OCR pieces on a set cut from recordings: `find_subtitles.py` (finds when lettering holds still in the
+  subtitle band, by pixels and not by OCR, so the set is not chosen by the reader under test; writes `start end ?` rows),
+  `sample_subtitle_frames.py --prefix` (a `?` row gets a picture and no label; the prefix carries the five-minute scene the split
+  keeps whole), `provisional_labels.py` (`name.provisional.txt` where an outside reader's draft and a local one agree in letters;
+  `--check` applies the rule to labelled pictures; `--set-aside` moves empty pictures and repeats out) and `compare_ocr.py`
+  (one `eval-ocr` run per engine in its `CANDIDATES`, then the tables). In `maru eval-ocr`: `--det`, `--rec`, `--dict`,
+  `--det-tuning`, `--device`, `--reader-dir`, `--reader-html` (this run's pieces), `--engine hybrid-endpoint`,
+  `--engine connection --connection NAME` (a saved connection reads the pictures: they leave the PC; no engine is booted for
+  it and the tokens the service reports are printed), `--labels person|provisional|all` (`evalreport::Labels`; a provisional
+  label only stands in where no `name.txt` exists and tags the picture `provisional`), `--draft-tag`, `--draft-labelled`,
+  `--keep-drafts`, the 95th percentile and the peak memory and video memory of the program and its model server
+  (`tools::PeakWatch`, through `maru-platform`'s resource monitor). `eval-ocr` boots read-only. `maru eval-report a.json b.json …`
+  (`evalreport::tables`) prints saved runs as tables, overall, by game and against the first run, narrowed by `--split` / `--tag`.
+* **Config:** `[continuous]` (`interval_ms`, `stable_ms`, `linger_ms`, `context_lines`, `history_len`, `region`, `cpu_ocr`, `max_in_flight`, `filter_ocr_jitter`, `ocr_scale`, `save_reads`).
   New fields default to `false`/`0`, preserving existing files and behavior, and require restart.
 * **Tests:** `continuous.rs`, `change.rs`, `live_text.rs`, `live_lane.rs`, `pipeline.rs` (live lane, bounded admission, failure recovery, isolated OCR),
   `logic.rs`, `live.test.mjs`, `settings.test.mjs`, `prompts.rs`, `client.rs`. Optional `tests/live_recording.rs` runs the real watcher,
@@ -800,7 +825,8 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
 * **Real-PC check:** M-1, M-2.
 
 ### 4.11 OCR tiers and the lite profile
-`maru-ocr::OcrEngine` has PP-OCR (`paddle.rs`), Windows OCR (platform crate) and, in the engine, a vision reader
+`maru-ocr::OcrEngine` (`recognize`, plus the defaulted hint `recognize_scaled(image, min_scale)`: a detector may enlarge the picture first; live
+subtitles pass `[continuous] ocr_scale`, default 1 = no change; `HybridOcr` forwards it to the detector only, never to the reading model) has PP-OCR (`paddle.rs`), Windows OCR (platform crate) and, in the engine, a vision reader
 (`vlm_ocr.rs`, `vision.rs`: PaddleOCR-VL through its own `llama-server`) combined with PP-OCR by `hybrid_ocr.rs`
 (PP-OCR gives lines and positions, the reader gives better letters; matched by text). `respace.rs` restores dropped spaces.
 Windows builds include ONNX Runtime's DirectML provider (`maru-engine` enables `maru-ocr/directml`): `[ocr] device =
@@ -810,6 +836,16 @@ ONNX Runtime's intra-op threads (`paddle::session_config`). Measured and checked
 (`real_models.rs`: timing per device/threads) and `remote_model_tests.rs` (engine OCR on DirectML and the CPU fallback).
 `lite = true` (`Config::effective`, also `MARU_LITE=1`) turns the reading model off and swaps in the smaller translation model
 and one slot, for use beside a game. `bootstrap.rs` assembles all of this from what is installed.
+
+Every piece can be swapped by a setting, all unset by default (run 3 measured the candidates; nothing was adopted, see
+`docs/reports/run-3.md`): `[ocr] det_model` / `rec_model` / `dict_path` name other ONNX files; `det_score_threshold`,
+`det_box_threshold`, `det_unclip_ratio` (`paddle::DetTuning`) are the detector's tuning for a detector published with other
+values (giving oar-ocr any of them switches off the ones it applies to general text itself, so `PaddleOcr::load` repeats
+those: 0.3, 0.6, 2.0, longest side 960); `reader_dir` names a folder with another reading model
+(`vision::reader` / `reader_in`: exactly one `.gguf` and one `mmproj` `.gguf`, optionally `chat_template.jinja`;
+`configured_plans` launches it with `reader_args`), `reader_prompt` its instruction, and `reader_html` says it answers in HTML
+(`vlm_ocr::strip_markup`). With `reader_dir` set, the installed PaddleOCR-VL-1.5 is not used. Only `maru eval-ocr` has run
+these options with real models; the app has not (M-52).
 
 The app boots with `BootOptions::defer_models`; the CLI default remains eager. `deferred_models.rs` starts vision and
 speech only for their own requests, shares a single load across concurrent callers, and reports failures without
@@ -1039,6 +1075,9 @@ feedback adds no setting or database field; normal translation cache/history ret
 | `models/` | installers | OCR, reading model, TTS models; GGUF models are cached by `llama-server` |
 | `bin/` | `setup llm` | llama.cpp (**loose files only**; `kiwi/` and `tts/` are subfolders and must never be mixed in — their DLLs would replace llama.cpp's) |
 | `tts-cache/` | `maru-tts` | spoken sentences |
+| `evalset/raw/<game>/` | `maru-engine::harvest` | with `[continuous] save_reads`: `<secs>-<n>.png` (the picture the reader saw) + `.json` (draft text, program, window title, timings). Labels (`.txt`) are written by a person, never by Maru |
+| `evalset/raw/<game>/` (tools) | `tools/sample_subtitle_frames.py`, `maru eval-ocr --write-drafts`, `tools/provisional_labels.py` | pictures cut from a recording (`<prefix><nn>_s001_0.png`; `.txt` only for rows of a transcript a person checked, `.tags` beside them), `name.<reader>.txt` drafts, `name.provisional.txt` (two readers agreed; never read as a label unless `--labels provisional` or `all` is asked for) |
+| `evalset/set-aside/`, `evalset/reports/` | `tools/provisional_labels.py --set-aside`, `tools/compare_ocr.py` | pictures taken out of the set (no Korean in any reading, repeats) with their drafts; one saved run (`.json`, `.log`) per engine compared |
 | `maru-app.log` | `app/src-tauri/main.rs` | the overlay's log (previous run in `maru-app.previous.log`); live request phases/counts and optional model prompt/decode timings |
 | comparison `--out` (user-chosen folder) | `maru-llm::live_bench` | new folder with `records.jsonl`, `report.json`, `review.md` and server log tails; records preserve exact dialogue context; passes include prompt profile, request format and sampling; Sub/LMT profiles preserve output labels and partial failing streams; wrapper adds sibling GPU/full log files; no existing reports overwritten |
 | QuickMT diagnostic `--out` | `tools/bench_quickmt.py` | new records/report/review folder; runtime, compute type, threads, beams, corpus hash, warm-up and exact outputs; wrapper adds telemetry/logs; no app persistence |
