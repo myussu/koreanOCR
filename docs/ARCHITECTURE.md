@@ -515,7 +515,8 @@ stale/colliding IDs and game scope), `event.rs` backward JSON parsing, `scan-cor
   `sample_subtitle_frames.py` cuts the same kind of pictures from a recording with ffmpeg. `maru eval-ocr` reads the folders below the one it is given and skips
   `.unreadable` pictures (`tools::load_images`, `load_cases`, `write_drafts`). Scoring is in `maru-cli/src/evalreport.rs` (pure, tested): letter error ignoring spaces
   and punctuation (the old rate is shown as "with punctuation"), means over distinct subtitles, per game / tag / dev-held-out split (a scene never straddles it; FNV hash
-  of the scene key), digit and negation counts, `--save-report` / `--compare` (subtitle-by-subtitle better/worse with a sign test).
+  of the scene key, mixed before one bit is taken so that the scenes of one game fall on both sides; a saved report is halved
+  again from its pictures' names, `split_of_picture`), digit and negation counts, `--save-report` / `--compare` (subtitle-by-subtitle better/worse with a sign test).
   Run 3 added, for comparing OCR pieces on a set cut from recordings: `find_subtitles.py` (finds when lettering holds still in the
   subtitle band, by pixels and not by OCR, so the set is not chosen by the reader under test; writes `start end ?` rows),
   `sample_subtitle_frames.py --prefix` (a `?` row gets a picture and no label; the prefix carries the five-minute scene the split

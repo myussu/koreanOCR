@@ -167,7 +167,19 @@ pub fn split_of(scene: &str) -> Split {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x100000001b3);
     }
-    if (h >> 33) & 1 == 0 { Split::Dev } else { Split::Held }
+    // FNV alone leaves the last characters of the key out of its upper bits, and scenes of one game differ only there
+    // (`sb03`, `sb04`): with a bit taken straight from it, every scene of a game fell on the same side. Mix first.
+    h ^= h >> 29;
+    h = h.wrapping_mul(0xbf58476d1ce4e5b9);
+    h ^= h >> 32;
+    if h & 1 == 0 { Split::Dev } else { Split::Held }
+}
+
+/// Which half a picture is in, from its path in the test set (`game/name.png`).
+pub fn split_of_picture(rel: &str) -> Split {
+    let (game, file) = rel.rsplit_once('/').unwrap_or(("", rel));
+    let stem = file.rsplit_once('.').map_or(file, |(stem, _)| stem);
+    split_of(&scene_key(game, stem))
 }
 
 /// Everything known about a picture a person labelled.
@@ -353,7 +365,8 @@ pub fn from_json(value: &serde_json::Value) -> Option<(String, Vec<CaseResult>)>
                 rel: text("rel")?,
                 game: text("game")?,
                 tags: r.get("tags").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str().map(str::to_string)).collect()).unwrap_or_default(),
-                split: if text("split").as_deref() == Some("held-out") { Split::Held } else { Split::Dev },
+                // Worked out again from the picture's name, so a report saved by an earlier version is halved the same way.
+                split: split_of_picture(&text("rel")?),
                 unit: text("unit")?,
                 truth: text("truth")?,
                 got: text("got")?,
@@ -572,6 +585,19 @@ mod tests {
     }
 
     #[test]
+    fn the_scenes_of_one_game_land_on_both_sides() {
+        // Scenes of one video differ only in their last digits; so do pictures `save_reads` names by the clock.
+        for prefix in ["stellar_blade/sb", "sekiro/sek", "elden_ring/er1", "yuzu/58666"] {
+            let sides: Vec<Split> = (0..12).map(|i| split_of(&format!("{prefix}{i:02}"))).collect();
+            let held = sides.iter().filter(|s| **s == Split::Held).count();
+            assert!((2..=10).contains(&held), "{prefix}: {held} of 12 scenes held out");
+        }
+        assert_eq!(split_of_picture("sekiro/sek03_s051_0.png"), split_of("sekiro/sek03"));
+        assert_eq!(split_of_picture("sekiro/sek03_s051_0.png"), split_of_picture("sekiro/sek03_s052_0.png"), "one scene, one side");
+        assert_eq!(split_of_picture("loose.png"), split_of("/loose"));
+    }
+
+    #[test]
     fn frames_of_one_subtitle_count_once_in_the_averages() {
         // one subtitle seen in four pictures (all wrong), another in one picture (right): 50%, not 80%
         let mut rs: Vec<CaseResult> = (0..4).map(|_| result("g", "가나다라", "가나다마")).collect();
@@ -679,9 +705,12 @@ mod tests {
         assert!(text.contains("**sekiro**") && text.contains("**elden**"), "one table per game: {text}");
         assert!(text.contains("| candidate | 1 | 0 | 2 | 1.000 | could easily be chance |"), "{text}");
 
-        assert_eq!(keep(&runs[0].results, Some(Split::Held), None).len(), 1);
+        // The half is worked out from each picture's name when a report is read, whatever was saved in it.
+        assert!(runs[0].results.iter().all(|r| r.split == split_of_picture(&r.rel)));
+        let (dev, held) = (keep(&runs[0].results, Some(Split::Dev), None).len(), keep(&runs[0].results, Some(Split::Held), None).len());
+        assert_eq!(dev + held, 3, "every picture is in exactly one half");
         assert_eq!(keep(&runs[0].results, None, Some("gold")).len(), 1);
-        assert_eq!(keep(&runs[0].results, Some(Split::Held), Some("gold")).len(), 0);
+        assert_eq!(keep(&runs[0].results, None, Some("no-such-tag")).len(), 0);
         assert!(saved_runs(&serde_json::json!({"nothing": true})).is_empty());
     }
 
