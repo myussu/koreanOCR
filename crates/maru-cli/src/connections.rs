@@ -12,12 +12,37 @@ use anyhow::{Context, Result, bail};
 use maru_core::Paths;
 use maru_core::config::{Config, LlmConfig};
 use maru_core::external_servers::ServerProvider;
+use maru_engine::senses::{CardWord, Decided, decide, questions};
 use maru_llm::senses::{SenseAnswer, SenseOption, SenseRequest, SenseWord};
 use maru_llm::{LiveRequest, LlamaServer, LlmChunk, LlmClient, PromptContext};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// The connection name for the model this PC runs itself.
 pub const LOCAL: &str = "local";
+/// Not a connection: the dictionary's first sense for every word, with no model asked.
+pub const DICTIONARY: &str = "dictionary";
+
+/// A line and its words to learn with their dictionary senses (`maru dict senses`): what `bench --cards` asks about.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CardTask {
+    pub line: String,
+    pub words: Vec<CardWord>,
+}
+
+/// What one candidate decided for one line.
+#[derive(Debug, Clone, Serialize)]
+struct CardRecord<'a> {
+    candidate: &'a str,
+    /// The line's number in the tasks file, from 1.
+    line: usize,
+    /// A model was asked (a line whose words all have one sense needs none).
+    asked: bool,
+    ms: u32,
+    error: Option<String>,
+    tokens_in: u64,
+    tokens_out: u64,
+    words: Vec<Decided>,
+}
 
 /// `name`, or `name=model` to ask that connection for another model.
 #[derive(Debug, Clone, PartialEq)]
@@ -350,6 +375,89 @@ pub async fn bench_live(cfg: &Config, paths: &Paths, targets: &[Target], sentenc
         std::fs::write(dir.join("live-bench.json"), serde_json::to_string_pretty(&summaries)?)?;
         eprintln!("Written to {}", dir.display());
     }
+    Ok(())
+}
+
+/// `maru dict senses`: the tasks file for `bench --cards`.
+pub fn write_tasks(engine: &maru_engine::Engine, lines: &[String], out: &Path) -> Result<()> {
+    let mut text = String::new();
+    let (mut words, mut open) = (0, 0);
+    for line in lines.iter().map(|l| l.trim()).filter(|l| !l.is_empty()) {
+        let task = CardTask { line: line.to_string(), words: engine.card_words(line)? };
+        words += task.words.len();
+        open += questions(&task.words).len();
+        let _ = writeln!(text, "{}", serde_json::to_string(&task)?);
+    }
+    std::fs::write(out, &text).with_context(|| format!("writing {}", out.display()))?;
+    println!("{} lines, {words} words to learn, {open} of them need a model (several senses, or not in the dictionary) -> {}", text.lines().count(), out.display());
+    Ok(())
+}
+
+/// `maru bench --cards tasks.jsonl --connection A --connection dictionary …`: each candidate decides every
+/// line's word meanings the way the cards sheet does (one request per line for the words that need it), and
+/// every decision is written down for a blind review. Nothing is scored here.
+pub async fn bench_cards(cfg: &Config, paths: &Paths, targets: &[Target], tasks: &Path, out: &Path) -> Result<()> {
+    let text = std::fs::read_to_string(tasks).with_context(|| format!("opening {}", tasks.display()))?;
+    let tasks: Vec<CardTask> = text.lines().filter(|l| !l.trim().is_empty()).map(serde_json::from_str).collect::<std::result::Result<_, _>>().context("the tasks file is made by `maru dict senses`")?;
+    if tasks.is_empty() {
+        bail!("no lines in the tasks file");
+    }
+    std::fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
+    let mut table = String::from("| Candidate | Lines | Requests | Failed | Request p50 ms | Request p95 ms | Tokens in / out |\n|---|---:|---:|---:|---:|---:|---:|\n");
+    for target in targets {
+        let mut records = String::new();
+        let (label, client, _server) = if target.name.eq_ignore_ascii_case(DICTIONARY) {
+            (DICTIONARY.to_string(), None, None)
+        } else {
+            match open(cfg, paths, target).await {
+                Ok(opened) => (opened.label, Some(opened.client), opened._server),
+                Err(e) => {
+                    eprintln!("{}: {e:#}", target.name);
+                    let _ = writeln!(table, "| {} | 0 | 0 | could not be opened: {e:#} | – | – | – |", target.name);
+                    continue;
+                }
+            }
+        };
+        eprintln!("{label} …");
+        let (mut times, mut requests, mut failed, mut tokens) = (Vec::new(), 0usize, 0usize, (0u64, 0u64));
+        for (n, task) in tasks.iter().enumerate() {
+            let asked = questions(&task.words);
+            let mut answers: Vec<SenseAnswer> = Vec::new();
+            let (mut ms, mut error, mut used) = (0, None, (0, 0));
+            if let (Some(client), false) = (&client, asked.is_empty()) {
+                requests += 1;
+                let before = client.tokens_used();
+                let started = Instant::now();
+                let result = client.choose_senses(&SenseRequest { sentence: &task.line, words: &asked }, &mut |a| answers.push(a)).await;
+                ms = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
+                let after = client.tokens_used();
+                used = (after.input - before.input, after.output - before.output);
+                match result {
+                    Ok(()) => times.push(ms),
+                    Err(e) => {
+                        failed += 1;
+                        error = Some(e.to_string().chars().take(300).collect());
+                    }
+                }
+            }
+            tokens = (tokens.0 + used.0, tokens.1 + used.1);
+            let record = CardRecord { candidate: &label, line: n + 1, asked: client.is_some() && !asked.is_empty(), ms, error, tokens_in: used.0, tokens_out: used.1, words: decide(&task.words, &answers) };
+            let _ = writeln!(records, "{}", serde_json::to_string(&record)?);
+        }
+        times.sort_unstable();
+        let ms = |v: Option<u32>| v.map_or("–".to_string(), |v| v.to_string());
+        let spent = if tokens.0 + tokens.1 == 0 { "–".to_string() } else { format!("{} / {}", tokens.0, tokens.1) };
+        let _ = writeln!(table, "| {label} | {} | {requests} | {failed} | {} | {} | {spent} |", tasks.len(), ms(percentile(&times, 0.5)), ms(percentile(&times, 0.95)));
+        let file: String = label.chars().map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { '_' }).collect();
+        std::fs::write(out.join(format!("cards-{file}.jsonl")), records)?;
+    }
+    println!("{table}");
+    let existing = std::fs::read_to_string(out.join("cards-bench.md")).unwrap_or_default();
+    // Runs for different candidates add to the same table.
+    let rows: String = table.lines().skip(2).map(|l| format!("{l}\n")).collect();
+    let merged = if existing.is_empty() { table } else { format!("{existing}{rows}") };
+    std::fs::write(out.join("cards-bench.md"), merged)?;
+    eprintln!("Written to {}", out.display());
     Ok(())
 }
 

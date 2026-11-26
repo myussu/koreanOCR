@@ -81,11 +81,16 @@ enum Command {
         model: Option<String>,
         /// With --live: time these saved connections one after another on the same lines and print one table.
         /// A name from Settings (see `maru connection list`), `name=model` for another model of it, or `local`.
-        #[arg(long, value_name = "NAME[=MODEL]", requires = "live", conflicts_with_all = ["endpoint", "model"])]
+        #[arg(long, value_name = "NAME[=MODEL]", conflicts_with_all = ["endpoint", "model"])]
         connection: Vec<String>,
         /// With --connection: also write the table and every line's result into this folder.
         #[arg(long, value_name = "DIR", requires = "connection")]
         out: Option<PathBuf>,
+        /// Instead of timing translations: let each --connection decide the card meanings of the lines in this file
+        /// (made by `maru dict senses`) and write every decision into --out, for a blind review. `dictionary` as a
+        /// connection is the dictionary's first sense with no model.
+        #[arg(long, value_name = "TASKS", requires_all = ["connection", "out"], conflicts_with_all = ["live", "file"])]
+        cards: Option<PathBuf>,
     },
     /// Read a screenshot the way the screen scan does: list every Korean text found and how it is labelled.
     Scan {
@@ -246,6 +251,13 @@ enum DictCommand {
     Nikl { file: PathBuf },
     /// How much of some lines' words the learner's dictionary covers (a text file, one Korean line per line).
     Coverage { file: PathBuf },
+    /// The words to learn in each line with their dictionary senses, as the cards sheet finds them: the tasks file
+    /// for `maru bench --cards`.
+    Senses {
+        file: PathBuf,
+        #[arg(long, value_name = "FILE")]
+        out: PathBuf,
+    },
 }
 
 #[derive(Subcommand)]
@@ -490,7 +502,15 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 Ok(0)
             }
         },
-        Command::Bench { file, runs, live, endpoint, model, connection, out } => {
+        Command::Bench { file, runs, live, endpoint, model, connection, out, cards } => {
+            if let (Some(tasks), Some(out)) = (&cards, &out) {
+                let targets: Vec<connections::Target> = connection.iter().map(|c| connections::Target::parse(c)).collect();
+                connections::bench_cards(&cfg, &paths, &targets, tasks, out).await?;
+                return Ok(0);
+            }
+            if !connection.is_empty() && !live {
+                bail!("--connection times live subtitles (add --live) or decides card meanings (add --cards <tasks>)");
+            }
             let sentences: Vec<String> = match file {
                 Some(f) => std::fs::read_to_string(&f)?.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect(),
                 // Subtitles are Korean: the live lane has nothing to do with the English sentences.
@@ -687,6 +707,13 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             println!("Lines whose cards need no model request at all: {} of {} ({:.0}%).", c.lines_without_model, c.lines, share(c.lines_without_model, c.lines));
             Ok(0)
         }
+        Command::Dict(DictCommand::Senses { file, out }) => {
+            let text = std::fs::read_to_string(&file).with_context(|| format!("opening {}", file.display()))?;
+            let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+            let s = services(&paths, cfg, false).await;
+            connections::write_tasks(&s.engine, &lines, &out)?;
+            Ok(0)
+        }
         Command::Dict(cmd) => {
             paths.ensure()?;
             let dict = maru_dict::Dictionary::open(&paths.dict_db())?;
@@ -707,7 +734,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         _ => println!("Learner's dictionary (한국어기초사전): not installed (maru dict nikl <file>)"),
                     }
                 }
-                DictCommand::Nikl { .. } | DictCommand::Coverage { .. } => unreachable!("handled above"),
+                DictCommand::Nikl { .. } | DictCommand::Coverage { .. } | DictCommand::Senses { .. } => unreachable!("handled above"),
             }
             Ok(0)
         }
@@ -797,7 +824,9 @@ mod cli_tests {
     fn bench_can_time_several_saved_connections_on_the_same_lines() {
         let b = Cli::try_parse_from(["maru", "bench", "--live", "--connection", "NAS", "--connection", "Gemini=gemini-flash", "--out", "results"]).unwrap();
         assert!(matches!(b.command, Command::Bench { live: true, ref connection, out: Some(_), .. } if connection == &["NAS", "Gemini=gemini-flash"]));
-        assert!(Cli::try_parse_from(["maru", "bench", "--connection", "NAS"]).is_err(), "connections are timed on the live lane");
+        let c = Cli::try_parse_from(["maru", "bench", "--cards", "tasks.jsonl", "--connection", "dictionary", "--connection", "NAS", "--out", "results"]).unwrap();
+        assert!(matches!(c.command, Command::Bench { cards: Some(_), live: false, ref connection, .. } if connection.len() == 2));
+        assert!(Cli::try_parse_from(["maru", "bench", "--cards", "tasks.jsonl", "--connection", "NAS"]).is_err(), "decisions need a folder to be written to");
         assert!(Cli::try_parse_from(["maru", "bench", "--live", "--connection", "NAS", "--endpoint", "http://x"]).is_err(), "a connection brings its own address");
         assert!(matches!(Cli::try_parse_from(["maru", "connection", "test", "Azure"]).unwrap().command, Command::Connection(ConnectionCommand::Test { ref name }) if name == "Azure"));
     }
