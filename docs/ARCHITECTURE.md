@@ -590,6 +590,21 @@ overlong take is regenerated). Qwen3-TTS was measured returning 6–22 s for one
 Interactive boot defers the local voice through `deferred_models.rs`. Speech, the Settings voice test, and requested
 Anki audio call `Services::ensure_speech` before using it. Remote speech keeps its existing health check.
 
+**A voice per task** (`maru-core::tasks::{VoiceRoute, voice_config}`, `maru-engine/src/voices.rs`, `Services::voices`).
+`[tasks.voice_reading]` and `[tasks.voice_cards]` each name a speaker and, optionally, another OpenAI-style speech server
+(`endpoint`, `model`); with nothing set both are the voice of `[tts]`, as before. Reading aloud (`tts_clip`, the speak
+hotkey) uses the reading voice; card sound (`commands::spoken`: Make cards, the panel's add, "fill the sounds") uses the
+card voice. A voice on another server holds no lease (`Services::voice_lease`). When reading goes to another server and
+cards use the voice on this PC, that model is loaded by the first card's sound (it already loaded on first use) and
+`Services::release_card_voice` unloads it after `mine_add`, `anki_add` and `anki_fill_sounds`; when both tasks share
+the voice, nothing is unloaded behind the reader. `tts_test` takes `task` (`reading` / `cards`) so Settings → Voice
+tests each. The key in `[tts]` is never sent to the other server. **Not built:** Maru does not start the other server
+(for Supertonic 3 that is `python tools/supertonic_server.py --port 18097`, a Python package the owner installs), so
+the reading voice is `[tts]` until an address is entered; a reading server that does not answer is an error, with no
+fall-back to the GPU voice. The card voice's model and size are whatever `[tts]` says, unchanged. Tests:
+`tasks.rs::a_voice_task_speaks…`, `voices.rs` (two voices, one voice, speech off). Unloading after cards runs through
+the real `tts-server` only: M-46.
+
 ### 4.9 Settings
 `settings::get_settings` / `save_settings` (app shell) → `maru_core::settings::patch`: applies only what changed to the *text* of
 `config.toml` with `toml_edit` (comments and unknown keys survive), re-parses, validates (`settings::validate`), and reports

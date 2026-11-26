@@ -13,7 +13,7 @@
   const JUMP_MS = 1500;
   /** A cue without an end is taken to last until the next one, and at most this long. */
   const DEFAULT_CUE_MS = 4000;
-  const DEFAULT_PORT = 18096;
+  const DEFAULT_PORT = 18098;
   const HANGUL = /[가-힣]/;
 
   const isKorean = (code) => /^ko(-|$)/i.test(String(code ?? ''));

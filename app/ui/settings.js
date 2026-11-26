@@ -317,20 +317,26 @@ export async function settingsView() {
 
   function ttsTest() {
     const res = h('span', { class: 'res' });
-    const button = btn('Test the voice', async () => {
-      button.disabled = true; res.className = 'res'; res.textContent = 'Speaking…';
-      try {
-        const clip = await invoke('tts_test', { text: null });
-        await new Audio(`data:${clip.mime};base64,${clip.data}`).play();
-        res.textContent = `${clip.seconds ? `${clip.seconds.toFixed(1)} s of speech` : 'Speech'} ${clip.cached ? 'from the cache' : `made in ${(clip.took_ms / 1000).toFixed(1)} s`}`;
-      } catch (e) { res.className = 'res bad'; res.textContent = String(e); } finally { button.disabled = false; }
+    // One button per task: the two can be different voices (see "While reading, use another voice server").
+    const buttons = [['reading', 'Test the reading voice'], ['cards', 'Test the card voice']].map(([task, label]) => {
+      const button = btn(label, async () => {
+        button.disabled = true; res.className = 'res'; res.textContent = 'Speaking…';
+        try {
+          const clip = await invoke('tts_test', { text: null, task });
+          await new Audio(`data:${clip.mime};base64,${clip.data}`).play();
+          res.textContent = `${clip.seconds ? `${clip.seconds.toFixed(1)} s of speech` : 'Speech'} ${clip.cached ? 'from the cache' : `made in ${(clip.took_ms / 1000).toFixed(1)} s`}`;
+        } catch (e) { res.className = 'res bad'; res.textContent = String(e); } finally { button.disabled = false; }
+      });
+      return button;
     });
     updaters.push(() => {
-      const dirty = Object.keys(draft).some((p) => p.startsWith('tts.'));
-      button.disabled = dirty;
-      button.title = dirty ? 'Save first: the test uses the saved settings' : '';
+      const dirty = Object.keys(draft).some((p) => p.startsWith('tts.') || p.startsWith('tasks.voice_'));
+      for (const button of buttons) {
+        button.disabled = dirty;
+        button.title = dirty ? 'Save first: the test uses the saved settings' : '';
+      }
     });
-    return h('div', { class: 'test-row' }, button, res);
+    return h('div', { class: 'test-row' }, ...buttons, res);
   }
 
   function ankiActions() {

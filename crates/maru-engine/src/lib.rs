@@ -54,6 +54,7 @@ pub mod plan;
 pub mod labels;
 pub mod vlm_ocr;
 pub mod captions;
+pub mod voices;
 
 pub use bootstrap::{BootOptions, Services, boot, load_config};
 pub use maru_llm::connection::{check_connection, test_authenticated_connection};

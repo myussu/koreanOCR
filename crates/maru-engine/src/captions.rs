@@ -622,7 +622,7 @@ mod tests {
         let addr = server.addr();
         let body = r#"{"text":"안녕하세요"}"#;
         // Even with the right code: a page on the web (or a local file, whose origin is "null") is not the extension.
-        for origin in ["https://www.youtube.com", "https://evil.example", "http://127.0.0.1:18096", "null", "chrome-extension://"] {
+        for origin in ["https://www.youtube.com", "https://evil.example", "http://127.0.0.1:18098", "null", "chrome-extension://"] {
             let answer = raw(addr, &request("POST", LINE_ROUTE, &[("X-Maru-Token", CODE), ("Origin", origin)], body)).await;
             assert_eq!(answer.status, 403, "{origin}");
             assert!(!answer.head.contains("Access-Control-Allow-Origin"), "a refused origin is not told it may read the answer");
@@ -750,12 +750,12 @@ mod tests {
         assert_eq!(raw(addr, b"hello\r\n\r\n").await.status, 400);
         assert_eq!(raw(addr, b"POST /captions/v1/line HTTP/2\r\n\r\n").await.status, 400);
         // A web page that resolves its own name to 127.0.0.1 still names itself in Host.
-        let rebound = raw(addr, format!("POST {LINE_ROUTE} HTTP/1.1\r\nHost: evil.example:18096\r\nX-Maru-Token: {CODE}\r\nContent-Length: 2\r\n\r\n{{}}").as_bytes()).await;
+        let rebound = raw(addr, format!("POST {LINE_ROUTE} HTTP/1.1\r\nHost: evil.example:18098\r\nX-Maru-Token: {CODE}\r\nContent-Length: 2\r\n\r\n{{}}").as_bytes()).await;
         assert_eq!(rebound.status, 403);
-        for host in ["127.0.0.1", "127.0.0.1:18096", "localhost:18096", "LOCALHOST"] {
+        for host in ["127.0.0.1", "127.0.0.1:18098", "localhost:18098", "LOCALHOST"] {
             assert!(host_is_local(host), "{host}");
         }
-        for host in ["evil.example", "127.0.0.1.evil.example", "192.168.1.20:18096", ""] {
+        for host in ["evil.example", "127.0.0.1.evil.example", "192.168.1.20:18098", ""] {
             assert!(!host_is_local(host), "{host}");
         }
         // The popup's question "are you there, and is my code right?"

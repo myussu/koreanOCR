@@ -6,7 +6,7 @@
 //! ```
 //!
 //! The first argument is the code the extension must send (at least 16 letters or digits); the port defaults to
-//! 18096. Stop it with Ctrl+C.
+//! 18098. Stop it with Ctrl+C.
 
 use maru_core::captions::CaptionsConfig;
 

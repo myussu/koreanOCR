@@ -401,6 +401,15 @@ as an ordinary server with the address `https://api.anthropic.com` keeps using t
 as before. For Maru's short requests the two measured the same speed, and the prompt cache of Anthropic's API does not
 come into play because the prompts are shorter than it caches.
 
+**Two voices.** Settings → Voice has one voice for everything by default. Enter an address under *While reading, use
+another voice server* and reading aloud goes there, while cards keep the voice above. The intended pair is Supertonic 3
+for reading (small, on the processor, about a second to start) and the Qwen voice for cards: start it yourself with
+`pip install supertonic` and `python tools/supertonic_server.py --port 18097`, then enter `http://127.0.0.1:18097`,
+speaker `F1`, and (under Advanced) model `supertonic-3`, save and restart. The Qwen voice then loads only when you
+make cards with sound and leaves the graphics card when they are made. Maru does not start that server for you, and
+if it is not running, reading aloud says so instead of falling back. *Test the reading voice* and *Test the card voice*
+try each one.
+
 Changes are collected and written with **Save**. Shortcuts, the panel's look, the list of connections and the two card
 tasks take effect at once; what holds a model or a server (the live and capture connections, the voice, this PC's
 model) waits for a restart, and one banner at the top lists what is waiting.
@@ -452,7 +461,7 @@ without usable captions sends nothing ("No Korean captions on this video") and l
 
 To use it: Settings → Live subtitles → **Take YouTube captions from the browser** → Save, copy the **Code for the
 browser extension** that appears, restart Maru, load the extension and paste the code in its popup. Maru then listens on
-this PC only (`127.0.0.1`, port 18096, `[captions]` in `config.toml`); it is off by default.
+this PC only (`127.0.0.1`, port 18098, `[captions]` in `config.toml`); it is off by default.
 
 **Not verified against YouTube:** the receiver and the extension's logic are tested, but the extension has not yet been
 run in a browser. [docs/YOUTUBE_CAPTIONS.md](docs/YOUTUBE_CAPTIONS.md) has the design, the install steps and what to check (M-45).

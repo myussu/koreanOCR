@@ -113,7 +113,7 @@ pub fn translate_selection(app: AppHandle, state: Arc<AppState>) {
 
 /// The speak hotkey: translate the selection and read it aloud. Pressed while reading, it stops.
 pub fn speak_selection(app: AppHandle, state: Arc<AppState>) {
-    if state.services.tts.is_none() {
+    if state.services.voices.reading.is_none() {
         return notice(&app, &state, state.engine().platform().screen.cursor(), "info", "Speech is off. Turn it on in Settings → Speech (or run `maru setup tts`).".to_string());
     }
     if state.panel().reading {

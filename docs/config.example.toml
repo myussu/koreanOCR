@@ -179,9 +179,14 @@ connection = ""               # "" = keep the translation the line already has
 model = ""
 
 [tasks.voice_reading]         # the voice while reading or playing
-voice = ""                    # "" = the voice in [tts]
+voice = ""                    # the speaker; "" = the one in [tts] (with `endpoint`: that server's own choice, e.g. "F1")
+endpoint = ""                 # another OpenAI-style speech server for reading, e.g. "http://127.0.0.1:18097" for
+                              # `python tools/supertonic_server.py --port 18097`; "" = the voice in [tts].
+                              # With it, the voice of [tts] on this PC loads only to make card sound and is
+                              # unloaded when the cards are made.
+model = ""                    # the model name sent to `endpoint`, e.g. "supertonic-3"; "" = the one in [tts]
 
-[tasks.voice_cards]           # the voice on Anki cards
+[tasks.voice_cards]           # the voice on Anki cards (same three keys)
 voice = ""
 
 # Per-application behaviour. `exe` is the program's file name.
@@ -222,7 +227,7 @@ run_in_lite = false   # keep the local voice off in game mode so the game has th
 # Korean caption track a video's author uploaded, line by line, to this PC only (127.0.0.1). The lines go to History
 # like live subtitles, from the program "youtube". Off by default; save and restart.
 enabled = false
-port = 18096                  # where the extension sends; change it only if another program uses this port
+port = 18098                  # where the extension sends; change it only if another program uses this port
 # token = "..."               # the code the extension must send. Maru writes one here the first time this is switched
 #                             # on (Settings shows it to copy); delete the line to get a new one.
 # allowed_origin = "chrome-extension://<the id the extension's popup shows>"   # optional: only that extension may send

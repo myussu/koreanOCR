@@ -165,6 +165,10 @@ pub async fn mine_add(state: S<'_>, request: MineAddRequest) -> Result<MineReply
     {
         tracing::warn!("marking the line as made into cards: {e}");
     }
+    // When reading goes to another voice server, the voice on this PC was loaded only for these cards' sound.
+    if want_audio && state.services.release_card_voice().await {
+        tracing::info!("the card voice was unloaded after making cards");
+    }
     Ok(MineReply { outcomes, audio_note })
 }
 
@@ -211,6 +215,7 @@ pub async fn anki_fill_sounds(state: S<'_>) -> Result<FillReply, String> {
             }
         }
     }
+    state.services.release_card_voice().await;
     Ok(FillReply { filled, left: silent.total.saturating_sub(filled), error })
 }
 

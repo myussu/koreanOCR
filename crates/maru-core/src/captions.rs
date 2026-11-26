@@ -24,7 +24,7 @@ pub struct CaptionsConfig {
 
 impl Default for CaptionsConfig {
     fn default() -> Self {
-        Self { enabled: false, port: 18096, token: None, allowed_origin: String::new() }
+        Self { enabled: false, port: 18098, token: None, allowed_origin: String::new() }
     }
 }
 
@@ -72,7 +72,7 @@ mod tests {
         assert!(!old.captions.enabled && old.captions.token().is_none());
         let on: Config = toml::from_str("[captions]\nenabled = true").unwrap();
         assert!(on.captions.enabled);
-        assert_eq!(on.captions.port, 18096, "the other keys keep their defaults");
+        assert_eq!(on.captions.port, 18098, "the other keys keep their defaults");
     }
 
     #[test]
@@ -108,7 +108,7 @@ mod tests {
     fn only_extension_origins_count_as_an_extension() {
         assert!(is_extension_origin("chrome-extension://abcdefghijklmnopabcdefghijklmnop"));
         assert!(is_extension_origin("moz-extension://1b2c3d4e-0000-4000-8000-123456789abc"));
-        for not in ["https://www.youtube.com", "http://127.0.0.1:18096", "null", "chrome-extension://", "chrome-extension://abc/evil", ""] {
+        for not in ["https://www.youtube.com", "http://127.0.0.1:18098", "null", "chrome-extension://", "chrome-extension://abc/evil", ""] {
             assert!(!is_extension_origin(not), "{not:?}");
         }
     }
