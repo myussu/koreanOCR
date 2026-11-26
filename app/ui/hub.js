@@ -5,6 +5,7 @@ import { settingsView } from './settings.js';
 import { resourcesView } from './resources.js';
 import { readingView } from './reading.js';
 import { mineSheet } from './mine.js';
+import { captionsLine } from './captions-core.js';
 
 const view = document.getElementById('view');
 const tabs = [...document.querySelectorAll('#tabs button')];
@@ -158,9 +159,11 @@ async function status() {
   const row = (a, b) => h('tr', {}, h('td', { text: a }), h('td', {}, b));
   const on = (yes, detail) => h('span', { class: yes ? 'flag on' : 'flag off' }, yes ? `ON${detail ? ` · ${detail}` : ''}` : 'off');
   const area = s.live_area && `${Math.round(s.live_area.w)}×${Math.round(s.live_area.h)} at (${Math.round(s.live_area.x)}, ${Math.round(s.live_area.y)})`;
+  // Captions the browser extension sends (docs/YOUTUBE_CAPTIONS.md).
+  const captions = captionsLine(await invoke('captions_status').catch(() => null));
   return [
     h('h4', { text: 'Right now' }),
-    h('table', {}, row('Hover mode', [on(s.hover_mode), ' ', h('kbd', { text: k.hover })]), row('Live subtitles', [on(s.live_mode, area), ' ', h('kbd', { text: k.continuous })]), row('Screen labels', [on(s.scan_visible), ' ', h('kbd', { text: k.scan })]), row('Lite (game) profile', s.lite ? on(true, 'lighter models') : 'off'), row('Speech', s.tts === 'ready' ? on(true, s.tts_source === 'local' ? 'voice on this PC' : 'voice from a server') : s.tts === 'off' ? 'off (Settings → Speech)' : s.tts), row('OCR reading model', s.ocr_reader === 'ready' ? on(true, 'PP-OCR + PaddleOCR-VL') : s.ocr_reader === 'off' ? 'not in use (PP-OCR only)' : s.ocr_reader)),
+    h('table', {}, row('Hover mode', [on(s.hover_mode), ' ', h('kbd', { text: k.hover })]), row('Live subtitles', [on(s.live_mode, area), ' ', h('kbd', { text: k.continuous })]), row('YouTube captions', captions.on ? on(true, captions.text) : captions.text), row('Screen labels', [on(s.scan_visible), ' ', h('kbd', { text: k.scan })]), row('Lite (game) profile', s.lite ? on(true, 'lighter models') : 'off'), row('Speech', s.tts === 'ready' ? on(true, s.tts_source === 'local' ? 'voice on this PC' : 'voice from a server') : s.tts === 'off' ? 'off (Settings → Speech)' : s.tts), row('OCR reading model', s.ocr_reader === 'ready' ? on(true, 'PP-OCR + PaddleOCR-VL') : s.ocr_reader === 'off' ? 'not in use (PP-OCR only)' : s.ocr_reader)),
     s.vocab && h('p', {}, [['words', s.vocab.total], ['saved', s.vocab.saved], ['known', s.vocab.known], ['due', s.vocab.due_now]].map(([l, v]) => h('span', { class: 'stat' }, h('b', { text: v }), l))),
     h('h4', { text: 'Components' }),
     h('table', {}, row('Reviews', s.anki ? 'in Anki' : 'in Maru'), row('Language model', s.llm), row('Korean analyser', s.analyser), row('Dictionary', s.dictionary ? 'installed' : 'not installed (maru dict download)'), row('OCR', s.ocr ? 'ready' : 'not available (maru setup ocr)')),
@@ -198,6 +201,7 @@ if (!inTauri) {
   // One model per task, the two card decks and the per-day numbers; the demo's own file names four connections.
   Object.assign(flat, { 'tasks.version': 1, 'tasks.live.connection': 'local', 'tasks.live.model': '', 'tasks.capture.connection': 'local', 'tasks.capture.model': '', 'tasks.capture.while_live': '', 'tasks.capture.while_live_model': '', 'tasks.card_meanings.connection': 'local', 'tasks.card_meanings.model': '', 'tasks.card_sentence.connection': '', 'tasks.card_sentence.model': '', 'tasks.voice_reading.voice': '', 'tasks.voice_cards.voice': '',
     'learning.anki.sentence_deck': '', 'learning.anki.new_words_per_day': 3, 'learning.anki.new_sentences_per_day': 1, 'learning.anki.suggest_app_decks': false, 'learning.anki.correct_forms': false, 'continuous.translation.backup_model': null, 'continuous.translation.backup_after_ms': 2500, 'llm.server_keep_minutes': 0 });
+  Object.assign(flat, { 'captions.enabled': false, 'captions.port': 18096, 'captions.token': null, 'captions.allowed_origin': '' });
   const mockDefaults = nest(flat);
   const demoServers = [
     { name: 'NAS', endpoint: 'http://192.168.1.20:11434', model_name: 'gemma4-12b', provider: 'openai', api_key: null },
@@ -206,7 +210,7 @@ if (!inTauri) {
     { name: 'Gemini', endpoint: 'https://generativelanguage.googleapis.com/v1beta/openai', model_name: 'gemini-flash', provider: 'gemini', api_key: 'demo-key' },
   ];
   let mockValues = nest({ ...flat, 'llm.hf_repo': 'unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL', 'llm.servers': demoServers, 'llm.server_keep_minutes': 15, 'tasks.live.connection': 'NAS', 'tasks.capture.connection': 'Gemini', 'tasks.capture.while_live': 'Azure', 'continuous.translation.backup_model': 'lfm', 'continuous.translation.lfm_path': 'D:/models/lfm2-koen-Q5_K_M.gguf',
-    'learning.anki.enabled': true, 'learning.anki.deck': 'Korean::Words', 'learning.anki.sentence_deck': 'Korean::Sentences', 'learning.anki.reverse': 'off', 'tts.enabled': true });
+    'learning.anki.enabled': true, 'learning.anki.deck': 'Korean::Words', 'learning.anki.sentence_deck': 'Korean::Sentences', 'learning.anki.reverse': 'off', 'tts.enabled': true, 'captions.enabled': true, 'captions.token': 'demo0123456789abcdef0123456789ab' });
   // What each task uses in the demo, and what a test of it finds: one working, one out of quota, one not loaded.
   const demoPlace = (name) => (name === 'local' ? 'this_pc' : name === 'NAS' ? 'network' : 'hosted');
   const demoKnown = { NAS: ['working', 'NAS answered.'], Gemini: ['quota', 'Gemini has no quota left.'] };
@@ -275,6 +279,7 @@ if (!inTauri) {
     mine_add: ({ request }) => new Promise((resolve) => setTimeout(() => resolve({ audio_note: null, outcomes: [...request.words.map((w, n) => n === 1 ? { what: w.key, kind: 'word', result: 'failed', detail: 'Another Anki add is still running; wait for it to finish.' } : { what: w.key, kind: 'word', result: 'added', detail: request.reverse ? `2 cards: ${request.deck}, reverse in ${request.deck}::Reverse` : `1 card in ${request.deck}` }), ...(request.sentence_card ? [{ what: request.sentence, kind: 'sentence', result: 'added', detail: `sentence card in ${request.sentence_deck}` }] : [])] }), 700)),
     history_star: ({ savedId, starred }) => { if (starred) demoStars.add(savedId); else demoStars.delete(savedId); },
     history_open: () => {},
+    captions_status: () => ({ enabled: true, listening: true, port: 18096, problem: null, accepted: 12, dropped: 3, refused: 0 }),
     status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'loads on demand', analyser: 'kiwi', ocr: true, dictionary: true, learner_dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape', star: 'Ctrl+Alt+B' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, anki: false, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'loads on demand', tts: 'loads on demand', tts_source: 'local' }),
   });
 }

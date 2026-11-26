@@ -2658,3 +2658,74 @@ async fn a_dictionary_form_the_model_corrects_is_shown_beside_the_analysers_and_
     assert!(sheet.words[0].corrected.is_none() && sheet.words[0].meaning == "academy");
     assert!(!model_requests(&h)[0].contains("=form"));
 }
+
+// ───────────── captions from the browser extension ─────────────
+
+fn caption(text: &str) -> maru_engine::captions::CaptionLine {
+    maru_engine::captions::CaptionLine { text: text.into(), video: "dQw4w9WgXcQ".into(), title: "한국어 수업".into(), start_ms: None, auto_generated: false, received: std::time::Instant::now() }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caption_line_is_translated_like_a_live_line_and_listed_as_coming_from_youtube() {
+    let h = harness().await;
+    let events = collect(h.engine.translate_caption(caption(SENTENCE)).1).await;
+
+    let started = events.iter().find_map(|e| if let Event::Started { capture, .. } = e { Some(capture.clone()) } else { None }).expect("a started event");
+    assert_eq!(started.source, CaptureSource::Caption, "the source says it was not read from the screen");
+    assert_eq!(started.app, Some(AppInfo { exe: "youtube".into(), title: "한국어 수업".into() }));
+    assert_eq!(text_of(&events, Variant::Primary), "I studied at school.");
+    assert!(!names(&events).iter().any(|n| matches!(*n, "breakdown" | "gloss")), "translation only, as in the live lane: {:?}", names(&events));
+    assert_eq!(h.requests().len(), 1);
+    assert!(!h.requests()[0].contains("read from the screen by OCR"), "the model is not told to expect misread letters");
+
+    let history = h.engine.history();
+    assert_eq!(history.len(), 1);
+    assert!(history[0].live && history[0].source == SENTENCE && history[0].translation == "I studied at school.");
+    assert_eq!(history[0].app.as_deref(), Some("youtube"));
+    // The program is what a card made from the line is tagged with.
+    let tags = maru_engine::mining::sentence_tags(&Config::default().learning.anki, history[0].app.as_deref(), None, 1_760_000_000);
+    assert_eq!(tags, ["maru", "sentence", "maru::youtube", "added::2025-10"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caption_keeps_its_exact_text_and_a_line_one_syllable_apart_is_another_line() {
+    let h = harness().await;
+    // Read from pixels, `BTS` and `OK` at the ends would be dropped as stray marks, and the second sentence taken
+    // for the first one misread; in a caption every letter is what the author wrote.
+    let lines = ["BTS 정국이 왔어요 OK", "이것은 물이에요", "이것은 불이에요"];
+    for line in lines {
+        collect(h.engine.translate_caption(caption(line)).1).await;
+    }
+    assert_eq!(h.engine.history().iter().map(|i| i.source.as_str()).collect::<Vec<_>>(), lines);
+    assert_eq!(h.requests().len(), 3, "each one is translated");
+    assert!(h.requests()[0].contains("BTS 정국이 왔어요 OK"));
+
+    // The same two sentences read from the screen stay one line, as before.
+    let h = harness().await;
+    collect(h.engine.translate_live(live_line("이것은 물이에요")).1).await;
+    collect(h.engine.translate_live(live_line("이것은 불이에요")).1).await;
+    assert_eq!(h.engine.history().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caption_line_is_saved_and_starred_like_any_live_line() {
+    let path = std::env::temp_dir().join(format!("maru-caption-history-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    {
+        let h = harness().await;
+        h.engine.open_history(&path).unwrap();
+        let (id, rx) = h.engine.translate_caption(caption(SENTENCE));
+        collect(rx).await;
+        assert!(h.engine.star_live_line(id).unwrap().starred);
+        // A line that is not Korean is skipped without a request, as in the live lane.
+        let events = collect(h.engine.translate_caption(caption("Thanks for watching!")).1).await;
+        assert!(!names(&events).contains(&"started"));
+        assert_eq!(h.requests().len(), 1);
+    }
+    let h = harness().await;
+    h.engine.open_history(&path).unwrap();
+    let starred = h.engine.starred_lines().unwrap();
+    assert_eq!(starred.iter().map(|i| (i.source.as_str(), i.app.as_deref())).collect::<Vec<_>>(), [(SENTENCE, Some("youtube"))]);
+    drop(h);
+    let _ = std::fs::remove_file(path);
+}

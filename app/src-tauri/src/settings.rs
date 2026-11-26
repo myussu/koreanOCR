@@ -125,6 +125,9 @@ pub fn save_settings(app: AppHandle, state: S, changes: Map<String, Value>) -> R
     {
         text = with_table;
     }
+    // Switching YouTube captions on also saves the code the extension must send, so it can be copied at once.
+    let mut changes = changes;
+    crate::captions::add_code_when_switched_on(&text, &mut changes);
     let patched = settings::patch(&text, &changes).map_err(|e| e.to_string())?;
     let new = patched.config.clone();
     check_hotkeys(&new)?;

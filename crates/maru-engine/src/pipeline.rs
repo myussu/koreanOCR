@@ -448,7 +448,10 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     let em = Emitter { tx, id };
     let LiveLine { capture, appeared, ready_ms, ocr_ms } = line;
     let (text, _) = prepare_text(&capture.text, inner.cfg.capture.max_chars);
-    let text = crate::live_noise::trim_stray_marks(&text);
+    // A caption (`captions.rs`) is the video's own text: nothing in it is a misreading, so the repairs meant for
+    // OCR (dropping `BTS` or `1.` from a line's ends, taking a line one syllable apart for a re-read) do not apply.
+    let exact = capture.source == CaptureSource::Caption;
+    let text = if exact { text } else { crate::live_noise::trim_stray_marks(&text) };
     if detect_direction(&text) != Some(Direction::KoToEn) {
         tracing::debug!(text, "live line skipped: not Korean");
         timing.finish("skipped");
@@ -465,7 +468,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     // OCR read the same line again, or only part of it: show its translation, translate nothing, list nothing.
     let mut replaces = None;
     // Bind first: a guard in the `match` head would live through the arms, which lock `live_recent` again.
-    let seen = lock(&inner.live_recent).seen(&app_exe, &text, Instant::now());
+    let seen = if exact { crate::live_merge::Seen::New } else { lock(&inner.live_recent).seen(&app_exe, &text, Instant::now()) };
     match seen {
         crate::live_merge::Seen::Again { id: original, translation } | crate::live_merge::Seen::Part { id: original, translation } => {
             lock(&inner.live_recent).read_again(id, original, &text, Instant::now());

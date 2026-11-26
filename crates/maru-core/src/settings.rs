@@ -184,6 +184,9 @@ pub fn validate(cfg: &Config) -> Result<()> {
     check(!cfg.learning.anki.enabled || !cfg.learning.anki.deck.trim().is_empty(), "choose a default Anki deck");
     check(cfg.learning.anki.refresh_minutes <= 1440, "reading progress back from Anki is limited to once a day at most");
     check(cfg.capture.max_chars >= 20, "the longest selection must allow at least 20 characters");
+    for problem in cfg.captions.problems() {
+        check(false, problem);
+    }
     if problems.is_empty() { Ok(()) } else { Err(Error::Config(problems.join("; "))) }
 }
 
