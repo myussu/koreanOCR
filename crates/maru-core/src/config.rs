@@ -270,6 +270,22 @@ pub struct OcrConfig {
     /// CPU threads PP-OCR may use for one read. 0 = ONNX Runtime's choice (every core: the quickest single read,
     /// but live subtitles then compete with the game for all of them).
     pub threads: u32,
+    /// The detector's own tuning, for a detector file made with other values than PP-OCRv5's: how sure a pixel must be
+    /// (0.3), how sure a whole box (0.6), and how far a box is widened around its text (2.0). PP-OCRv6 detectors are
+    /// published with 0.2, 0.45 and 1.4. Unset keeps the usual values.
+    pub det_score_threshold: Option<f32>,
+    pub det_box_threshold: Option<f32>,
+    pub det_unclip_ratio: Option<f32>,
+    /// A folder with another reading model to pair with PP-OCR in place of PaddleOCR-VL-1.5: one `.gguf`, its projector
+    /// (a `.gguf` with `mmproj` in its name) and, if the model needs one, `chat_template.jinja`. Unset uses the model
+    /// `maru setup ocr-vl` installs.
+    pub reader_dir: Option<PathBuf>,
+    /// The instruction that reading model was trained with (PaddleOCR-VL: `OCR:`, the default).
+    pub reader_prompt: Option<String>,
+    /// Extra `llama-server` arguments that model needs.
+    pub reader_args: Vec<String>,
+    /// That model answers in HTML (Surya does): Maru takes the tags out.
+    pub reader_html: bool,
 }
 
 impl Default for OcrConfig {
@@ -283,6 +299,13 @@ impl Default for OcrConfig {
             min_confidence: 0.80,
             vision_reader: true,
             threads: 0,
+            det_score_threshold: None,
+            det_box_threshold: None,
+            det_unclip_ratio: None,
+            reader_dir: None,
+            reader_prompt: None,
+            reader_args: Vec::new(),
+            reader_html: false,
         }
     }
 }

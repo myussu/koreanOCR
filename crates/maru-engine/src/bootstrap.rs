@@ -440,14 +440,15 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     let (vision_tx, vision_rx) = watch::channel(LlmStatus::Disabled);
     let vision_server: Arc<Mutex<Option<LlamaServer>>> = Arc::new(Mutex::new(None));
     let vision_ready = Arc::new(AtomicBool::new(false));
-    let use_vision = opts.start_llm && cfg.ocr.vision_reader && ocr.is_some() && vision::installed(&paths);
+    let reader_installed = vision::reader(&paths, &cfg.ocr).is_some();
+    let use_vision = opts.start_llm && cfg.ocr.vision_reader && ocr.is_some() && reader_installed;
     let deferred_vision = (use_vision && opts.defer_models).then(|| {
-        let (paths, llm, server) = (paths.clone(), cfg.llm.clone(), vision_server.clone());
+        let (paths, llm, reader_cfg, server) = (paths.clone(), cfg.llm.clone(), cfg.ocr.clone(), vision_server.clone());
         let stop_server = server.clone();
         crate::deferred_models::DeferredModel::restartable(vision_tx.clone(), move || {
-            let (paths, llm, server) = (paths.clone(), llm.clone(), server.clone());
+            let (paths, llm, reader_cfg, server) = (paths.clone(), llm.clone(), reader_cfg.clone(), server.clone());
             async move {
-                match vision::start(&paths, vision::launch_plans(&paths, &llm, &[]), |_, _| {}).await {
+                match vision::start(&paths, vision::configured_plans(&paths, &reader_cfg, &llm), |_, _| {}).await {
                     Some((model, _)) => {
                         *server.lock().unwrap_or_else(|p| p.into_inner()) = Some(model);
                         Ok(())
@@ -464,8 +465,11 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
             }
         })
     });
-    if cfg.ocr.vision_reader && ocr.is_some() && !vision::installed(&paths) && opts.start_llm {
-        notes.push("OCR: PaddleOCR-VL is not installed; run `maru setup ocr-vl` for noticeably more accurate letters.".into());
+    if cfg.ocr.vision_reader && ocr.is_some() && !reader_installed && opts.start_llm {
+        notes.push(match &cfg.ocr.reader_dir {
+            Some(dir) => format!("OCR: no reading model in {} (it needs one .gguf and its mmproj .gguf); PP-OCR reads alone.", dir.display()),
+            None => "OCR: PaddleOCR-VL is not installed; run `maru setup ocr-vl` for noticeably more accurate letters.".into(),
+        });
     }
     let ocr = if use_vision {
         if opts.defer_models {
@@ -476,7 +480,7 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         }
         ocr.map(|detector| {
             let url = format!("http://127.0.0.1:{}", vision::PORT);
-            let reader = Arc::new(VlmOcr::new(&url, &vision::base_config(&cfg.llm), PADDLE_VL_PROMPT));
+            let reader = Arc::new(VlmOcr::new(&url, &vision::base_config(&cfg.llm), cfg.ocr.reader_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT)).answering_html(cfg.ocr.reader_html));
             let gated: Arc<dyn OcrEngine> = match &deferred_vision {
                 Some(model) => Arc::new(crate::deferred_models::DeferredOcr { inner: reader, model: model.clone() }),
                 None => Arc::new(vision::GatedOcr::new(reader, vision_ready.clone())),
@@ -636,9 +640,9 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     }
 
     if use_vision && !opts.defer_models {
-        let (paths, llm, server, ready) = (paths.clone(), cfg.llm.clone(), vision_server.clone(), vision_ready.clone());
+        let (paths, llm, reader_cfg, server, ready) = (paths.clone(), cfg.llm.clone(), cfg.ocr.clone(), vision_server.clone(), vision_ready.clone());
         tokio::spawn(async move {
-            let plans = vision::launch_plans(&paths, &llm, &[]);
+            let plans = vision::configured_plans(&paths, &reader_cfg, &llm);
             match vision::start(&paths, plans, |_, _| {}).await {
                 Some((s, _)) => {
                     if let Ok(mut slot) = server.lock() {

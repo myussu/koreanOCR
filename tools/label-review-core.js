@@ -56,9 +56,10 @@
 
   /**
    * What the text box starts with: the label already written, else the reading of the strongest reader that has one.
+   * A provisional label (two readers agreed, `tools/provisional_labels.py`) comes first, then a reader from outside this PC.
    * It is only a start; the person looks at the picture and decides.
    */
-  function startingText(item, prefer = ['paddle-vl', 'hybrid', 'live']) {
+  function startingText(item, prefer = ['provisional', 'outside', 'paddle-vl', 'hybrid', 'live']) {
     if (item.label != null) return { text: item.label, from: 'label' };
     const all = readings(item);
     for (const name of prefer) {

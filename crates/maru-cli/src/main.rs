@@ -33,6 +33,8 @@ struct Cli {
     command: Command,
 }
 
+// One command is parsed per run, so the size of the largest one (eval-ocr and its options) costs nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Subcommand)]
 enum Command {
     /// Compare two local GGUF models for live subtitles, with an isolated A/B/A test and review files.
@@ -125,9 +127,43 @@ enum Command {
         /// Use a vision model you started yourself (OpenAI-compatible, e.g. `http://127.0.0.1:8080`) as engine `endpoint`.
         #[arg(long)]
         vlm_endpoint: Option<String>,
-        /// Instruction sent to the `endpoint` engine (default: the PaddleOCR-VL `OCR:` prompt).
+        /// Instruction sent to a vision model: the `endpoint` engines, the reading model of `--reader-dir`, or `connection`
+        /// (default: the PaddleOCR-VL `OCR:` prompt; for `connection`, a plain "transcribe exactly" instruction).
         #[arg(long)]
         vlm_prompt: Option<String>,
+        /// PP-OCR's detector file for this run, instead of the configured one (to try another detector).
+        #[arg(long, value_name = "FILE")]
+        det: Option<PathBuf>,
+        /// PP-OCR's recogniser file for this run; give its character list with --dict.
+        #[arg(long, value_name = "FILE")]
+        rec: Option<PathBuf>,
+        /// The character list (one per line) that goes with --rec.
+        #[arg(long, value_name = "FILE")]
+        dict: Option<PathBuf>,
+        /// The detector's tuning for this run, as `score,box,unclip` (PP-OCRv6 detectors are published with 0.2,0.45,1.4).
+        #[arg(long, value_name = "S,B,U")]
+        det_tuning: Option<String>,
+        /// Where PP-OCR runs for this run: `cpu` or `directml:0`.
+        #[arg(long)]
+        device: Option<String>,
+        /// `hybrid` and `paddle-vl` use the reading model in this folder (one .gguf, its mmproj .gguf, optionally
+        /// chat_template.jinja) instead of PaddleOCR-VL-1.5.
+        #[arg(long, value_name = "FOLDER")]
+        reader_dir: Option<PathBuf>,
+        /// The vision model answers in HTML (Surya does): take its tags out before scoring.
+        #[arg(long)]
+        reader_html: bool,
+        /// For engine `connection`: the saved connection that reads the pictures, as `NAME` or `NAME=model`
+        /// (see `maru connection list`). The pictures are sent to that service.
+        #[arg(long, value_name = "NAME[=MODEL]")]
+        connection: Option<String>,
+        /// What to call the engine in the tables and the saved report (one engine per run).
+        #[arg(long)]
+        name: Option<String>,
+        /// Whose labels to score against. `person` is `name.txt` only; `provisional` is `name.provisional.txt` where no
+        /// person has labelled yet (two readers agreed, nobody looked: never a basis for a decision); `all` is both.
+        #[arg(long, value_enum, default_value_t = LabelsArg::Person)]
+        labels: LabelsArg,
         /// Ask PP-OCR to enlarge each picture this many times first, as live subtitles do (`[continuous] ocr_scale`).
         #[arg(long, default_value_t = 1.0)]
         scale: f32,
@@ -135,6 +171,15 @@ enum Command {
         /// read beside it as `name.<engine>.txt`, for `tools/label_review.html` to show as a second opinion.
         #[arg(long)]
         write_drafts: bool,
+        /// With --write-drafts: the name the drafts are saved under (`name.<tag>.txt`) instead of the engine's.
+        #[arg(long, value_name = "TAG")]
+        draft_tag: Option<String>,
+        /// With --write-drafts: also read the pictures that already have a label.
+        #[arg(long)]
+        draft_labelled: bool,
+        /// With --write-drafts: leave pictures that already have this draft alone (go on where an earlier run stopped).
+        #[arg(long)]
+        keep_drafts: bool,
         /// Score only one half of the test set. The halves are fixed (a whole scene is always on one side), so tune on `dev` and
         /// judge on `held-out`.
         #[arg(long, value_enum, default_value_t = SplitArg::All)]
@@ -145,6 +190,19 @@ enum Command {
         /// Compare this run, subtitle by subtitle, with a report saved earlier by `--save-report` (before and after a change).
         #[arg(long)]
         compare: Option<PathBuf>,
+    },
+    /// Print the comparison tables for reports saved by `eval-ocr --save-report`: the first report is the one the
+    /// others are judged against, subtitle by subtitle.
+    EvalReport {
+        /// Saved reports; the first is the baseline.
+        #[arg(required = true)]
+        reports: Vec<PathBuf>,
+        /// Only one half of the test set (tune on `dev`, judge on `held-out`).
+        #[arg(long, value_enum, default_value_t = SplitArg::All)]
+        split: SplitArg,
+        /// Only pictures carrying this tag (for example `gold`, or `provisional` for labels nobody has checked).
+        #[arg(long)]
+        tag: Option<String>,
     },
     /// Speak text with the voice from your settings (sentence by sentence) into a WAV file.
     Tts {
@@ -379,6 +437,16 @@ enum SplitArg {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum LabelsArg {
+    /// Labels a person wrote or checked (`name.txt`).
+    Person,
+    /// Labels two readers agreed on that nobody has checked (`name.provisional.txt`), where there is no `name.txt`.
+    Provisional,
+    /// Both kinds, reported apart.
+    All,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 enum EngineArg {
     /// PP-OCRv5 (detector + Korean recogniser), the default.
     Paddle,
@@ -392,6 +460,41 @@ enum EngineArg {
     Gemma,
     /// A vision model you already run; needs --vlm-endpoint.
     Endpoint,
+    /// PP-OCR finds the lines and the vision model you already run (--vlm-endpoint) reads them.
+    HybridEndpoint,
+    /// A saved connection reads the pictures (--connection). They leave this PC.
+    Connection,
+}
+
+/// What a hosted model is asked when it reads a subtitle picture for `--engine connection`.
+const HOSTED_READER_PROMPT: &str = "This picture is a strip cut from a video game's screen. Transcribe the Korean subtitle text in it exactly as it is written, \
+character for character, keeping its punctuation; put a two-line subtitle on two lines. Do not translate, correct, complete or explain anything. \
+Leave out interface labels and button hints that are not part of the subtitle. If there is no readable text, answer with nothing at all.";
+
+/// The reading model for `hybrid` and `paddle-vl`: the folder given with --reader-dir, else PaddleOCR-VL-1.5 (fetched if needed).
+async fn reader_attempts(reader_dir: Option<&std::path::Path>, paths: &Paths, llm: &maru_core::config::LlmConfig, extra: &[String]) -> Option<(String, Vec<maru_core::config::LlmConfig>)> {
+    match reader_dir {
+        Some(dir) => match maru_engine::vision::reader_in(dir) {
+            Some(files) => {
+                let label = dir.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dir.display().to_string());
+                Some((label, maru_engine::vision::launch_plans_for(&files, llm, extra)))
+            }
+            None => {
+                eprintln!("(no reading model in {}: it needs one .gguf and its mmproj .gguf; skipping)\n", dir.display());
+                None
+            }
+        },
+        None => Some(("PaddleOCR-VL-1.5".to_string(), paddle_vl_attempts(paths, llm, extra).await)),
+    }
+}
+
+/// `score,box,unclip` from the command line.
+fn parse_det_tuning(text: &str) -> Result<(f32, f32, f32)> {
+    let parts: Vec<f32> = text.split(',').map(|v| v.trim().parse::<f32>()).collect::<std::result::Result<_, _>>().map_err(|_| anyhow::anyhow!("--det-tuning takes three numbers, for example 0.2,0.45,1.4"))?;
+    match parts.as_slice() {
+        [score, boxes, unclip] => Ok((*score, *boxes, *unclip)),
+        _ => bail!("--det-tuning takes three numbers, for example 0.2,0.45,1.4"),
+    }
 }
 
 /// PP-OCR with the spacing repair the overlay applies, so scores reflect real use.
@@ -637,21 +740,57 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             // Nothing read *because* something is wrong is a failure; an honestly empty screen is not.
             Ok(if report.items.is_empty() && !report.errors.is_empty() { 1 } else { 0 })
         }
-        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, scale, write_drafts, split, save_report, compare } => {
+        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, det, rec, dict, det_tuning, device, reader_dir, reader_html, connection, name: run_name, labels, scale, write_drafts, draft_tag, draft_labelled, keep_drafts, split, save_report, compare } => {
             use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};
-            let s = services(&paths, cfg, false).await;
+            if (run_name.is_some() || draft_tag.is_some()) && engine.len() != 1 {
+                bail!("--name and --draft-tag name one engine: give a single --engine");
+            }
+            // This run's PP-OCR files and tuning, in place of the configured ones.
+            if det.is_some() {
+                cfg.ocr.det_model = det;
+            }
+            if rec.is_some() {
+                cfg.ocr.rec_model = rec;
+            }
+            if dict.is_some() {
+                cfg.ocr.dict_path = dict;
+            }
+            if let Some(device) = device {
+                cfg.ocr.device = device;
+            }
+            if let Some(text) = &det_tuning {
+                let (score, boxes, unclip) = parse_det_tuning(text)?;
+                (cfg.ocr.det_score_threshold, cfg.ocr.det_box_threshold, cfg.ocr.det_unclip_ratio) = (Some(score), Some(boxes), Some(unclip));
+            }
+            let settings = serde_json::json!({
+                "det": cfg.ocr.det_model.as_ref().map(|p| p.display().to_string()), "rec": cfg.ocr.rec_model.as_ref().map(|p| p.display().to_string()),
+                "dict": cfg.ocr.dict_path.as_ref().map(|p| p.display().to_string()), "det_tuning": det_tuning, "device": cfg.ocr.device,
+                "reader_dir": reader_dir.as_ref().map(|p| p.display().to_string()), "reader_html": reader_html, "vlm_prompt": vlm_prompt, "vlm_args": vlm_args,
+            });
+            let config = cfg.clone();
+            // A hosted reader needs no engine on this PC; everything else does. Scoring must leave nothing behind in the data folder.
+            let s = if engine.iter().all(|e| *e == EngineArg::Connection) { None } else { Some(boot(paths.clone(), cfg, BootOptions { start_llm: false, read_only: true, ..Default::default() }).await) };
+            let labels = match labels {
+                LabelsArg::Person => evalreport::Labels::Person,
+                LabelsArg::Provisional => evalreport::Labels::Provisional,
+                LabelsArg::All => evalreport::Labels::All,
+            };
             let split = match split {
                 SplitArg::All => None,
                 SplitArg::Dev => Some(evalreport::Split::Dev),
                 SplitArg::HeldOut => Some(evalreport::Split::Held),
             };
-            let (cases, images) = if write_drafts { (Vec::new(), tools::load_images(&dir)?) } else { (tools::load_case_infos(&dir, split)?, Vec::new()) };
+            let (cases, images) = if write_drafts { (Vec::new(), tools::load_images(&dir)?) } else { (tools::load_case_infos_labelled(&dir, split, labels)?, Vec::new()) };
+            if !write_drafts && labels != evalreport::Labels::Person {
+                let provisional = cases.iter().filter(|c| c.tags.iter().any(|t| t == evalreport::PROVISIONAL_TAG)).count();
+                println!("PROVISIONAL LABELS: {provisional} of these pictures are scored against text that two readers agreed on and no person has checked.\nTreat every number below as provisional; decide on `--labels person` only.\n");
+            }
             println!("{} test image(s)\n", if write_drafts { images.len() } else { cases.len() });
             let mut scores = Vec::new();
             let extra: Vec<String> = vlm_args.as_deref().unwrap_or("").split_whitespace().map(str::to_string).collect();
             // Vision-model servers take turns, so they never compete for VRAM (or for timing).
             let vlm_cfg = {
-                let mut c = s.engine.config().llm.clone();
+                let mut c = config.llm.clone();
                 c.endpoint = None;
                 c.model_path = None;
                 c.draft_model_path = None;
@@ -663,8 +802,22 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 c.extra_args = Vec::new();
                 c
             };
+            let mut hosted: Option<Arc<VlmOcr>> = None;
             for e in engine {
-                let (name, ocr, _server): (String, Arc<dyn maru_ocr::OcrEngine>, Option<maru_llm::LlamaServer>) = match e {
+                let (name, ocr, server): (String, Arc<dyn maru_ocr::OcrEngine>, Option<maru_llm::LlamaServer>) = if e == EngineArg::Connection {
+                    let Some(target) = connection.as_deref() else {
+                        eprintln!("(--engine connection needs --connection <name>; skipping)\n");
+                        continue;
+                    };
+                    let (saved, llm) = connections::resolve(&config, &connections::Target::parse(target))?;
+                    let Some(url) = llm.endpoint.clone() else { bail!("--connection names a saved connection to a server; the model on this PC is read with --engine endpoint") };
+                    println!("The pictures are sent to {saved} ({}).\n", llm.model_name);
+                    let reader = Arc::new(VlmOcr::new(&url, &llm, vlm_prompt.as_deref().unwrap_or(HOSTED_READER_PROMPT)).counting_tokens());
+                    hosted = Some(reader.clone());
+                    (format!("{saved} · {}", llm.model_name), reader as Arc<dyn maru_ocr::OcrEngine>, None)
+                } else {
+                    let Some(s) = s.as_ref() else { continue };
+                    match e {
                     EngineArg::Windows => match s.engine.platform().os_ocr.clone() {
                         Some(o) => ("Windows OCR".into(), o, None),
                         None => {
@@ -672,42 +825,57 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                             continue;
                         }
                     },
-                    EngineArg::Paddle => match load_pp_ocr(&s, &paths) {
+                    EngineArg::Paddle => match load_pp_ocr(s, &paths) {
                         Some(pair) => (pair.0, pair.1, None),
                         None => continue,
                     },
                     EngineArg::Hybrid => {
-                        let Some((_, detector)) = load_pp_ocr(&s, &paths) else { continue };
-                        println!("Preparing PaddleOCR-VL-1.5 for the hybrid engine (the first run downloads the model) …");
-                        let attempts = paddle_vl_attempts(&paths, &s.engine.config().llm, &extra).await;
-                        match start_vision_server("PaddleOCR-VL-1.5", attempts, &paths, SERVER_READY).await {
+                        let Some((_, detector)) = load_pp_ocr(s, &paths) else { continue };
+                        let Some((label, attempts)) = reader_attempts(reader_dir.as_deref(), &paths, &s.engine.config().llm, &extra).await else { continue };
+                        println!("Preparing {label} for the hybrid engine (the first run downloads PaddleOCR-VL) …");
+                        match start_vision_server(&label, attempts, &paths, SERVER_READY).await {
                             Some((server, cfg)) => {
-                                let reader: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, PADDLE_VL_PROMPT));
+                                let reader: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, vlm_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT)).answering_html(reader_html));
                                 let hybrid = maru_engine::hybrid_ocr::HybridOcr::new(detector, reader);
-                                ("PP-OCR + PaddleOCR-VL (hybrid)".to_string(), Arc::new(hybrid) as Arc<dyn maru_ocr::OcrEngine>, Some(server))
+                                let name = if reader_dir.is_some() { format!("PP-OCR + {label} (hybrid)") } else { "PP-OCR + PaddleOCR-VL (hybrid)".to_string() };
+                                (name, Arc::new(hybrid) as Arc<dyn maru_ocr::OcrEngine>, Some(server))
                             }
                             None => {
-                                eprintln!("(PaddleOCR-VL could not start; skipping the hybrid engine)\n");
+                                eprintln!("({label} could not start; skipping the hybrid engine)\n");
                                 continue;
                             }
                         }
                     }
+                    EngineArg::HybridEndpoint => {
+                        let Some((_, detector)) = load_pp_ocr(s, &paths) else { continue };
+                        let Some(url) = vlm_endpoint.clone() else {
+                            eprintln!("(--engine hybrid-endpoint needs --vlm-endpoint <url>; skipping)\n");
+                            continue;
+                        };
+                        let mut cfg = s.engine.config().llm.clone();
+                        cfg.override_endpoint(url.clone());
+                        let reader: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&url, &cfg, vlm_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT)).answering_html(reader_html));
+                        ("PP-OCR + vision model (endpoint, hybrid)".to_string(), Arc::new(maru_engine::hybrid_ocr::HybridOcr::new(detector, reader)) as Arc<dyn maru_ocr::OcrEngine>, None)
+                    }
                     EngineArg::PaddleVl | EngineArg::Gemma => {
-                        let label = if e == EngineArg::PaddleVl { "PaddleOCR-VL-1.5" } else { "Gemma 4 (vision)" };
-                        println!("Preparing {label} (the first run downloads the model; this can take a while) …");
-                        let (attempts, prompt) = match e {
-                            EngineArg::PaddleVl => (paddle_vl_attempts(&paths, &s.engine.config().llm, &extra).await, PADDLE_VL_PROMPT),
+                        let (label, attempts, prompt) = match e {
+                            EngineArg::PaddleVl => {
+                                let Some((label, attempts)) = reader_attempts(reader_dir.as_deref(), &paths, &s.engine.config().llm, &extra).await else { continue };
+                                (label, attempts, vlm_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT))
+                            }
                             _ => {
                                 let repo = gemma_repo
                                     .clone()
                                     .or_else(|| s.engine.config().llm.hf_repo.clone())
                                     .unwrap_or_else(|| setup::RECOMMENDED_MODEL.to_string());
-                                (gemma_attempts(&paths, &repo, &vlm_cfg, &extra).await, GENERAL_VLM_PROMPT)
+                                ("Gemma 4 (vision)".to_string(), gemma_attempts(&paths, &repo, &vlm_cfg, &extra).await, GENERAL_VLM_PROMPT)
                             }
                         };
+                        let label = label.as_str();
+                        println!("Preparing {label} (the first run downloads the model; this can take a while) …");
                         match start_vision_server(label, attempts, &paths, SERVER_READY).await {
                             Some((server, cfg)) => {
-                                let ocr: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, prompt));
+                                let ocr: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, prompt).answering_html(reader_html && e == EngineArg::PaddleVl));
                                 (label.to_string(), ocr, Some(server))
                             }
                             None => {
@@ -726,25 +894,35 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         let prompt = vlm_prompt.clone().unwrap_or_else(|| PADDLE_VL_PROMPT.to_string());
                         ("Vision model (endpoint)".into(), Arc::new(VlmOcr::new(&url, &cfg, &prompt)) as Arc<dyn maru_ocr::OcrEngine>, None)
                     }
+                    EngineArg::Connection => continue,
+                    }
                 };
+                let name = run_name.clone().unwrap_or(name);
                 if write_drafts {
                     // clap names the engine the way the command line spells it (`paddle-vl`), which is what the review page lists it as.
-                    let tag = clap::ValueEnum::to_possible_value(&e).map(|v| v.get_name().to_string()).unwrap_or_else(|| "draft".into());
-                    println!("{name}: reading the pictures that have no label yet …");
+                    let tag = draft_tag.clone().or_else(|| clap::ValueEnum::to_possible_value(&e).map(|v| v.get_name().to_string())).unwrap_or_else(|| "draft".into());
+                    println!("{name}: reading the pictures{} …", if draft_labelled { "" } else { " that have no label yet" });
                     let (tag2, images) = (tag.clone(), images.clone());
-                    match tokio::task::spawn_blocking(move || tools::write_drafts(&tag2, ocr.as_ref(), &images, scale)).await? {
+                    let rules = tools::DraftRules { labelled_too: draft_labelled, keep_existing: keep_drafts };
+                    match tokio::task::spawn_blocking(move || tools::write_drafts_with(&tag2, ocr.as_ref(), &images, scale, rules)).await? {
                         Ok(n) => println!("  wrote {n} draft(s) as name.{tag}.txt\n"),
-                        Err(err) => eprintln!("({name} failed: {err:#})\n"),
+                        Err(err) => eprintln!("({name} failed: {err:#})\n  Drafts written before the failure are kept; --keep-drafts goes on from there.\n"),
                     }
                     continue;
                 }
                 // Recognition is blocking (and for vision models waits on HTTP): keep the runtime free.
                 let (task_name, cases) = (name.clone(), cases.clone());
+                let watch = tools::PeakWatch::start(std::iter::once(std::process::id()).chain(server.as_ref().and_then(|s| s.process_id())).collect());
                 let result = tokio::task::spawn_blocking(move || tools::eval_engine(&task_name, ocr.as_ref(), &cases, scale)).await?;
+                let peaks = watch.finish();
                 match result {
-                    Ok(score) => scores.push(score),
+                    Ok(score) => scores.push(tools::EngineScore { peaks, ..score }),
                     Err(err) => eprintln!("({name} failed: {err:#})\n"),
                 }
+            }
+            if let Some(reader) = &hosted {
+                let (replies, input, output) = reader.tokens_used();
+                println!("Tokens reported by the hosted service: {input} in, {output} out over {replies} replies.\n");
             }
             if write_drafts {
                 return Ok(0);
@@ -771,10 +949,49 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 }
             }
             if let Some(path) = save_report {
-                let report = serde_json::json!({ "engines": scores.iter().map(|s| evalreport::to_json(&s.name, s.scale, &s.results)).collect::<Vec<_>>() });
+                let engines: Vec<serde_json::Value> = scores
+                    .iter()
+                    .map(|s| {
+                        let mut v = evalreport::to_json(&s.name, s.scale, &s.results);
+                        v["peak_memory_mb"] = serde_json::json!(s.peaks.memory_mb);
+                        v["peak_video_memory_mb"] = serde_json::json!(s.peaks.video_memory_mb);
+                        v
+                    })
+                    .collect();
+                let kind = match labels {
+                    evalreport::Labels::Person => "person",
+                    evalreport::Labels::Provisional => "provisional",
+                    evalreport::Labels::All => "all",
+                };
+                let report = serde_json::json!({ "engines": engines, "labels": kind, "settings": settings });
                 std::fs::write(&path, serde_json::to_string_pretty(&report)?).with_context(|| format!("writing {}", path.display()))?;
                 println!("Saved this run's results to {}. Next time: --compare {}", path.display(), path.display());
             }
+            Ok(0)
+        }
+        Command::EvalReport { reports, split, tag } => {
+            let split = match split {
+                SplitArg::All => None,
+                SplitArg::Dev => Some(evalreport::Split::Dev),
+                SplitArg::HeldOut => Some(evalreport::Split::Held),
+            };
+            let mut runs = Vec::new();
+            for path in &reports {
+                let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?)?;
+                let found = evalreport::saved_runs(&saved);
+                if found.is_empty() {
+                    bail!("{} is not a report saved by --save-report", path.display());
+                }
+                if saved.get("labels").and_then(|l| l.as_str()).is_some_and(|l| l != "person") && tag.as_deref() != Some("gold") {
+                    println!("PROVISIONAL: {} was scored against labels that include text no person has checked.", path.display());
+                }
+                runs.extend(found.into_iter().map(|r| evalreport::SavedRun { results: evalreport::keep(&r.results, split, tag.as_deref()), ..r }));
+            }
+            runs.retain(|r| !r.results.is_empty());
+            if runs.is_empty() {
+                bail!("no pictures are left with that split and tag");
+            }
+            println!("\n{}", evalreport::tables(&runs));
             Ok(0)
         }
         Command::Tts { text, out } => {
