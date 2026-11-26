@@ -73,7 +73,7 @@ impl Target {
 }
 
 /// The settings to talk to a saved connection: found by name whatever the capitals, or by the beginning of its
-/// name when only one starts that way ("azure" finds "Azure Plannia").
+/// name when only one starts that way ("azure" finds "Azure Contoso").
 pub fn resolve(cfg: &Config, target: &Target) -> Result<(String, LlmConfig)> {
     let mut llm = cfg.llm.clone();
     if target.name.eq_ignore_ascii_case(LOCAL) {
@@ -509,7 +509,7 @@ mod tests {
         let server = |name: &str, endpoint: &str, model: &str, provider, key: Option<&str>| SavedServer { name: name.into(), endpoint: endpoint.into(), model_name: model.into(), provider, api_key: key.map(|k| k.to_string().into()) };
         cfg.llm.servers = vec![
             server("NAS", "http://nas:11434", "gemma", ServerProvider::Openai, None),
-            server("Azure Plannia", "https://example.openai.azure.com", "gpt-mini", ServerProvider::Azure, Some("azure-key")),
+            server("Azure Contoso", "https://example.openai.azure.com", "gpt-mini", ServerProvider::Azure, Some("azure-key")),
             server("Azure Two", "https://two.openai.azure.com", "gpt-mini", ServerProvider::Azure, Some("other-key")),
         ];
         cfg
@@ -521,13 +521,13 @@ mod tests {
         let (name, llm) = resolve(&cfg, &Target::parse("nas")).unwrap();
         assert_eq!((name.as_str(), llm.endpoint.as_deref(), llm.model_name.as_str(), llm.api_key.is_none()), ("NAS", Some("http://nas:11434"), "gemma", true));
         assert_eq!(llm.provider, ServerProvider::Openai, "not the active connection's provider or key");
-        let (name, llm) = resolve(&cfg, &Target::parse("azure p=gpt-big")).unwrap();
-        assert_eq!((name.as_str(), llm.model_name.as_str(), llm.provider), ("Azure Plannia", "gpt-big", ServerProvider::Azure));
+        let (name, llm) = resolve(&cfg, &Target::parse("azure c=gpt-big")).unwrap();
+        assert_eq!((name.as_str(), llm.model_name.as_str(), llm.provider), ("Azure Contoso", "gpt-big", ServerProvider::Azure));
         assert_eq!(llm.api_key.as_ref().map(|k| k.as_str()), Some("azure-key"));
         let unclear = resolve(&cfg, &Target::parse("azure")).unwrap_err().to_string();
-        assert!(unclear.contains("Azure Plannia or Azure Two"), "{unclear}");
+        assert!(unclear.contains("Azure Contoso or Azure Two"), "{unclear}");
         let missing = resolve(&cfg, &Target::parse("Claude")).unwrap_err().to_string();
-        assert!(missing.contains("NAS, Azure Plannia, Azure Two") && !missing.contains("key"), "{missing}");
+        assert!(missing.contains("NAS, Azure Contoso, Azure Two") && !missing.contains("key"), "{missing}");
     }
 
     #[test]
