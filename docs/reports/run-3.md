@@ -494,7 +494,10 @@ Los tokens son los que informó el servicio. Ningún pedido falló ni se repiti�
 6. **Errores míos**, corregidos durante la corrida: las 38 imágenes de rótulos cortados (arriba); medí una vez con ellas
    dentro y repetí la medición entera sin ellas; durante la primera medición calculé hashes de archivos grandes, que
    pudo ensuciar algún tiempo (la tabla de oro es de una segunda medición).
-7. **Un nombre tuyo en mi salida de consola:** al listar los nombres de tus conexiones guardadas apareció el de la de
+7. **El primer push dejó el CI de Windows en rojo:** `provisional_labels.py --check` imprime coreano, y en una consola
+   de Windows que no es UTF-8 no podía escribirlo. En tu PC pasaba porque esa consola sí estaba en UTF-8. Ahora la
+   herramienta escribe UTF-8 por sí misma; las pruebas de `tools/` pasan también con la página de códigos de Windows.
+8. **Un nombre tuyo en mi salida de consola:** al listar los nombres de tus conexiones guardadas apareció el de la de
    Azure. No está en ningún archivo ni commit; solo en el registro de esta sesión.
 
 Observado y no corregido:
