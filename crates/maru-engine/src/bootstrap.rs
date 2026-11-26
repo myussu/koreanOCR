@@ -321,7 +321,13 @@ pub async fn boot(paths: Paths, cfg: Config, opts: BootOptions) -> Services {
 
 pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOptions, platform: Option<Platform>) -> Services {
     let mut notes = Vec::new();
-    let (cfg, lite) = cfg.effective();
+    // One model per task: `[tasks]` (or, without it, the older settings read as one) decides the fields the
+    // capture and live paths read; the routes of the other tasks are built further down.
+    let applied = maru_core::tasks::apply(&cfg);
+    notes.extend(applied.problems.iter().cloned());
+    // This PC's model, with the lite profile, whatever captures use.
+    let local_cfg = applied.local.clone().map(|llm| Config { llm, ..applied.config.clone() }.effective().0.llm);
+    let (cfg, lite) = applied.config.clone().effective();
     if lite {
         notes.push(format!(
             "Lite profile: no OCR reading model, {} model slot(s), context {}{}.",
@@ -496,8 +502,12 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     let mut live_llm = None;
     let alternate = cfg.continuous.translation.model != maru_core::live_model::LiveModel::Main;
     // Live lines on a server can fall back to a local model; it is built like an alternate live model.
+    let live_on_server = match &applied.live {
+        Some(route) => route.server.is_some(),
+        None => cfg.llm.endpoint.is_some(),
+    };
     let backup = cfg.continuous.translation.backup_model
-        .filter(|m| !alternate && cfg.llm.endpoint.is_some() && *m != maru_core::live_model::LiveModel::Main);
+        .filter(|m| !alternate && live_on_server && *m != maru_core::live_model::LiveModel::Main);
     let live_cfg = match backup {
         Some(model) => { let mut c = cfg.clone(); c.continuous.translation.model = model; c }
         None => cfg.clone(),
@@ -505,7 +515,8 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     if (alternate || backup.is_some()) && opts.start_llm {
         match crate::live_models::local_config(&live_cfg) {
             Ok(local) => {
-                let main = (cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart).then(|| cfg.llm.clone());
+                // With captures on a server, the runtime still owns this PC's model for the tasks that use it.
+                let main = if cfg.llm.endpoint.is_none() { (source.is_some() && cfg.llm.autostart).then(|| cfg.llm.clone()) } else { local_cfg.clone().filter(|_| cfg.llm.autostart) };
                 // A local live model's lifecycle must not gate the independent remote main client.
                 let runtime_status = if cfg.llm.endpoint.is_some() { watch::channel(LlmStatus::Disabled).0 } else { status_tx.clone() };
                 let runtime = maru_llm::model_runtime::ModelRuntime::new(main, local.clone(), paths.clone(), runtime_status);
@@ -535,6 +546,34 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         model_runtime = Some(runtime);
     }
 
+    // This PC's model for the tasks that name it. Captures on it: the same client. Captures on a server: its own
+    // on-demand runtime (shared with a translation-only live model, so only one of them is ever loaded).
+    let local_client = if cfg.llm.endpoint.is_none() {
+        llm.clone()
+    } else if let (Some(local), true) = (&local_cfg, opts.start_llm && cfg.llm.autostart) {
+        let runtime = model_runtime.get_or_insert_with(|| maru_llm::model_runtime::ModelRuntime::new(Some(local.clone()), local.clone(), paths.clone(), watch::channel(LlmStatus::Disabled).0)).clone();
+        Some(LlmClient::from_config(local).with_runtime(runtime, maru_llm::model_runtime::ModelRole::Main))
+    } else {
+        None
+    };
+    let local_route = local_client.map(|client| crate::routes::local_route(local_cfg.as_ref().unwrap_or(&cfg.llm), client));
+    let mut routes = crate::routes::build(&cfg, local_route.clone());
+    routes.live = applied.live.as_ref().and_then(|live| match &live.server {
+        Some(server) => Some(crate::routes::Route {
+            connection: live.connection.clone(),
+            model: server.model_name.clone(),
+            place: server.endpoint.as_deref().map_or(crate::routes::Place::Hosted, |e| crate::routes::place_of(e, server.provider)),
+            client: LlmClient::from_config(server),
+        }),
+        None => local_route.clone(),
+    });
+    if let Some(live) = &routes.live {
+        notes.push(format!("Live subtitles: {} ({})", live.name(), live.model));
+    }
+    if let Some(first) = routes.card_meanings.first() {
+        notes.push(format!("Card meanings: {} ({}), then {}", first.name(), first.model, if routes.card_meanings.len() > 1 { "this PC's model, then the dictionary" } else { "the dictionary" }));
+    }
+
     tracing::info!("boot: starting the engine");
     let engine = Engine::new(EngineParts {
         config: cfg.clone(),
@@ -550,6 +589,7 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         live_llm,
         labels: Some(labels),
     });
+    engine.set_routes(routes);
     if let Err(e) = engine.open_reading_areas(&paths.data_dir.join("reading-areas.db")) {
         notes.push(e.to_string());
     }

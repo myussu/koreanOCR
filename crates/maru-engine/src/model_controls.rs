@@ -104,10 +104,10 @@ impl Services {
         } else {
             ModelRole::Live
         };
-        let client = if selected == LiveModel::Main {
-            &self.engine.inner.llm
+        let client = &if selected == LiveModel::Main {
+            self.engine.inner.live_main()
         } else {
-            &self.engine.inner.live_llm
+            self.engine.inner.live_llm.clone()
         };
         let mut model_status = if selected == LiveModel::Main {
             self.llm_status()
@@ -229,10 +229,10 @@ impl Services {
     async fn warm_live_models(&self) -> Result<(), String> {
         let cfg = self.engine.config();
         let selected = cfg.continuous.translation.model;
-        let client = if selected == LiveModel::Main {
-            &self.engine.inner.llm
+        let client = &if selected == LiveModel::Main {
+            self.engine.inner.live_main()
         } else {
-            &self.engine.inner.live_llm
+            self.engine.inner.live_llm.clone()
         };
         let client = client
             .as_ref()

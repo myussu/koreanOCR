@@ -143,6 +143,39 @@ snapshot_model_name = "maru"   # exact model name, e.g. from ollama list
 # No server: live translator + offline meanings, without loading local Gemma.
 # Live off: snapshots return to the normal [llm] setup on demand.
 
+# One model per task. "local" is the model this PC runs ([llm] hf_repo / model_path); any other name is a
+# connection saved under [llm] servers. Maru writes this table into an older file the first time the new version
+# starts (a copy of the file is kept beside it as config.toml.before-tasks-<date>.bak; `maru config migrate` does
+# the same from the command line, `maru config tasks` prints it). Once it has a version, the [llm] endpoint /
+# provider / api_key / model_name keys and [continuous.translation] snapshot_* above are no longer read.
+[tasks]
+version = 1
+
+[tasks.live]                  # live subtitles
+connection = "local"
+model = ""                    # "" = the connection's own model; with "local": "" or main | hy_mt2 | milmmt | hy_mt2_small | lfm
+
+[tasks.capture]               # snapshot, region, screen scan, deep dive (hover asks no model)
+connection = "local"
+model = ""
+while_live = ""               # a saved connection to use instead while live subtitles are on; "" = the same one
+while_live_model = ""
+
+[tasks.card_meanings]         # Make cards: the meaning of each word in the line
+connection = "local"          # asked first; then this PC's model; then the dictionary's first sense.
+model = ""                    # This PC's model is never loaded for a card while live subtitles run: the sheet
+                              # offers another connection now, or the same request once they stop.
+
+[tasks.card_sentence]         # Make cards: the sentence card's translation
+connection = ""               # "" = keep the translation the line already has
+model = ""
+
+[tasks.voice_reading]         # the voice while reading or playing
+voice = ""                    # "" = the voice in [tts]
+
+[tasks.voice_cards]           # the voice on Anki cards
+voice = ""
+
 # Per-application behaviour. `exe` is the program's file name.
 [[profile]]
 name = "RPG"

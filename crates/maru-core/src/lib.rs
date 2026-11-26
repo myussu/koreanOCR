@@ -12,6 +12,7 @@ pub mod types;
 pub mod live_model;
 pub mod resources;
 pub mod external_servers;
+pub mod tasks;
 
 pub use config::Config;
 pub use error::{Error, Result};

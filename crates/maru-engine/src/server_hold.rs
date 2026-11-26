@@ -19,12 +19,19 @@ const RELEASE_AFTER: Duration = Duration::from_millis(200);
 /// live mode), and the snapshot server that live mode sends snapshots to.
 fn server_clients(inner: &Inner, for_live: bool) -> Vec<LlmClient> {
     let live = &inner.cfg.continuous.translation;
+    // Live subtitles on their own connection hold that server instead of the captures' one.
+    let own_live = inner.routes().live.as_ref().map(|r| r.client.clone());
     let mut clients: Vec<LlmClient> = inner
         .llm
         .iter()
-        .filter(|c| c.holds_server_model() && (!for_live || live.model == LiveModel::Main))
+        .filter(|c| c.holds_server_model() && (!for_live || (live.model == LiveModel::Main && own_live.is_none())))
         .cloned()
         .collect();
+    if let Some(client) = own_live.filter(|c| c.holds_server_model() && live.model == LiveModel::Main)
+        && !clients.iter().any(|c| c.same_server_model(&client))
+    {
+        clients.push(client);
+    }
     if live.snapshot_endpoint.is_some() {
         let cfg = inner.cfg.llm.for_snapshot_server(live);
         let snapshot = LlmClient::from_config(&cfg);

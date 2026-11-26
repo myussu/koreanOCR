@@ -16,8 +16,26 @@ type S<'a> = State<'a, Arc<AppState>>;
 
 /// The words of a line with their meaning in it, and what Anki already has.
 #[tauri::command]
-pub async fn mine_sheet(state: S<'_>, sentence: String, translation: String, app: Option<String>) -> Result<MineSheet, String> {
-    state.engine().mine_sheet(&sentence, &translation, app.as_deref()).await.map_err(|e| e.to_string())
+pub async fn mine_sheet(state: S<'_>, sentence: String, translation: String, app: Option<String>, ask: Option<maru_engine::routes::CardAsk>) -> Result<MineSheet, String> {
+    state.engine().mine_sheet_with(&sentence, &translation, app.as_deref(), &ask.unwrap_or_default()).await.map_err(|e| e.to_string())
+}
+
+/// The line translated again for its sentence card ("Retry with …"; or the card-sentence connection when one is set).
+#[tauri::command]
+pub async fn mine_sentence_translation(state: S<'_>, sentence: String, app: Option<String>, ask: Option<maru_engine::routes::CardAsk>) -> Result<maru_engine::mining::CardSentence, String> {
+    Ok(state.engine().card_sentence(&sentence, app.as_deref(), &ask.unwrap_or_default()).await)
+}
+
+/// Which connection and model each task uses and what is known about it; nothing is asked.
+#[tauri::command]
+pub fn task_status(state: S<'_>) -> Vec<maru_engine::routes::TaskStatus> {
+    state.engine().task_status()
+}
+
+/// The settings' Test button: one short fixed question to the task's connection.
+#[tauri::command]
+pub async fn task_test(state: S<'_>, task: maru_core::tasks::Task) -> Result<maru_engine::routes::TaskStatus, String> {
+    Ok(state.engine().test_task(task).await)
 }
 
 #[derive(Debug, Deserialize)]

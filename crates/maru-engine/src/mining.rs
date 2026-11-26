@@ -60,6 +60,14 @@ pub struct MineSheet {
     pub note: Option<String>,
     /// The learner's dictionary's attribution, shown with its meanings.
     pub credit: Option<String>,
+    /// The connection that gave the meanings; `None` when no model was needed, or none answered (the dictionary).
+    pub answered: Option<crate::routes::Answered>,
+    /// The connections asked before it that did not answer, each with a plain sentence.
+    pub attempts: Vec<crate::routes::Attempt>,
+    /// The connections this line can be asked again with ("Retry with …").
+    pub retry: Vec<crate::routes::RetryOption>,
+    /// Live subtitles were running: this PC's model is not loaded beside them.
+    pub live_running: bool,
 }
 
 /// The line being mined and where its cards go.
@@ -86,6 +94,16 @@ pub struct MineChoice {
     pub meaning_es: String,
 }
 
+/// A line translated again for its card.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CardSentence {
+    /// `None`: no connection is chosen for it (the card keeps the line's translation), or none answered.
+    pub translation: Option<String>,
+    pub answered: Option<crate::routes::Answered>,
+    pub attempts: Vec<crate::routes::Attempt>,
+    pub note: Option<String>,
+}
+
 /// What adding the sentence card did.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
@@ -97,6 +115,16 @@ pub enum MinedSentence {
 impl Engine {
     /// The words of a line with their meaning in it, and what Anki already has.
     pub async fn mine_sheet(&self, sentence: &str, translation: &str, app: Option<&str>) -> Result<MineSheet> {
+        self.mine_sheet_with(sentence, translation, app, &Default::default()).await
+    }
+
+    /// As [`Engine::mine_sheet`], asking for the meanings the way `ask` says: one named connection instead of
+    /// the task's order, or only once live subtitles have stopped.
+    pub async fn mine_sheet_with(&self, sentence: &str, translation: &str, app: Option<&str>, ask: &crate::routes::CardAsk) -> Result<MineSheet> {
+        if ask.after_live {
+            crate::routes::until_live_stops(&self.inner).await;
+        }
+        let live_running = self.live_active();
         let sentence = sentence.trim().to_string();
         if sentence.is_empty() {
             return Err(EngineError::Other("There is no line to make cards from.".into()));
@@ -116,14 +144,14 @@ impl Engine {
 
         let profile = app.and_then(|a| self.inner.cfg.profile_for(a));
         // With the learner's dictionary the meanings are its senses; without it, the model's words as before.
-        let (glosses, senses, note) = match self.inner.nikl.get() {
+        let (glosses, senses, note, answered, attempts) = match self.inner.nikl.get() {
             Some(nikl) => {
-                let found = crate::senses::line_senses(&self.inner, nikl, &sentence, &eojeols).await;
-                (Vec::new(), found.words, found.note)
+                let found = crate::senses::line_senses(&self.inner, nikl, &sentence, &eojeols, ask).await;
+                (Vec::new(), found.words, found.note, found.answered, found.attempts)
             }
             None => {
-                let (glosses, note) = self.line_meanings(&sentence, &eojeols, profile).await;
-                (glosses, Vec::new(), note)
+                let (glosses, note, answered, attempts) = self.line_meanings(&sentence, &eojeols, profile, ask).await;
+                (glosses, Vec::new(), note, answered, attempts)
             }
         };
 
@@ -189,54 +217,107 @@ impl Engine {
             anki_error,
             note,
             credit: self.learner_dictionary_credit().map(str::to_owned),
+            answered,
+            attempts,
+            retry: self.card_retry_options(),
+            live_running,
         })
     }
 
-    /// Each word's meaning in this line, by its index, from the snapshot model; with a note when there are none.
+    /// Each word's meaning in this line, by its index, in the model's own words (no learner's dictionary): from
+    /// the card-meanings connection and then this PC's model, with a note when a connection or all of them failed.
     async fn line_meanings(
         &self,
         sentence: &str,
         eojeols: &[maru_core::Eojeol],
         profile: Option<&maru_core::config::AppProfile>,
-    ) -> (Vec<(usize, String)>, Option<String>) {
+        ask: &crate::routes::CardAsk,
+    ) -> (Vec<(usize, String)>, Option<String>, Option<crate::routes::Answered>, Vec<crate::routes::Attempt>) {
         let words = crate::pipeline::gloss_words(eojeols, false);
         if words.is_empty() {
-            return (Vec::new(), None);
+            return (Vec::new(), None, None, Vec::new());
         }
         let inner = &self.inner;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let em = crate::pipeline::Emitter::new(tx, 0);
-        let live = inner.live_active.load(std::sync::atomic::Ordering::Acquire);
         let offline = "Meanings are the dictionary's: check that each one fits the line.";
-        let Some((llm, native)) = crate::pipeline::snapshot_model(inner, &em, live).await else {
-            let why = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|e| match e {
-                maru_core::Event::Error { message, .. } => Some(message),
-                _ => None,
-            });
-            return (Vec::new(), Some(why.map_or(offline.to_string(), |w| format!("{offline} ({w})"))));
-        };
-        if native {
-            return (Vec::new(), Some(format!("{offline} The live translation model gives no word meanings; turn live subtitles off for meanings in context.")));
-        }
         let ctx = PromptContext {
             hint: profile.and_then(|p| p.hint.clone()),
             glossary: profile.map(|p| p.glossary.clone()).unwrap_or_default(),
             ..Default::default()
         };
-        let mut found = Vec::new();
-        let result = llm
-            .glosses(&GlossRequest { sentence, words: &words, ctx: &ctx }, &mut |chunk| {
-                if let LlmChunk::Gloss(g) = chunk
-                    && words.iter().any(|w| w.index == g.index)
-                {
-                    found.push((g.index, g.meaning));
-                }
-            })
-            .await;
-        match result {
-            Err(e) if found.is_empty() => (Vec::new(), Some(format!("{offline} ({e})"))),
-            _ => (found, None),
+        let request = GlossRequest { sentence, words: &words, ctx: &ctx };
+        let request = &request;
+        let ask_one = |llm: maru_llm::LlmClient| async move {
+            let mut found = Vec::new();
+            let result = llm
+                .glosses(request, &mut |chunk| {
+                    if let LlmChunk::Gloss(g) = chunk
+                        && request.words.iter().any(|w| w.index == g.index)
+                    {
+                        found.push((g.index, g.meaning));
+                    }
+                })
+                .await;
+            match result {
+                Err(e) if found.is_empty() => Err(e),
+                _ => Ok((!found.is_empty()).then_some(found)),
+            }
+        };
+        let routes = inner.routes();
+        if !routes.card_meanings.is_empty() || ask.connection.is_some() {
+            let order = crate::routes::candidates(&routes, &routes.card_meanings, ask);
+            let outcome = crate::routes::ask_in_order(inner, order, ask_one).await;
+            let note = match &outcome.value {
+                Some(_) => outcome.note(""),
+                None => Some(outcome.note(offline).unwrap_or_else(|| offline.to_string())),
+            };
+            return (outcome.value.unwrap_or_default(), note, outcome.answered, outcome.attempts);
         }
+        // An engine built without task routes: the capture model, as before `[tasks]`.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let em = crate::pipeline::Emitter::new(tx, 0);
+        let live = inner.live_active.load(std::sync::atomic::Ordering::Acquire);
+        let Some((llm, native)) = crate::pipeline::snapshot_model(inner, &em, live).await else {
+            let why = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|e| match e {
+                maru_core::Event::Error { message, .. } => Some(message),
+                _ => None,
+            });
+            return (Vec::new(), Some(why.map_or(offline.to_string(), |w| format!("{offline} ({w})"))), None, Vec::new());
+        };
+        if native {
+            return (Vec::new(), Some(format!("{offline} The live translation model gives no word meanings; turn live subtitles off for meanings in context.")), None, Vec::new());
+        }
+        match ask_one(llm).await {
+            Err(e) => (Vec::new(), Some(format!("{offline} ({e})")), None, Vec::new()),
+            Ok(found) => (found.unwrap_or_default(), None, None, Vec::new()),
+        }
+    }
+
+    /// Translate a line for its sentence card with the card-sentence connection, then this PC's model; `ask` names
+    /// one connection instead. With no connection chosen for the task and none named, nothing is asked.
+    pub async fn card_sentence(&self, sentence: &str, app: Option<&str>, ask: &crate::routes::CardAsk) -> CardSentence {
+        if ask.after_live {
+            crate::routes::until_live_stops(&self.inner).await;
+        }
+        let routes = self.inner.routes();
+        let order = crate::routes::candidates(&routes, &routes.card_sentence, ask);
+        if order.is_empty() {
+            return CardSentence { translation: None, answered: None, attempts: Vec::new(), note: None };
+        }
+        let profile = app.and_then(|a| self.inner.cfg.profile_for(a));
+        let ctx = PromptContext {
+            hint: profile.and_then(|p| p.hint.clone()),
+            glossary: profile.map(|p| p.glossary.clone()).unwrap_or_default(),
+            ..Default::default()
+        };
+        let request = maru_llm::LiveRequest { text: sentence.trim(), ctx: &ctx, turns: &[] };
+        let request = &request;
+        let outcome = crate::routes::ask_in_order(&self.inner, order, |client| async move {
+            let text = client.translate_live(request, &mut |_| {}).await?;
+            Ok(Some(text.trim().to_string()).filter(|t| !t.is_empty()))
+        })
+        .await;
+        let note = outcome.note("The line keeps the translation it had.");
+        CardSentence { translation: outcome.value, answered: outcome.answered, attempts: outcome.attempts, note }
     }
 
     /// Record the word as met in this line, with the meaning you chose, and reserve its Anki add.

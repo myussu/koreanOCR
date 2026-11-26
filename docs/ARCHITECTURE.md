@@ -630,6 +630,46 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
 * **Tests:** `client.rs` (wire format, release body), `remote_model_tests.rs` (hold once, no release between areas, release
   after stop, nothing at 0). Real server, game and other GPU users (Immich): M-34.
 
+### 4.9c One model per task (`[tasks]`)
+
+* **What it is:** `maru-core/src/tasks.rs`. `[tasks]` names, for live subtitles, captures (snapshot, region, scan, deep
+  dive), card meanings and the card's sentence translation, a connection (`local` = the model this PC runs, or the name
+  of a saved connection in `[llm].servers`) and optionally a model; plus a voice for reading and for cards. Before it,
+  card meanings silently used the "snapshot" model, which itself changed while live subtitles ran.
+* **Older files:** `derive` reads a file without the table as the routing it already had (`[llm] endpoint` → captures;
+  `[continuous.translation] model` → live; `snapshot_*` → captures while live is on), with **card meanings on this PC's
+  model** (the result of run 1's blind review) and the sentence translation left as the line has it. A server that was
+  only an address is saved under its host name. `migrate` writes that table into the text with `settings::patch`
+  (comments, order and the older keys stay), `migrate_file` first copies the file beside itself as
+  `config.toml.before-tasks-<UTC stamp>.bak`; both do nothing once `version = 1`. The app calls it at start-up
+  (`main.rs`), `maru config migrate [--dry-run]` from the command line; `maru config tasks` prints the table.
+* **How the engine reads it:** `tasks::apply` writes the capture connection back into the fields the capture and live
+  paths always read (`cfg.llm.endpoint/provider/api_key/model_name`, the snapshot server, the live model), so those
+  paths are unchanged; applying a derived table gives back exactly the older settings (tested). What that shape cannot
+  say goes to `maru-engine/src/routes.rs`: `Routes.live` (live subtitles on another connection than captures: asked in
+  `pipeline::live`, preloaded by `set_live_active`, held by `server_hold`, prepared by `model_controls`) and the card
+  routes. `bootstrap.rs` builds this PC's model client even when captures go to a server (one `ModelRuntime` owns it and
+  a translation-only live model, so only one of them is ever in memory). Command-line overrides (`--endpoint`,
+  `--no-llm`) call `Config::route_by_older_fields` first.
+* **Cards:** `routes::ask_in_order` asks the chosen connection, then this PC's model; `senses::line_senses` falls back to
+  the dictionary's first sense. Each failure is classified by `maru-llm/src/problem.rs` (`no_key`, `quota`,
+  `unreachable`, `failed`) into one plain sentence without status codes or server text; a quota error is never retried.
+  `MineSheet` gains `answered` (who gave the meanings), `attempts`, `retry` (connections to ask again with) and
+  `live_running`. **This PC's model is never loaded for a card while live subtitles run** (`Skipped::LiveRunning`,
+  nothing is sent): the sheet offers another connection now (`CardAsk.connection`) or the same request once live stops
+  (`CardAsk.after_live`, which waits). `Engine::card_sentence` translates a line for its card the same way.
+* **Status:** `Engine::task_status` (connection, model, where it runs, the last known state, the fallbacks) and
+  `Engine::test_task` (one short fixed question; it loads this PC's model except beside live subtitles). States:
+  `working`, `no_key`, `quota`, `unreachable`, `failed`, `unknown`, `not_loaded`, `off`.
+* **Commands:** `task_status`, `task_test(task)`, `mine_sentence_translation(sentence, app, ask?)`; `mine_sheet` takes an
+  optional `ask`. `tasks.card_*` and `llm.servers` apply without a restart (`Engine::reroute_cards`); the live and
+  capture connections hold models and servers and wait for one.
+* **Tests:** `tasks.rs` (derive, apply, the round trip, migration, backup, idempotence, a rewritten file, command-line
+  overrides), `problem.rs`, `routes.rs`, `tests/pipeline.rs` (quota → plain message and fallback, every connection
+  failing → dictionary, retry with a named connection, live running, queued until live stops, a translation-only live
+  model, live on its own connection, the Test button), `remote_model_tests.rs` (start-up from an older file and from a
+  task table). Real connections and the real config: M-42.
+
 ### 4.10 Setup wizard and installers (`maru setup`)
 * `maru-engine::hardware`: reads `nvidia-smi` and one PowerShell/CIM probe (GPUs, driver CUDA version, memory, free disk);
   parsers are separate from process calls and tested with real command output.
@@ -701,6 +741,7 @@ model), a `hint` for the prompts, `register`, `gloss_mode`, and Anki deck/tags.
 | `anki_flow.rs` | deck suggestions, tags, add flow |
 | `hybrid_ocr.rs` · `vlm_ocr.rs` · `vision.rs` · `respace.rs` | OCR second opinion and repair |
 | `hardware.rs` · `plan.rs` | what this PC has · what to install on it |
+| `routes.rs` | one model per task: the live route, the card routes with their fallbacks, per-task status and test |
 | `resource_targets.rs` · `resource_monitor.rs` | owned process identities, demand-driven platform samples and bounded local resource sessions |
 
 ## 6. Contracts
@@ -787,6 +828,13 @@ Card meanings in two languages are additive: `MineWord` (`meaning_es`, `source`,
 sense_coverage}`. No setting is added: the feature is on when `nikl.db` exists. `mine_sheet` / `mine_add` keep their names
 and arguments.
 
+`[tasks]` is additive (§4.9c): `Config::tasks` defaults to version 0, which means "the older settings decide"; no older
+key is renamed or repurposed, and a file without the table behaves as before except that card meanings ask this PC's
+model. `EngineParts` is unchanged: routes are set with `Engine::set_routes` (an engine without them, as in most tests,
+asks the capture model for card meanings as before). Additive: `Engine::{set_routes, reroute_cards, task_status,
+test_task, card_retry_options, card_sentence, mine_sheet_with, live_active}`, `MineSheet::{answered, attempts, retry,
+live_running}`, `LlmClient::has_key`, `maru_llm::problem`.
+
 ### 6.3 Shell ↔ pages
 * **Saved reading areas:** additive `reading_status`, `reading_create(name,areaId?)`, `reading_select(areaId)`,
   `reading_rename(areaId,name)`, `reading_remove(areaId)`, `reading_read`, `reading_auto(enabled)`,
@@ -849,6 +897,7 @@ feedback adds no setting or database field; normal translation cache/history ret
 |---|---|---|
 | `config.toml` (config dir) | `maru-core::config`, `settings.rs` | every setting; comments are preserved on edit |
 | `config.toml` saved servers | `maru-core::external_servers`, settings | `[llm].servers` named connections and their plaintext keys; active main/snapshot provider/key fields are independent; no new database |
+| `config.toml` `[tasks]` and `config.toml.before-tasks-<stamp>.bak` (config dir) | `maru-core::tasks` | which connection and model each task uses; written once into an older file, after a copy of that file is saved beside it |
 | `launcher-position.json` | `app/src-tauri/launcher.rs` | collapsed floating window top-left in physical pixels; clamped to an available monitor on startup |
 | `history.db` | `maru-engine::history_store` | additive `live_lines`: each live subtitle line once (session, times, game executable, Korean, translation, timings, `starred`, `mined`); starred rows are kept for study, no images; `mined` is added to older files at open |
 | `reading-areas.db` | `maru-engine::reading_store` | additive `reading_areas`: names and game/executable metadata, normalized client rectangle, reference size and selected area per executable; no captured text or images |
