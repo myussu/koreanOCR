@@ -552,9 +552,8 @@ Observado y no corregido:
 5. **Tiempos en reposo** (M-54): cierra `ssbu.exe` y corre
    `python tools\compare_ocr.py "%APPDATA%\maru\Maru\data\evalset\raw" --only "PP-OCR alone (also" "1.6"`.
 6. **Los dos ajustes de Settings** (M-53).
-7. **Decide qué borrar**: los modelos candidatos (6 GB en `models\ocr-candidates` y `modelslm\{paddleocr-vl-1.6,
-   glm-ocr,surya-2.5,nanonets-ocr2-1.5b}`) y `…\data
-un-3\` (las corridas guardadas, dos copias de `maru`, mis
+7. **Decide qué borrar**: los modelos candidatos (6 GB en `models\ocr-candidates` y `models\vlm\{paddleocr-vl-1.6,
+   glm-ocr,surya-2.5,nanonets-ocr2-1.5b}`) y `…\data\run-3\` (las corridas guardadas, dos copias de `maru`, mis
    guiones y una carpeta `home` de medición). Esa carpeta tuvo dos enlaces de directorio a `models` y `bin`; **los
    quité al terminar** (solo los enlaces: los modelos siguen en su sitio), así que borrarla ya no tiene riesgo.
 
