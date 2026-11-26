@@ -23,7 +23,8 @@ enough fade from the panel. Needs the AnkiConnect add-on (`2055492159`); log in 
 Anki *Sync* triggers it. See `docs/config.example.toml`.
 
 To test with your AnkiWeb account, open Anki desktop with AnkiConnect, sign in and complete your normal sync there.
-In Maru Settings → Anki, enable **Review in Anki**, save and restart, then **Check Anki**. Maru uses its own `Maru Korean`
+In Maru Settings → Anki, enable **Review in Anki**, save and restart, then **Check Anki** (it also prepares the
+`Maru Korean Sentence` note type for sentence cards). Maru uses its own `Maru Korean`
 note type; legacy `Basic` settings already map to that type without modifying Anki's built-in Basic model. Add a word
 from a deep dive to a test deck, then use **Sync now** and inspect it on AnkiWeb. **Refresh progress** reads your current
 Anki intervals immediately. Suspended or deleted cards no longer retain old Anki-based fading; local saves and manual
@@ -119,8 +120,15 @@ overlay first, it holds the local model's port). The reading model and the speec
 
 **Ollama** (for example on a TrueNAS SCALE box) works as that server too, with a few differences from llama-server: it chooses the model by name, and a "thinking" model must be told not to think (Maru sends `reasoning_effort = "none"` to such servers; `[llm] reasoning_effort` changes or empties it), so set
 **Settings → Translation model → Model name that server expects** (`[llm] model_name`) to exactly what `ollama list` shows, and give `maru bench` the same with
-`--model`; and it unloads an idle model after five minutes by default, so set `OLLAMA_KEEP_ALIVE` (for example `-1`) on the server, or the first subtitle after a
-pause waits for the model to load. It is not yet verified by a person; M-11 covers it.
+`--model`; and it unloads an idle model after five minutes by default, so the first subtitle after a pause waits for the model to load. Set
+**Keep the model loaded on that server** (`[llm] server_keep_minutes`) so Maru loads it when you start playing and unloads it when you stop, or set
+`OLLAMA_KEEP_ALIVE` (for example `-1`) on the server if nothing else needs that GPU.
+
+On an 8 GB GPU, Ollama's own estimate can leave part of Gemma 12B on the CPU (`ollama ps` shows less than `100% GPU`), and every line then takes
+over a second. A copy of the model with all layers on the GPU and a smaller batch fits; it reuses the downloaded files:
+`curl http://<that-pc>:11434/api/create -d '{"model":"gemma4-12b-8gb","from":"<name from ollama list>","parameters":{"num_gpu":49,"num_batch":128,"num_ctx":4096}}'`,
+then use `gemma4-12b-8gb` as the model name. It bypasses Ollama's memory safety margin, so another program using that GPU at the same time can
+make loading fail. Measured on an RTX 3060 Ti: the first word of a short line in 0.11 s instead of 1.3 s. M-11 covers a real game.
 
 Config file (`maru config init` writes it; [docs/config.example.toml](docs/config.example.toml)
 shows every option):
@@ -141,6 +149,7 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 | `Ctrl+Alt+L` | history, review and status |
 | `Ctrl+Alt+Esc` | hide the panel, screen labels and saved-reading indicator |
 | `Ctrl+Alt+Q` | open the focused controls wheel at the pointer; mouse or keyboard navigation |
+| `Ctrl+Alt+B` | star the live subtitle line on screen to study it later (**History → Starred**); press again to take the star off |
 
 Each action accepts several keys separated by `|` in `config.toml` (e.g. `translate = "Ctrl+Alt+T | F6"`), which helps in games that use Ctrl/Shift/Alt. A registered key is taken from every program while Maru runs, so pick ones you don't use (see `docs/config.example.toml`). `Status` shows which toggles are on, and the tray icon's tooltip lists them too.
 
@@ -149,6 +158,61 @@ Each action accepts several keys separated by `|` in `config.toml` (e.g. `transl
 **Moving the panel.** Drag it by its top bar (the ⠿ grip) to put it anywhere: it pins itself and stays there while it translates the next thing, however much it grows. Unpin (📌) to let it go back next to the text again.
 
 **Live subtitles** draw the English in a dark band next to the original line — above it or below it, on the side with room, never over it — stay while it is on screen and for a moment after (`continuous.linger_ms`), and every line goes into **History → Live subtitles** in order, with how long it took, so you can read a cutscene afterwards; click a line for its word-by-word breakdown. Each line is logged in `maru-app.log` (`live line: on screen → read … → first word … → done …`).
+
+**The live history lists each spoken line once and keeps it.** OCR often reads one subtitle several times: with
+different spacing or quotes, only one of its two rows, while it fades in, or, over a moving cutscene, with a syllable or
+two misread on each read (`운이`/`윤이`). A re-reading while the line is still up (within 8 s of its last reading)
+reuses the line's translation, with no new model request, so a slow model does not fall behind; a fuller reading replaces
+the partial one. Lines of under four syllables must match exactly, and lines that differ by a negation (`간다` /
+`안 간다`) or a number stay separate. Stray marks OCR reads beside a subtitle (`OTK`, `SX`, `11.`, `[0`, `000`) are
+dropped from the line's ends, and a reading with no Korean at all (a game's own `AUTO`/`LOG` label left alone when the
+subtitle goes) counts as an empty subtitle area. A line typing out letter by letter is listed once, as the full line.
+A line that replaces another without a gap is still read as new when it adds or drops a negation or changes a number,
+however alike the rest is (`오늘은 성에 간다` → `오늘은 성에 안 간다`). In the first seconds after live subtitles start, while the
+PaddleOCR-VL reader loads, lines are read by PP-OCR alone instead of being missed (a little less accurately).
+Live lines are saved in `history.db` in Maru's data folder, so
+**History → Live subtitles** still shows your last cutscene after a restart.
+
+**Star a line you want to learn** while it is on screen: press **Ctrl+Alt+B**, or **Star this line** on the controls
+wheel's second page (it replaced *Translate selection* there; that keeps its own shortcut). The game keeps focus and a gold
+★ appears on the translation band; if the line has already gone, the band comes back for a moment to show it. A line still
+being translated is starred when it arrives, and a star given to a half-read line moves to the full reading. Starred lines
+are listed in **History → ★ Starred**, oldest first, and stay there after they leave the recent history; click ☆/★ next to
+any live line to star it or take the star off.
+
+**Make cards from a line:** in History, **Make cards** under a live line opens the line's words, each with its meaning *in
+that line* (one request to your snapshot model, or your main model when live subtitles are off; the dictionary's meaning,
+marked as such, if neither answers). Words you know or Anki already has start unticked. Edit any meaning, then add:
+* a **word card** per ticked word, in the `Maru Korean` note type, with this line as its example sentence and, if *Reverse
+  cards for words* is on, an English → Korean card for writing the word from its meaning;
+* a **sentence card** (optional): the whole line in Korean with its sound on the front; its translation and the words you
+  picked on the back, in its own `Maru Korean Sentence` note type with no reverse card.
+
+The line's sound is made once and shared by its cards; each card's result is listed (added, already in Anki, or why it
+failed), and the line shows **✓ Cards made** afterwards. Needs Anki open with AnkiConnect, and Anki on in Maru: if it is
+off, the sheet offers **Turn on Anki**, which saves that one setting and restarts Maru.
+
+**Sound on cards:** the word and its sentence are spoken by the voice in Settings → Speech (the first sound can take a
+minute while the voice starts). If speech is off or fails, the card is still added, without sound, and you are told so.
+**Settings → Anki → Add missing sounds** (also offered right there) later finds every Maru note in Anki with an empty
+sound field, however it was added, and fills only those fields, about 30 notes per press. A take of the voice far longer
+than its text could need (the local voice now and then keeps talking after a single word) is asked for again, up to
+three times, and only a plausible one is kept. Maru asks Anki to sync with AnkiWeb only once a batch of cards is in, and
+an add made while Anki is busy syncing waits for it rather than failing.
+
+**When live lines go to a server** (Gemma on a NAS, Azure, Gemini), set **Settings → Live subtitles → Backup translator if
+the server fails** to a local model, for example HY-MT2 1.8B (its GGUF file must be set: pick its card once). A line the
+server fails (a crashed or reloading Ollama runner, a cloud rate limit) or has not started answering after 2.5 s
+(`continuous.translation.backup_after_ms`) is translated by that model instead, and the next lines skip the server for
+about 20 s while it finishes loading in the background; then the server takes over again. The backup loads when live
+subtitles start (about 1.5 GB of video memory for HY-MT2 1.8B). Its answers are not cached. Lines that OCR made out of a
+UI bar or a dash (a lone `ㅣ` or `ㅡ`, symbols, or an unsure single syllable) are not sent to any model.
+
+**Live subtitles and CPU:** PP-OCR reads the subtitle area on the CPU by default, which in a game with a moving backdrop
+can keep several cores busy. **Settings → Reading the screen → Advanced → Run PP-OCR on → GPU (DirectML)** moves it to
+any DirectX 12 graphics card (measured on an RTX 5070 Ti: 26–32 ms per line instead of about 100 ms, about 80% less CPU);
+if the GPU cannot run it, Maru uses the CPU. To stay on the CPU but leave cores to the game, set **CPU threads for PP-OCR**
+(`[ocr] threads`, for example 4: about 145 ms per line instead of 105 ms, never more than four cores at once).
 
 For live speed comparisons, **Settings → Live subtitles** has experimental options (save and restart Maru):
 
@@ -286,6 +350,11 @@ Manager actions hand focus directly from the wheel to Maru. The manager stays ab
 switching back to the game or another application removes that temporary priority. Games can continue receiving
 controller input while Maru has focus, so pause the game before naming an area or inspecting its translation.
 Change or disable **Controls wheel** in **Settings → Shortcuts**. A shortcut used by another app must be changed.
+Settings refuses to save two actions on one key, including the wheel and **Read saved area again**; if an older
+configuration already uses Ctrl+Alt+Q, the message names both actions so you can change one of them.
+Clicking back into the game while the wheel is open puts the wheel away; the next shortcut opens normally.
+If Windows will not hand focus to the area selector (the game was still receiving input), the selector still appears
+and works with the mouse; click it once before using Escape.
 Opening these controls can pause a game on focus loss. Maru returns focus and prior pointer confinement only while
 the interaction still owns focus and the original game window is unchanged; switching apps preserves that choice.
 This targets windowed and borderless games. Exclusive fullscreen still depends on the game's overlay support.
@@ -375,7 +444,9 @@ positions, so they are a candidate for a "double-check" mode rather than a repla
    are not sent for glossing at all.
 
 Model requests time out while waiting for response headers or stalled output (`llm.request_timeout_secs`, 60 seconds
-by default). Incomplete, malformed or token-capped answers show an error and are excluded from cache and history.
+by default). Incomplete or malformed answers show an error and are excluded from cache and history. An answer that
+reaches the model's length limit is shown with a note that its end may be missing; it stays in history but is not cached,
+so asking again translates it again.
 English-to-Korean requests also finish with an error if the requested register is missing. Late events cannot replace
 a newer panel answer; overlapping live translations retain dialogue context in capture order.
 
@@ -475,8 +546,37 @@ shows the server's reply and elapsed time, and reports connection/model errors. 
 it does not save settings or load a local Maru model. Allow up to 60 seconds for a cold server, then retry if needed.
 You can enter just an IP or hostname and press **Detect server**: Maru checks ports **11434, 1234 and 8080**
 and offers the server's models in a dropdown. **Test connection** also detects a bare address first; choose a model
-if its name differs from the current field. Explicit ports and custom URL prefixes are preserved. Selecting a server
+if its name differs from the current field. **Save** refuses an address without `http://` or `https://`, so a bare
+address must go through Detect server first. Explicit ports and custom URL prefixes are preserved. Selecting a server
 or model stages ordinary edits; **Save** and the usual restart still apply them. Manual model names remain available.
+
+Both server sections have a **Saved connection** selector. Fill in the server address, model and, under **Server type
+and API key**, the type and key; press **Test connection**; then type a short name such as NAS or Azure in the box below
+it and press **Save as a connection**, then **Save**. The name box only names what is filled in above: an address typed
+there is refused. **Remove** next to the selector forgets a saved connection. Register as many as you need;
+choosing one fills its fields without retyping them. Saving the same name updates that registration. The list is
+shared by Translation model and the live-mode Snapshot quality server; selecting one changes only that section.
+Switching still uses **Save → Restart Maru**. Registering a connection alone does not select it or change model routing.
+
+For Azure, expand **Server type and API key**, choose **Azure OpenAI**, enter the resource URL
+(`https://YOUR-RESOURCE.openai.azure.com/` or its `/openai/v1/` base URL), its **deployment name** in the model field,
+and its resource API key. A pasted deployment URL (`…/openai/deployments/NAME/…`) is refused with the address and
+deployment name to use instead. For Google Gemini, choose **Google Gemini**, enter
+`https://generativelanguage.googleapis.com/v1beta/openai`, a model such as `gemini-2.5-flash`, and an API key from Google
+AI Studio. **Test connection** checks those draft credentials with the same fixed greeting. Other
+authenticated OpenAI-compatible servers use a Bearer key; ordinary NAS servers can leave authentication alone.
+Hosted models refuse some optional request fields (a reasoning deployment its temperature, Gemini 2.5 Pro and 3
+"no thinking"); Maru then asks once more without that field and remembers it while it runs. For live subtitles prefer a
+non-reasoning model (for example `gpt-4.1-mini` or `gemini-2.5-flash`): a reasoning model spends the short live token
+limit on thinking.
+Keys are masked in Settings but stored as plain text in local `config.toml`, including saved registrations.
+Discovery never sends credentials to scanned hosts. Azure uses its v1 chat API; Azure and Gemini do not receive Ollama
+load/unload requests or `keep_alive`. CLI endpoint overrides to a different address clear authentication instead of reusing another server's key.
+OCR, local live models and snapshot fallback choices keep their existing behavior. See [M-35](docs/MANUAL_TESTS.md#m-35-saved-external-connections-and-azure-authentication).
+If that server is shared (Ollama on a NAS whose GPU other apps also use), set **Keep the model loaded on that
+server** (`[llm] server_keep_minutes`, for example 15). Maru then loads the model when it opens and when live
+subtitles start, keeps it loaded while lines keep coming, and unloads it a minute after live subtitles stop and when
+Maru quits. See "A model on another PC" for Ollama on a GPU with 8 GB.
 **Find LAN servers** first lists your local Windows IPv4 networks. Choose one and press **Search this network**
 to search those three ports with progress and **Cancel search**. Searches are limited to private networks of 256
 addresses or fewer; a larger network shows the specific /24 portion that will be searched. Cancelled LAN searches

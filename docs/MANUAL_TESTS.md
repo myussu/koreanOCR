@@ -818,6 +818,233 @@ capture exclusion and physical DPI behavior still need this Windows/game check. 
 through the result, the exact feedback/error, and `maru-app.log`. Include whether the manager appeared on the first action,
 whether the game kept receiving controller input, and whether Read again needed a retry. Do not send credentials.
 
+## M-33 Review fixes: wheel left for the game, picker without focus, hover with auto-read, floating controls
+
+*Stand-in run (2026-10-17, a fullscreen browser window as the game): the wheel closed and the picker opened on the region
+shortcut, the picker appeared while the game kept receiving key presses, and the floating controls cost about 0.7% of a
+core. It found that after a snapshot focus stayed on Maru's floating controls instead of returning to the game: the hidden
+picker handed the foreground to the controls, and the fullscreen game window had shrunk by a pixel, which the return
+check treated as a different window. Both are fixed and focus returned to the game in three rounds out of three.
+Steps 3 and 5 were not run.*
+
+1. In a borderless game, open the wheel (Ctrl+Alt+Q), click back into the game, then press the region shortcut. The
+   wheel must disappear and the area selector open; finish a snapshot and check that focus returns to the game.
+2. Press the region shortcut and keep playing (keys or mouse in the game) while the selector loads. It must still
+   appear; draw across the dialogue with the mouse. `maru-app.log` may show `region picker opened without keyboard control`.
+3. With a saved reading area on Auto-read and Hover lookup on, rest the pointer on words in the game. Auto-read must keep
+   reading new paragraphs (the status must not change to held). A Translate-selection or region snapshot still holds it.
+4. With the floating controls visible, open the menu and click a control immediately; drag the button and click it at
+   once. Hide them (Ctrl+Alt+M) while a game runs and compare Maru's CPU use in Task Manager with them shown.
+5. With Anki open, press **Refresh progress** in Settings → Anki and, during it, Add a word from the panel. The add must
+   finish after the refresh instead of reporting that another add is running.
+
+**Verification:** each step was driven on the developer's Windows PC with scripted key presses and clicks against a stand-in
+game window (a plain form), the real Maru build, a stand-in AnkiConnect and the LAN Gemma server: before the fixes the
+wheel step failed with "The active window changed", the selector was destroyed when focus was refused, one dwell held
+Auto-read, and the add was refused during a refresh; after them each step behaved as described. That is not a person with
+a real game, controller or Anki collection, so no result is entered here.
+
+**Bring:** game/mode, which step, what happened, and `maru-app.log`.
+
+## M-34 Model on another computer: loaded while you play, released after
+
+*Stand-in run (2026-10-17): with Maru closed the NAS had no model; opening Maru loaded it fully on the GPU (6.5 of 6.5 GB)
+about 10 s after start; it was released 62 s after live subtitles stopped and within 0.5 s of quitting. Immich was not
+running.*
+
+**Needs:** Ollama on another PC (here a TrueNAS box with an RTX 3060 Ti, 8 GB, also used by Immich), the tuned model from the
+README ("A model on another PC"), `[llm] server_keep_minutes = 15`, and, for live lines on that server, Live translation model = Gemma.
+1. With Maru closed, `ollama ps` on the server shows nothing. Open Maru: within a few seconds it shows the model at `100% GPU`.
+2. Play a cutscene with live subtitles. Lines should start in well under a second; note any line that takes longer and whether
+   Immich was working at the time. `ollama ps` keeps renewing the unload time while lines arrive.
+3. Stop live subtitles: about a minute later the model is gone from `ollama ps`. Choose a new subtitle area instead: it stays.
+4. Quit Maru from the tray or the floating controls: the model is gone at once. Then run an Immich job: it must find the GPU free.
+5. Start a game while Immich is indexing: Maru's first lines may fail or be slow while both want the 8 GB; say what happened.
+
+**Verification:** on the developer PC with the stand-in game window and the real server: opening Maru loaded the tuned model at
+100% GPU; nine live lines took 138–266 ms to the first word (one 803 ms) and 256–443 ms to finish, including OCR; the model was
+unloaded 70 s after live stopped; quitting from the floating controls unloaded it within 317 ms. Not a person with a real game,
+and Immich was not running. No result is entered here.
+
+**Bring:** `ollama ps` before/after each step, the `live line:` and `server_hold` lines of `maru-app.log`, and what Immich was doing.
+
+**Server change made on 2026-10-14 (the developer's TrueNAS box, `192.168.18.217:11434`, Ollama 0.40.2, RTX 3060 Ti 8 GB).**
+*What was found:* the installed `hf.co/unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL` loaded as 7.4 GB at **90% GPU** with Ollama's
+defaults. Six short lines through `/v1/chat/completions` took 7.9–8.2 s to the first word when cold (Ollama unloads after 5 idle
+minutes) and 1.1–1.7 s warm (done 1.8–2.5 s). Ping was 0 ms. A model that fitted entirely (`qwen2.5:7b`, 100% GPU) answered in
+0.04–0.07 s, so the spill to the CPU, not the network or the GPU's speed, made Gemma slow.
+*Per-request trials (nothing saved):* `num_ctx` 4096 or 2048 changed nothing; `num_batch` 128 gave 94% GPU; `num_batch` 32 made
+Ollama answer HTTP 500; `num_gpu` 49 (all layers) with `num_batch` 128 gave **100% GPU, 0.11–0.12 s to the first word, 0.23–0.34 s
+done, 3.5 s cold load**. Prompts of 1,945 / 3,385 / 6,825 tokens at `num_ctx` 4096 / 4096 / 8192 ran without running out of memory.
+*What was created:* one model tag, through the API, reusing the downloaded files (no download, almost no disk):
+`POST /api/create {"model":"gemma4-12b-3060ti","from":"hf.co/unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL","parameters":{"num_gpu":49,"num_batch":128,"num_ctx":4096}}`.
+Ollama gives a derived model its built-in `gemma4` renderer/parser; the GGUF's own (Jinja) template cannot be set as an Ollama
+template. Through Maru's CLI, Korean→English with notes and English→Korean in three registers came out identical to the original
+model; a deep dive (temperature 0.4) was worded slightly differently; no thinking text, stops worked. Nothing else on the server was
+changed: no environment variables, the original model is untouched; tests only loaded and unloaded models (`keep_alive: 0`).
+*Undo:* `ollama rm gemma4-12b-3060ti` in the Ollama app's shell, or
+`curl -X DELETE http://192.168.18.217:11434/api/delete -d '{"model":"gemma4-12b-3060ti"}'`; it removes only the tag.
+*Risk and first incident:* `num_gpu` 49 bypasses Ollama's memory safety margin. In the user's first real session (64 live lines),
+one request at 03:48:44 UTC got HTTP 500 "model runner has unexpectedly stopped, this may be due to resource limitations"; Ollama
+restarted the runner, the next line waited 12.7 s and three queued lines arrived 2.8–8.5 s late, then lines were normal again.
+The cause is not yet confirmed (suspected: VRAM taken by another GPU user on the server); the Ollama log for that minute is needed.
+
+## M-35 Saved external connections and Azure authentication
+
+**Needs:** a NAS/OpenAI-compatible server and an Azure OpenAI resource with a chat-completion deployment and API key.
+1. In Translation model, enter the NAS URL/model, name it NAS, Save this connection, then Save. Repeat for Azure with
+   Authentication expanded, Azure OpenAI selected, resource URL, exact deployment name and key. Restart and reopen:
+   both names must remain in Saved connection. Ordinary NAS entry/detection must still work without authentication.
+2. Select Azure: all its connection fields must fill, with a masked key. Test connection must return a real greeting;
+   Save/restart, then test a snapshot and per-word deep dive. OCR and local live selection must retain their setup.
+3. Select NAS, Save/restart and repeat. Azure's key must be cleared from the active NAS fields. Neither profile is forgotten.
+4. In Live subtitles, select the same registrations for Snapshot quality server. That selection must not change the main
+   Translation model fields, local live model/device, OCR settings, retention or fallback decisions. Test both routes.
+5. Wrong Azure key/deployment must show a failure, not Connected. Editing the key invalidates an old successful result.
+   Correct and retry. Save an existing registration name to update it; other names must survive. Discard staged edits:
+   saved values remain unchanged. Restart must preserve credentials without requiring them in chat or logs.
+
+6. Gemini: choose Google Gemini with `https://generativelanguage.googleapis.com/v1beta/openai`, `gemini-2.5-flash` and an
+   AI Studio key. Test connection, a snapshot, a deep dive and a live line must answer. Repeat with a Gemini 3 model (it
+   refuses "no thinking"; `maru-app.log` should show one `does not accept this field` line, then answers).
+7. Type an Azure URL into the connection-name box and press Save as a connection: it must be refused with what to do.
+   Remove a saved connection: it disappears from both selectors after Save, and the active fields stay.
+
+**Verification:** local fake-server tests cover actual authentication headers, Azure v1 request/deployment, missing/error
+keys, disabled key-bearing redirects, no cloud load/unload calls, credential isolation and config round trips. Node/browser
+checks cover registration and selectors with dummy credentials. On 2026-10-14 the real app and CLI were also driven against a
+strict local stand-in for both services (exact routes, required key headers, 400s for refused fields): Azure `gpt-4.1-mini`
+kept its temperature; a reasoning deployment refusing `temperature` and a Gemini 3 model refusing `reasoning_effort: "none"`
+each answered after one retry; a wrong key gave a clear 401; no `keep_alive` reached either. The Settings flow (refusing
+an address as a name, Test connection, Save as a connection, Remove) was driven in the real page. Real Azure and Gemini
+accounts, billing, authorization and model output caps still need this manual test; no human result is entered here.
+
+**Bring:** selected registration/provider, deployment name, exact error and `maru-app.log`; redact credentials. Do not send keys.
+
+## M-36 Live subtitles: server backup, OCR noise and OCR on the GPU
+
+*Stand-in run (2026-10-17): unloading the NAS model 20 s into the stand-in cutscene: the next line came from the LFM
+backup after the 2.5 s wait, the next seven from the backup at 0.25–1.25 s, then the NAS again (0.8 s); the backup
+mistranslated one dialect line and cut one short. Maru's CPU during the cutscene: 256–317% of one core with PP-OCR on the
+CPU, 14–17% with DirectML; read time about 229 ms either way (PaddleOCR-VL sets it).*
+
+**Needs:** live subtitles on Gemma on another computer (M-34), `continuous.translation.backup_model = "hy_mt2_small"` with its
+file, and a game with Korean subtitles.
+1. Play a cutscene. Lines come from the server (`live line:` in `maru-app.log`, no `backup translator` lines).
+2. On the server, unload the model (`ollama stop gemma4-12b-3060ti`) or restart the Ollama app mid-cutscene. The next line
+   must still appear within about 3 s (`this line uses the backup translator`), the following ones quickly; after about
+   20 s lines come from the server again. Repeat with the server switched off entirely.
+3. Watch for lines made of OCR noise (a bar or dash under the subtitle): none should appear in the band or the history.
+4. Set Run PP-OCR on → GPU (DirectML), save, restart. Compare Maru's CPU in Task Manager during a cutscene with the CPU
+   setting, and check reading speed in the `live line:` OCR times. Then CPU with `threads = 4`.
+
+**Verification (2026-10-14, developer PC, no game):** scripted-server tests cover failed, late, half-answered and healthy
+servers and a broken backup. Against the real NAS (RTX 3060 Ti, Ollama) with the real HY-MT2 1.8B backup on this PC's CPU:
+warm server 0.38 s; after unloading the server model, the line came from the backup in 2.78 s, the next in 0.32 s, and after
+the rest the server answered again warm in 0.43 s. PP-OCR on the real models, one subtitle line: CPU 101–105 ms per read and
+13–14 s of CPU for 21 reads; DirectML 26–32 ms and 2–3 s; 4 CPU threads 143–152 ms and 10–11 s. The engine read the line on
+DirectML and fell back to the CPU for a device that cannot load. Not checked with a real game or by a person.
+
+## M-37 Live history: each line once, kept after a restart
+
+1. Play a cutscene with live subtitles. Open **History → Live subtitles**: each spoken line should appear once, not twice
+   with different spacing, and not as a half line followed by the whole line.
+2. Count model requests: in `maru-app.log`, `outcome="repeat"` marks a reading answered without a request.
+3. Look for two different lines merged into one (they must stay apart, especially lines with 안/못/not). Report any.
+4. Quit and reopen Maru: the same lines are still in History → Live subtitles.
+
+**Verification:** unit and scripted-pipeline tests cover re-reads with other spacing or quotes, partial and growing readings,
+misread syllables, a negation or number kept apart, other games and the window, and saving across a restart.
+**First real session (2026-10-14, the user's game, OCR re-reading every ~0.3 s over a moving cutscene):** 30 of 116 saved
+lines were misread re-readings of a subtitle still on screen; with Azure (≈1.2 s per request, one at a time) they queued up
+to 15 deep and the first word came up to 12.4 s late. The rules were then extended to misreadings and stray marks and
+replayed on those saved lines (`MARU_HISTORY_DB=… cargo test -p maru-engine --lib -- --ignored replays_a_saved_session`):
+26 of the 30 merge, no two different lines do, and the 4 left are replies under four syllables kept exact on purpose.
+Replaying that burst's real arrival times against a stand-in model as slow as Azure: 7 requests instead of about 20, 7
+history entries instead of 17, worst wait 2.2 s instead of 12.4 s.
+**Stand-in cutscene (2026-10-17, developer PC, the real app with real OCR, NAS Gemma and Azure):** a browser page in kiosk
+mode showed 17 outlined Korean lines over a moving, noisy backdrop in the user's subtitle box, with a Latin `AUTO LOG`
+label beside them. It found that the watcher dropped `…안 간다` and `5시에…` after `…간다` / `3시에…` (no gap) and read the
+label alone as lines; that `네.`/`왜?` with the label read as English; that a typing line was listed twice; and that the
+first line of a session was missed while PaddleOCR-VL loaded. After the fixes: all lines read (a single-glyph `왜?` was
+still missed by PP-OCR in 2 of 5 runs), the typing line once, the first line read by PP-OCR alone. A replay of a recording
+of that page (`MARU_CLIP_LABEL="AUTO LOG"`): before 2 missed and 6 extra reports, after 0 and 0, slowest read 1.07 s.
+Azure on that cutscene: first word median 1.46 s (1.0–2.2 s), no backlog; NAS median about 0.4 s. A real game's
+fonts and effects are still unchecked.
+
+## M-38 Star a live line from the game
+
+*Stand-in run (2026-10-17): real `Ctrl+Alt+B` presses and the wheel's Star this line during the stand-in cutscene above:
+focus stayed on the "game" for every press, stars landed on the line shown, on a line that had just appeared and (with a
+reminder) on one that had gone; a double press took the star off. Not checked in a real game.*
+
+1. With live subtitles on in a game (borderless and windowed), press **Ctrl+Alt+B** while a line is on screen: a gold ★
+   appears before the translation with a short glow, and the game keeps keyboard focus (keep moving or typing in the game).
+2. Press it right after the line disappears: the band returns for about a second with the ★.
+3. Press it twice: the star goes off. Press it as a new line is still appearing: the star lands on that new line.
+4. Open the wheel (**Ctrl+Alt+Q**) → second page → **Star this line**.
+5. **History → ★ Starred** lists the starred lines; ☆/★ in Live subtitles toggles them; they are still starred after a restart.
+6. Check `Ctrl+Alt+B` does not clash with the game's own keys.
+
+**Verification:** scripted-pipeline tests cover the line on screen, a line still translating, a repeat and a half-read
+line resolving to the real line, no line on screen, and stars kept after a restart; UI tests cover the band state and the
+History rows; the History view and the starred band were checked in headless Chromium. Not checked: the real hotkey in a
+game, focus staying with the game, the band in the content-protected live window.
+
+## M-39 Make cards from a starred line
+
+*Stand-in run (2026-10-17, real Anki in a throwaway deck, real NAS meanings, real Qwen3-TTS voice, all deleted after):
+meanings fit the line (억수로 → "extremely"); cards, reverse cards, sentence card, tags and sounds were right; a second
+Make cards reported every card "already in Anki". It found that Maru's AnkiWeb sync started mid-batch and Anki refused the
+remaining cards ("Collection lifecycle operation is active"), and that the voice sometimes made 6–14 s of sound for one
+word; both are fixed (the sync waits for the batch, busy Anki is retried; overlong takes are asked for again) and the
+re-run added every card with words of 0.4–1.0 s. All ten words of a line start ticked, which can mean 20 cards from one line.*
+
+Use a test deck (or an Anki test profile) the first time.
+
+1. History → ★ Starred → **Make cards** on a line. Within a few seconds the words appear with meanings marked "as used
+   in this line". Check the meanings fit the line (not just the dictionary's first sense) and that words you know or
+   Anki has are unticked.
+2. Untick one, edit one meaning, keep the sentence card and reverse cards on, choose a deck, **Add**.
+3. In Anki: each word card shows the edited meaning, this line (word in bold) and its translation, plays the word's and
+   the line's sound; its reverse card (in `<deck>::Reverse`) shows the meaning to write the word from. The sentence card
+   (`Maru Korean Sentence`) plays the line on the front and lists the picked words on the back; it has no reverse card.
+4. **Make cards** on the same line again: everything is reported "already in Anki"; nothing is duplicated.
+5. Try with Anki closed: the sheet says Anki cannot be reached and the button stays off.
+6. The line shows **✓ Cards made** after a restart.
+
+**Verification:** engine tests against the scripted model and a stand-in AnkiConnect cover the sheet (meanings in the
+line, one model request, dictionary fallback, what Anki has), a word card carrying this line and the chosen meaning
+even when the word has a newer sentence, the sentence card's fields, tags and single card, duplicate lines, and a word
+without a meaning being refused; the sheet was checked in headless Chromium with mocked commands. Real Anki's search
+syntax for empty and filled fields was checked read-only against a real collection. With Anki open,
+`MARU_REAL_ANKI=1 cargo test -p maru-srs --test real_anki` adds a word card (with reverse), a silent word and a sentence
+card to a throwaway deck, checks fields, decks, duplicates and sounds added later, then deletes them (it creates the two
+Maru note types if missing). On 2026-10-14 it ran against the developer's Anki (AnkiConnect 6): its first run found that
+AnkiConnect attaches a sound only to a field the update also names (with `fields: {}` it answers success and attaches
+nothing), which the stand-in had hidden; `add_sounds` now names the fields and the stand-in behaves the same way. The
+second run passed in 3.4 s and left no deck, note or sound file. That is an automated run, not a person reviewing the
+cards in Anki, and it used generated silence: real speech and meanings from a real model are still unchecked.
+
+## M-40 Anki on from the sheet, and sounds added later
+
+*Stand-in run (2026-10-17): Turn on Anki saved the setting and restarted Maru (same home); Check Anki reported both note
+types; with speech off cards were added with the "no sound" message; after turning speech on, Add missing sounds filled 6
+notes in 17.4 s and a second press found none left. Not checked: the restart in the user's own setup.*
+
+1. With **Review in Anki** off, open **Make cards**: the sheet says Anki is switched off and offers **Turn on Anki**; the
+   first press explains, the second restarts Maru. After the restart, Settings → Anki shows it on and **Check Anki**
+   reports both note types ready.
+2. Turn Settings → Speech off (or stop the voice), make cards: they are added and the sheet says they have no sound.
+3. Turn speech back on, press **Add missing sounds** (in the sheet or Settings → Anki): the result counts the notes given
+   sound; in Anki those cards now play the word and the sentence, and a card you gave a sound by hand keeps it.
+4. Time the first sound after Maru starts (the voice loading) and later ones.
+
+**Verification:** the search for silent notes, filling only empty fields and keeping existing sounds are tested against
+the stand-in AnkiConnect; the sheet's turn-on flow was clicked through in headless Chromium with mocked commands. Not
+checked: Anki's real search syntax for empty fields, AnkiConnect's real handling of audio on `updateNoteFields`, the real
+voice, a real restart.
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.

@@ -33,6 +33,7 @@ dismiss    = "Ctrl+Alt+Escape"  # hides panel, screen labels and reading feedbac
 launcher   = "Ctrl+Alt+M"       # show / hide floating quick controls
 reading_again = ""            # read the selected saved game area; assign a key in Settings → Shortcuts if wanted
 wheel = "Ctrl+Alt+Q"          # focused controls at the pointer; mouse or arrows / Enter / Esc; empty disables
+star = "Ctrl+Alt+B"           # star the live subtitle line on screen to study later (History → Starred); again un-stars
 
 [llm]
 # Let llama-server download and cache the model on first run (`maru setup llm` does it up front).
@@ -42,9 +43,22 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 # ...or an already-running OpenAI-compatible server (LM Studio, a LAN box):
 # endpoint = "http://127.0.0.1:1234/v1"
 # model_name = "qwen3:8b"     # servers that choose by name (Ollama: exactly what `ollama list` shows)
+# provider = "openai"         # default: OpenAI-compatible/NAS servers; "azure" = Azure OpenAI v1; "gemini" = Google Gemini
+#                              # (endpoint = "https://generativelanguage.googleapis.com/v1beta/openai", model e.g. gemini-2.5-flash)
+# api_key = "..."             # optional Bearer key; Azure and Gemini require theirs (stored locally in plain text)
+# Named registrations are shared by both Settings server selectors. Selection copies endpoint/model/provider/key
+# into that section's ordinary settings, then Save/restart applies the route. Library edits alone need no restart.
+# servers = [
+#   { name = "NAS", endpoint = "http://192.168.18.217:11434", model_name = "gemma4-12b-3060ti" },
+#   { name = "Azure", endpoint = "https://YOUR-RESOURCE.openai.azure.com/openai/v1", model_name = "YOUR-DEPLOYMENT", provider = "azure", api_key = "YOUR-KEY" },
+# ]
 # Sent to such a server so "thinking" models (Qwen3, gpt-oss, ...) answer straight away instead of spending the
 # token limit on reasoning. "none" = no thinking (the default); "" = send nothing, if the server rejects the field.
 # reasoning_effort = "none"
+# Ollama on another computer: keep the model loaded this many minutes after each request, load it when Maru opens
+# and when live subtitles start, and unload it when they stop and when Maru quits. 0 = leave it to the server
+# (Ollama unloads after 5 idle minutes, so the next line waits for the model to load again).
+# server_keep_minutes = 15
 # Speculative decoding with a small draft model of the same family (faster, same quality):
 # draft_model_path = "D:/models/gemma-4-1b-it-Q8_0.gguf"
 parallel = 2          # translation and word meanings are generated at the same time
@@ -54,7 +68,8 @@ request_timeout_secs = 60 # chat: waiting for response headers or stalled output
 
 [ocr]
 backend = "auto"      # auto | paddle | windows
-device  = "cpu"       # cpu | cuda:0 | directml:0  (GPU needs a build with that feature)
+device  = "cpu"       # cpu | directml:0 (any DirectX 12 GPU; Windows builds include it) | cuda:0 (needs a CUDA build)
+threads = 0           # CPU threads per PP-OCR read; 0 = every core. 4 leaves the rest to the game during live subtitles
 vision_reader = true  # pair PP-OCR with PaddleOCR-VL when installed (`maru setup ocr-vl`); ~2 GB VRAM
 
 [learning]
@@ -71,6 +86,7 @@ auto_save_after_lookups = 2  # queue a word for review on the 2nd lookup
 enabled = false
 deck = "Korean"             # suggested first; per program, a deck named after it is offered too
 reverse = "subdeck"         # the English -> Korean card: subdeck (<deck>::Reverse) | same_deck | off
+sentence_note_type = "Maru Korean Sentence"  # History → Make cards: the line as a one-card note (no reverse)
 audio = true                # attach the spoken word and sentence (needs [tts])
 sync_after_add = true       # ask Anki to sync with AnkiWeb a few seconds after adding
 tags = ["maru"]             # on every card
@@ -117,6 +133,13 @@ dialogue_context = false      # experimental own-answer history; meaning regress
 # Optional quality server for snapshots/deep dive while live is on. If set, text/context leave this PC.
 # snapshot_endpoint = "http://192.168.18.217:11434"
 snapshot_model_name = "maru"   # exact model name, e.g. from ollama list
+# snapshot_provider = "openai" # or "azure" or "gemini"; independent of [llm] authentication
+# When live lines go to a server (model = "main" with [llm] endpoint): a local model for a line the server fails or
+# is slow to start (crashed or reloading Ollama, a cloud rate limit). The next lines skip the server for about 20 s.
+# It loads when live subtitles start; its *_path above must be set. Unset = wait for the server as before.
+# backup_model = "hy_mt2_small"
+# backup_after_ms = 2500        # how long the server may take to start answering before the backup takes the line
+# snapshot_api_key = "..."     # optional Bearer key; Azure resource key when snapshot_provider = "azure"
 # No server: live translator + offline meanings, without loading local Gemma.
 # Live off: snapshots return to the normal [llm] setup on demand.
 

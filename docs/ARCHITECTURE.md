@@ -140,10 +140,12 @@ For every feature: how it starts, where it flows, what it persists, how it is co
   Cache entries track translation and gloss completion separately. A validated translation can replay immediately while
   missing eligible meanings are retried; fresh vocabulary annotation decides which words still need them. Failed streams
   never populate translation cache, memory or history, even if an English-to-Korean variant closed before the error.
-  `maru-llm/client.rs` bounds response-header and idle waits, rejects malformed/capped/incomplete streams, and checks EOF
-  errors. The English-to-Korean follow-up sender is closed when translation finishes, including a missing register.
-  Only the private one-token warm-up path permits an intentional token-limit stop; it still validates stream completion
-  and produces no reusable answer. Ordinary translation/gloss/deep-dive requests remain strict.
+  `maru-llm/client.rs` bounds response-header and idle waits, rejects malformed/incomplete/content-filtered streams, and
+  checks EOF errors. A stream is complete at `[DONE]` or, for servers that omit it, at EOF after a stop reason. A stop at
+  the token limit (`length`, or llama.cpp's `stop_type: limit`) is a finished, *capped* reply (`Reply::capped`): glosses,
+  labels and deep dives keep the text; translations emit `LlmChunk::Capped`, the panel adds a note, history keeps it and
+  `Cached::is_useful` keeps it out of the cache. The English-to-Korean follow-up sender is closed when translation
+  finishes, including a missing register. Tests: `client.rs`, `tasks.rs`, `tests/pipeline.rs` (cut-off translation).
 * **UI:** `app/ui/panel.js` (+ `core.js`, pure state), `index.html`, `style.css`. `picker.js` draws the region rectangle.
 * **Config:** `[hotkeys]`, `[ui]`, `[capture]`, `[learning].register`, `[llm].context_lines`.
 * **Tests:** `crates/maru-engine/tests/pipeline.rs` (event order, cancellation, cache, degraded modes), `app/ui/test/core.test.mjs`.
@@ -191,6 +193,8 @@ For every feature: how it starts, where it flows, what it persists, how it is co
 ### 4.2 Hover lookup (`Ctrl+Alt+H`)
 `watch.rs` detects a pointer resting on a word (`logic.rs::Dwell`) → `Engine::capture_hover` → `Engine::lookup_word`
 (offline only, no model) → panel. Config: `[hotkeys].hover`; the dwell time, pointer radius and idle-hide time are constants at the top of `watch.rs`.
+A dwell is passive: `flow::show_hover` leaves saved-area reading (automatic, queued, held) and its progress untouched, while
+deliberate captures (`show_capture`) interrupt it.
 
 ### 4.3 Deep dive (click a word)
 `commands::deep_dive` → `Engine::deep_dive` (`pipeline::deep_dive`): dictionary entries, how the form is built
@@ -203,24 +207,51 @@ vectors), `anki.rs` (AnkiConnect). Engine side: `anki_flow.rs` (deck suggestions
 `Engine::{save_word, set_known, review_word, due_words…}`. A word is queued for review after the second lookup
 (`auto_save_after_lookups`); words held long enough **fade** from the panel (`known_stability_days`, or Anki's interval
 read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
-* **Commands:** `anki_overview`, `anki_add`, `anki_add_example`, `anki_sync`, `anki_check`, `anki_due`, `save_word`, `set_known`, `review_word`, `due_words`, `recent_words`, `word_contexts`.
+* **Commands:** `anki_overview`, `anki_add`, `anki_add_example`, `anki_sync`, `anki_check`, `anki_due`, `save_word`, `set_known`, `review_word`, `due_words`, `recent_words`, `word_contexts`, `mine_sheet`, `mine_add`, `anki_fill_sounds`; History: `history_star`, `history_starred`.
 * **UI:** `anki.js` (pure rules for the Add-to-Anki popover), `panel.js`, `hub.js` (Review tab), Settings → Anki.
 * **Config:** `[learning]`, `[learning.anki]`, per-program decks/tags in `[[profile]]`.
 * **Tests:** FSRS vectors, `anki.rs` against a fake AnkiConnect, `anki_flow.rs`, `anki.test.mjs`.
 * **Real-PC check:** M-9 (real Anki and AnkiConnect — never run against the real thing yet).
+* **Mining a live line** (`maru-engine/src/mining.rs`, `maru-srs/src/anki_sentence.rs`, shell `mining.rs`, `app/ui/mine.js`
+  + `mine-core.js` + `mine.css`): History → *Make cards* calls `mine_sheet`: the line is analysed, one `glosses` request to
+  `pipeline::snapshot_model` gives each word's meaning in the line (dictionary senses as candidates; the dictionary's
+  first sense with a `note` when no model answers), and Anki is asked which words and whether the line it has.
+  `mine_add` makes the line's sound once, then per word `begin_mine_word` (records the lookup with the chosen meaning and
+  this line as context, then `begin_anki_add`), word audio only if the permit needs it, and `finish_mine_word`
+  (`AnkiAddOptions::context` pins this line as the card's sentence); then `mine_sentence` adds a one-card note of the
+  `learning.anki.sentence_note_type` (fields `Sentence`, `Translation`, `SentenceAudio`, `Words`, `Source`; created and
+  versioned like `ensure_model`; not counted by `states`). Each card's outcome is returned separately; anything added marks
+  the saved line `mined`. Tests: `tests/pipeline.rs` (`…mining…`, `…mined…`, `a_word_without_a_meaning…`), `anki.rs`
+  (sentence card against the fake AnkiConnect), `anki_sentence.rs`, `mining.rs`, `app/ui/test/mine.test.mjs`. Real Anki: M-39.
+  With Anki off in Maru, the sheet's *Turn on Anki* saves `learning.anki.enabled` through `save_settings` and calls
+  `restart_app` (the engine's Anki client and config are fixed at start-up); `anki_check` also ensures the sentence type.
+* **Sound added later** (`maru-srs/src/anki_sounds.rs`, `Engine::{anki_silent_notes, anki_add_sounds}`, shell
+  `mining::anki_fill_sounds`): an add whose speech is off or fails still adds the card and says so (`SOUND_LATER`).
+  `silent_notes` searches Anki for Maru notes with an empty `WordAudio`, or an empty `SentenceAudio` beside a filled
+  `Sentence`, and sentence notes without sound (Anki's `Field:` / `Field:_*` syntax), so nothing is stored locally;
+  the shell speaks each text (markup removed), and `add_sounds` attaches only to fields still empty, naming each of them
+  in `fields` (real AnkiConnect ignores `audio` for fields the update does not name). Batches of 30;
+  stops at the first speech or Anki failure. Adds hold `Engine::anki_batch` (mining, filling sounds): the AnkiWeb sync
+  waits until no batch is running and Anki has had no add for 4 s, since Anki refuses adds while it syncs. `AnkiClient`
+  retries a request refused with "Collection lifecycle operation is active" for up to about 15 s. Tests: `anki.rs` (fake AnkiConnect), `anki_sounds.rs`, `anki.test.mjs`; opt-in
+  against a real Anki (throwaway deck, cleaned up): `maru-srs/tests/real_anki.rs` with `MARU_REAL_ANKI=1`. Real: M-39, M-40.
 
 Anki adds are reserved and validated through `anki_add.rs` before the shell asks speech to generate media. The permit
 spans preflight, audio and the add; refresh shares its gate so it cannot overwrite membership from a concurrent add.
+An add waits for a running refresh; only a second add at the same time is refused (`anki_add_slot`).
 `anki_store.rs` adds membership independent of the local saved queue and incomplete-add records keyed by word, endpoint
 and note type. Known post-creation failures return an additive `warning` and can finish the same note on retry/restart.
-Full successful refreshes reconcile missing and suspended cards atomically; failed/incomplete API reads preserve old
+Full successful refreshes reconcile missing and suspended cards atomically; a suspended card keeps membership but does not
+mark or create a local word, and a card with an empty Word field is skipped (logged). A missing Word field or other
+failed/incomplete API reads preserve old
 progress. Local saved/known/FSRS columns keep their meaning. `anki_refresh` is an explicit Settings command; Status adds
 `anki_words`. Pure UI rules remain in `anki.js`; recovery/refresh integration tests are in `tests/pipeline.rs`, persistence
 tests in `anki_store.rs`. Real collection/AnkiWeb and audio checks: M-24.
 
 ### 4.5 Screen scan: label everything on screen (`Ctrl+Alt+S`)
 * **Flow:** `flow::scan_screen` → `Engine::scan` (`scan::run`): grab the screen → OCR (`scan_ocr`, the plain detector at full
-  resolution) → `found_items` (Hangul only, confidence, de-duplication) → remembered joins applied (`joins::apply_rules`) →
+  resolution) → `found_items` (Hangul only, confidence, de-duplication) → remembered OCR corrections, then remembered joins
+  (`scan_joining::apply_saved`; rules hold the corrected text, the OCR reading stays the observed text) →
   `label()`: dictionary/glossary/remembered labels at once (`ScanItems`), the rest from the model in batches
   (`ScanLabel`, streamed) → `Done`. Labels are remembered per program (`labels.rs`).
 * **Events:** `ScanStarted → ScanItems → ScanLabel* → Timing* → Done`, forwarded to the scan window as `maru-scan`.
@@ -282,6 +313,45 @@ stale/colliding IDs and game scope), `event.rs` backward JSON parsing, `scan-cor
 
 ### 4.7 Live subtitles (`Ctrl+Alt+C`, `Ctrl+Alt+Shift+C` to choose the area)
 
+* **One line, one entry** (`maru-engine/src/live_merge.rs`, `history_store.rs`): before translating, `pipeline::live`
+  drops stray marks at the line's ends (`live_noise::trim_stray_marks`), then compares it with the same game's live
+  lines still on screen (`Inner::live_recent`: read within the last 8 s), on text without spacing, quotes, periods or
+  commas (`?`/`!` kept). Equal to any of a line's readings, a part of at least four letters and a quarter of it, or a
+  misreading of one of its readings (`misread`: both ≥ 4 syllables, ≥ 0.8 alike without Latin letters and `?`/`!`, the
+  same negation syllables 안/못/않/없/말/마 present, no two different numbers): the band gets that translation and
+  nothing is requested, listed or added as a turn; the reading joins the line's readings and keeps it on screen. A recent
+  line contained in this one: this one is translated and replaces it in the history, the saved row and the dialogue
+  turns. With one live request at a time, re-readings queued behind their line resolve at once, so the queue cannot grow
+  with OCR jitter. The thresholds were calibrated on a real cutscene's saved lines (`replays_a_saved_session`, opt-in).
+  A short start (≥ 3 syllables) of a line read again longer within 2 s is the line typing out (`Grew`).
+  The watcher (`continuous.rs`) applies the same `live_merge::meaning_differs` guard before taking a changed reading for
+  the line on screen (its 0.88 similarity alone let `간다` → `안 간다` and `3시` → `5시` through as re-reads when a game's
+  label or a long line padded the text), treats a reading with no Hangul syllable as an empty area, dates a line that
+  replaces another without a gap after the last read that still saw the old one, and reads with
+  `OcrEngine::recognize_now`: the hybrid answers with PP-OCR's text while the deferred PaddleOCR-VL reader is loading
+  (`OcrError::NotReady`, logged at debug) instead of blocking the first seconds of a session. `tests/replay.rs` accepts
+  subtitle texts and a fixed label (`MARU_CLIP_LABEL`) so a recorded clip also exercises these text rules.
+  `history_store::record` saves live lines in `history.db` (table `live_lines`); `Engine::open_history` shows the newest
+  `continuous.history_len` at start-up. Tests: `live_merge.rs`, `history_store.rs`, `tests/pipeline.rs`. Real sessions: M-37.
+* **Starring a line** (`maru-engine/src/live_star.rs`; `hotkeys.star`, wheel `star_line`, tray `star`): the shell passes the
+  id of the line the band last drew (`AppState::live_shown`; junk readings are never drawn) to `Engine::star_live_line`.
+  A repeat or a replaced partial reading resolves to its line through `live_merge::Recent::original`; a line still
+  translating is kept in `Inner::pending_stars` and starred by `history_store::record`; a fuller reading inherits the star
+  of the reading it replaces; with no line this session, the newest (restored) line is starred. Pressing again un-stars.
+  `history.db` keeps the `starred` column; `starred_lines` lists every starred row. The band shows a ★ (`maru-live-star`,
+  `createBand().star`) and, if the line has gone, comes back for `STAR_REMINDER_MS`. History → ★ Starred (`hub.js`,
+  `live-core::historyRows`/`canStar`) toggles stars with `history_star`. Lock order: `history_store` before `history`.
+  Tests: `tests/pipeline.rs` (`…starred…`), `history_store.rs`, `app/ui/test/live.test.mjs`, `wheel.test.mjs`. Real use: M-38.
+* **Server backup and noise** (`maru-engine/src/live_backup.rs`, `live_noise.rs`): `pipeline::live` drops lines without a
+  complete Hangul syllable, and single-syllable lines below `[ocr] min_confidence`, before any request. With
+  `continuous.translation.backup_model` set and live lines on the main *server* model, `bootstrap.rs` builds `live_llm` for
+  that local model (it preloads with live mode, like an alternate live model). `live_backup::translate` races the server
+  against `backup_after_ms`; an error or no text by then cancels it, marks `Inner::server_rest` (20 s: later lines go to the
+  backup directly) and, for a non-hosted server, sends one background request so the model finishes loading. A server that
+  has begun streaming is never replaced; a failed backup falls back to waiting for the server. Backup answers are not
+  cached. Tests: `live_noise.rs`, `tests/pipeline.rs` (failed, late, half-answered and healthy servers, broken backup),
+  and ignored real tests `remote_model_tests.rs` (`real_nas_backup_…`). Real game: M-36.
+
 * **Benchmark material preparation** (`tools/prepare_live_benchmark.py`, `tools/inspect_live_boundaries.py`): separate local
   diagnostic tools, with no engine/config/event/database changes. Immutable ignored packs preserve transcript/evidence/video
   hashes, separate localization from meaning aids, quarantine unverified drafts, restore observed dialogue order and retain
@@ -310,14 +380,15 @@ stale/colliding IDs and game scope), `event.rs` backward JSON parsing, `scan-cor
   for Index. Native single-source prompts use zero context; preceding chat pairs are an explicitly experimental context format.
   Profile/sampling compatibility is checked before inference. The telemetry wrapper accepts `ContextLines` (default 4).
   `milmmt` is a zero-context, greedy-only plain completion diagnostic (`live_completion.rs`); no chat template is applied.
-  Its parser preserves split UTF-8 text and rejects incomplete/capped streams. Production tasks still use the existing chat client.
+  It streams through `LlmClient::stream_route` (shared parser and timeouts) and scores a capped answer as an error.
   `tools/bench_quickmt.py` and `compare_quickmt_cpu.ps1` test approved local CTranslate2/SentencePiece files directly on CPU,
   one subtitle per request, without sentence splitting or chat history. Explicit int8/float32 and beam 1/2/5 settings are recorded;
   beam search has no first-text metric. This adds no Rust/application dependency. Tests: `tools/test_bench_quickmt.py`.
   `translate-gemma-sub` and `lmt` are isolated greedy chat diagnostics in `live_sub_models.rs`: the former uses published
   subtitle context blocks with neutral style; the latter uses the published single-source instruction and experimental
   preceding chat pairs. LMT's greedy streaming test does not reproduce its published five-beam example. These profiles
-  preserve unwanted output labels and reject malformed, capped and incomplete streams; production chat behavior is unchanged.
+  preserve unwanted output labels and reject malformed, capped and incomplete streams. They, the benchmark profiles and
+  the app's `translate_selected_live` all use the client's one streaming loop (`stream_route`), not separate HTTP clients.
   A crate-private client getter supplies the configured model alias. Tests cover exact context alignment, source order,
   aliases, split UTF-8, output caps and profile routing. No application dependency or installed model/config change is added.
   `tools/bench_live_candidates.py` is a separate standard-library diagnostic for Tower+, official TranslateGemma,
@@ -364,7 +435,7 @@ stale/colliding IDs and game scope), `event.rs` backward JSON parsing, `scan-cor
   An empty read cannot clear unchanged lettering, but a real disappearance resets the filter. Without clear contrast, uncertain
   changed readings are retained instead of rejected on similarity. The watcher and recognizers otherwise retain their existing timing.
 * **Shell** (`flow::start_continuous`): builds the band window geometry (`logic::band_window`: the subtitle area plus room above and below, and which side to prefer; `band_cover`: the original line's box the band must stay clear of), keeps only the
-  newest line drawn (`AppState::live_latest`), emits `maru-live` (a `LiveBand`), `maru-live-clear`, `maru-live-off` to the live window.
+  newest line drawn (`AppState::live_latest`), emits `maru-live` (a `LiveBand`), `maru-live-clear`, `maru-live-off`, `maru-live-star` to the live window.
 * **UI:** `live.js` (+ `live-core.js`: `chooseSide`/`bandStyle`/`fitFont` put the band above or below the original, never over it; the `createBand` state machine; `latencyText`), `live.html`, `live.css`.
   The window is created hidden, click-through, never focused, and excluded from screen capture so OCR never reads the translation back.
   `live_idle` hides it after the fade. History → Live subtitles (`hub.js`, `live-core::liveHistory`) sorts by capture ID with latency,
@@ -425,13 +496,18 @@ sentence with the next one prepared while one plays (`app/ui/reader.js`, pure qu
 * **Tests:** `maru-tts` (splitter, cache, client against a scripted server), `reader.test.mjs`.
 * **Real-PC check:** M-8.
 
+`Tts::speak` keeps a take only if it is no longer than `longest_plausible(text)` (1 s + 0.45 s per syllable or word, scaled by
+speed); otherwise it asks again, up to three takes, keeping the shortest and caching only a plausible one (a cached
+overlong take is regenerated). Qwen3-TTS was measured returning 6–22 s for one-syllable words now and then.
+
 Interactive boot defers the local voice through `deferred_models.rs`. Speech, the Settings voice test, and requested
 Anki audio call `Services::ensure_speech` before using it. Remote speech keeps its existing health check.
 
 ### 4.9 Settings
 `settings::get_settings` / `save_settings` (app shell) → `maru_core::settings::patch`: applies only what changed to the *text* of
 `config.toml` with `toml_edit` (comments and unknown keys survive), re-parses, validates (`settings::validate`), and reports
-which changes need a restart (`applies_live`: hotkeys and `ui.*` only). The page is described by `app/ui/settings-core.js` (a
+which changes need a restart (`applies_live`: hotkeys and `ui.*` only). Saving checks every shortcut, including the wheel and
+read-again keys, for syntax and duplicates, and refuses a language-model or snapshot server address without a scheme. The page is described by `app/ui/settings-core.js` (a
 schema of fields by dotted config path) and drawn by `settings.js`. **Adding a setting means touching `config.rs`,
 `config.example.toml`, `settings-core.js` and, if it validates, `settings.rs`** (§8).
 
@@ -450,9 +526,27 @@ concurrent probes, progress, partial results, cancellation and abort-on-drop cle
 Get-NetIPAddress query. Other operating systems report unavailable inventory; host discovery remains portable.
 UI controls live in `settings-discovery.js`; pure choices in `settings-connection-core.js`. Tests: `discovery.rs`,
 `server_discovery.rs`, `network.rs`, `settings-connection.test.mjs`; real inventory/UI/LAN verification: M-21.
-Local-file discovery and validation live in the engine; cards stage ordinary config edits. No download or native picker
-dependency is added. Floating controls (`app/src-tauri/launcher.rs`, `app/ui/launcher*`) call existing tray flows, report
-actual toggles and live queue counts, and use reported hit rectangles for mouse acceptance. The window is focusless,
+Local-file discovery and validation live in the engine; cards stage ordinary config edits. No download or native picker dependency is added.
+Saved connections are additive `[llm].servers` registrations (`external_servers.rs`, `settings-servers{,-core}.js`).
+The shared list stores name, endpoint, model name, provider and nullable key. Picking one copies existing route fields
+plus additive `provider`/`api_key` (or `snapshot_provider`/`snapshot_api_key`); it does not change local/live routing rules.
+Only library edits apply live; active connection changes retain Save/restart. The settings patch accepts inline tables
+only for the new library array and preserves unrelated comments. Legacy configs default to no keys/library and the old
+OpenAI-compatible protocol. Keys serialize into local config, but Debug and authenticated error output redact them.
+`maru-llm/auth.rs` attaches Bearer or Azure `api-key` headers, disables redirects when carrying a key, and normalizes
+Azure resource/v1 roots and Gemini's `/v1beta/openai` base (whose chat route has no `/v1`: `Authentication::chat_route`).
+Azure chat uses `max_completion_tokens`; default `none` reasoning is omitted for Azure. Hosted providers (`cloud()`:
+Azure, Gemini) never get Ollama retention fields or load/unload calls. `client.rs` keeps the configured temperature; when a
+server answers 400 naming one of the optional fields (`temperature`, `reasoning_effort`, `keep_alive`, `stream_options`),
+the client drops it, remembers it for its clones and sends once more. Hosted APIs have no llama health route:
+Settings' bounded fixed-text inference check is the connection verification, not an invented readiness probe.
+Snapshot clients copy only their own credentials, and local clients ignore external authentication. Tests cover header
+delivery, deployment routes, credential isolation, persistence, selector/edit behavior and unchanged ordinary requests;
+real Azure/NAS switching needs M-35. No new dependency, download or service is added to the app.
+Floating controls (`app/src-tauri/launcher.rs`, `app/ui/launcher*`) call existing tray flows, report
+actual toggles and live queue counts, and use reported hit rectangles for mouse acceptance. Its pointer loop caches the
+window's visibility and position, refreshed after Maru shows, hides, moves or resizes it and about twice a second, so a
+hidden launcher costs no main-thread round trips. The window is focusless,
 capture-protected and topmost. Drag position is stored separately from config; startup visibility and shortcut are additive
 settings. UI decisions: `launcher-core.js`, `settings-live-core.js`; tests: `settings-live.test.mjs`, shell geometry tests.
 Real Chromium and borderless-game verification: M-17.
@@ -474,14 +568,32 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
   Wheel-to-hub actions hand focus straight to the manager without activating the game between windows. The hub is raised
   while focused and loses that temporary topmost state on focus loss; failure releases the raise and reports the error.
   Controller input may continue reaching the game, so the user pauses it before inspecting Maru. Real handoff is M-32.
-  Completion consumes the lease; focus loss, closed/minimized/reused/moved windows, changed desktop or a new clip
-  prevent unsafe restoration. A source game that reapplies its clip on activation retains that clip. Dropping a token
+  Completion consumes the lease. Focus returns to the source window whenever the foreground is still Maru's (the lease's
+  window or another of Maru's, as when the hidden picker hands the foreground to the floating controls;
+  `InputControl::maru_has_focus`, also used by the shell's focus watcher) and the source is the same window (handle,
+  process, thread), even if its size changed (fullscreen windows give up a pixel when they lose focus). A switch to
+  another program, a closed or reused handle, a changed geometry or desktop, or a new clip prevent restoring the old clip. A source game that reapplies its clip on activation retains that clip. Dropping a token
   performs no OS action. Portable backend tests cover those decisions and failures; real game input is M-31.
 * **Picker:** `picker_session.rs` reserves an opening/closing selection and gives each page a token. Startup awaits
   positioned-window context and installed input listeners; old ready/finish/close callbacks cannot act on a replacement.
   Existing region commands are kept, with async shell wiring so GUI-thread input operations are awaited.
-  Escape/right-click/Alt+F4 cancel, restore when appropriate and destroy the picker. Errors are logged and surfaced;
+  Escape/right-click/Alt+F4 cancel, restore when appropriate and destroy the picker. A lease whose window lost the foreground
+  to another program is finished (and its window hidden) before the next control opens. If Windows refuses activation, the
+  picker is still shown without a lease (`input_session::show_without_control`); it works with the mouse. Errors are logged and surfaced;
   saved-area validation remains strict. No model selection, live watcher or translation prompt changes.
+
+### 4.9b A model on another computer: when it is loaded
+
+* **Setting:** `[llm] server_keep_minutes` (default 0 = the server decides; Ollama unloads after 5 idle minutes). Above 0, for a
+  client built from an `endpoint` (main model and the live-mode snapshot server), `maru-llm/client.rs` adds Ollama's
+  `keep_alive` to every chat request, so each request restarts the server's countdown. The local llama-server never gets it.
+* **Engine:** `server_hold.rs`. `hold_server_models` sends one one-token request per distinct server model (the shell calls it
+  when Maru opens; `set_live_active(true)` calls it for live mode: the main model only if it translates live lines, plus the
+  snapshot server). `set_live_active(false)` schedules `release_server_models_soon`: after 60 s, unless live restarts (choosing
+  a new area), each model is unloaded with Ollama's `/api/generate` `keep_alive: 0`, which never loads a model. The shell
+  awaits `release_server_models` on exit with a 2 s limit. Other servers answer 404 to that route; it is ignored.
+* **Tests:** `client.rs` (wire format, release body), `remote_model_tests.rs` (hold once, no release between areas, release
+  after stop, nothing at 0). Real server, game and other GPU users (Immich): M-34.
 
 ### 4.10 Setup wizard and installers (`maru setup`)
 * `maru-engine::hardware`: reads `nvidia-smi` and one PowerShell/CIM probe (GPUs, driver CUDA version, memory, free disk);
@@ -500,6 +612,11 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
 `maru-ocr::OcrEngine` has PP-OCR (`paddle.rs`), Windows OCR (platform crate) and, in the engine, a vision reader
 (`vlm_ocr.rs`, `vision.rs`: PaddleOCR-VL through its own `llama-server`) combined with PP-OCR by `hybrid_ocr.rs`
 (PP-OCR gives lines and positions, the reader gives better letters; matched by text). `respace.rs` restores dropped spaces.
+Windows builds include ONNX Runtime's DirectML provider (`maru-engine` enables `maru-ocr/directml`): `[ocr] device =
+"directml:0"` runs PP-OCR on any DirectX 12 GPU. It uses Windows' own DirectML when the bundled `DirectML.dll` is absent.
+`bootstrap::load_paddle` retries on the CPU when the configured device cannot load. `[ocr] threads` (0 = all cores) caps
+ONNX Runtime's intra-op threads (`paddle::session_config`). Measured and checked by ignored tests in `maru-ocr`
+(`real_models.rs`: timing per device/threads) and `remote_model_tests.rs` (engine OCR on DirectML and the CPU fallback).
 `lite = true` (`Config::effective`, also `MARU_LITE=1`) turns the reading model off and swaps in the smaller translation model
 and one slot, for use beside a game. `bootstrap.rs` assembles all of this from what is installed.
 
@@ -652,7 +769,7 @@ No config key, event variant order, existing column meaning or command name is r
   the dialog. The page sends the immutable target with submissions; the shell checks the active editor and the engine
   checks the current capture/scan. There is no correction input or new state in the live band.
 * **Shell → page events:** `maru-event`, `maru-notice`, `maru-auto-deep`, `maru-auto-speak`, `maru-tts-control`, `maru-config`,
-  `maru-hidden` (panel); `maru-scan`, `maru-scan-clear` (scan); `maru-live`, `maru-live-clear`, `maru-live-off` (live); `maru-tab` (hub).
+  `maru-hidden` (panel); `maru-scan`, `maru-scan-clear` (scan); `maru-live`, `maru-live-clear`, `maru-live-off`, `maru-live-star` (`{id, starred}`) (live); `maru-tab` (hub).
 * **Page → shell:** Tauri commands in `commands.rs` / `settings.rs`, registered in the `generate_handler!` list in `main.rs`. JS passes
   camelCase argument names (`scanId`), Rust receives snake_case (`scan_id`).
 * **Click-through windows** (scan, live) never take focus; the shell decides per pointer position whether the scan window accepts the
@@ -674,6 +791,7 @@ No config key, event variant order, existing column meaning or command name is r
   recording. These commands do not change persistent config. `resources` is an additive hub tab / launcher action ID.
 * **Connection check:** `test_model_connection(endpoint, modelName, reasoningEffort)` returns `{endpoint, reply, took_ms}`
   or a plain-language error for a fixed-text external request. Results remain transient in Settings; no persistence is added.
+  It accepts additive optional `provider` and `apiKey` arguments; legacy callers remain unauthenticated OpenAI-compatible.
 * **Discovery:** `discovery_networks` returns `{cidr,label}` choices; `discovery_start(kind,target)` returns a job ID
   (`host` address or `lan` CIDR). `discovery_status(jobId)` returns `{checked,total,done,cancelled,servers,errors}`;
   each server is `{endpoint,api,models}`. `discovery_cancel(jobId)` stops the current job. Discovery has no config keys,
@@ -690,12 +808,15 @@ feedback adds no setting or database field; normal translation cache/history ret
 | File (under the data dir unless noted) | Owner | Content |
 |---|---|---|
 | `config.toml` (config dir) | `maru-core::config`, `settings.rs` | every setting; comments are preserved on edit |
+| `config.toml` saved servers | `maru-core::external_servers`, settings | `[llm].servers` named connections and their plaintext keys; active main/snapshot provider/key fields are independent; no new database |
 | `launcher-position.json` | `app/src-tauri/launcher.rs` | collapsed floating window top-left in physical pixels; clamped to an available monitor on startup |
+| `history.db` | `maru-engine::history_store` | additive `live_lines`: each live subtitle line once (session, times, game executable, Korean, translation, timings, `starred`, `mined`); starred rows are kept for study, no images; `mined` is added to older files at open |
 | `reading-areas.db` | `maru-engine::reading_store` | additive `reading_areas`: names and game/executable metadata, normalized client rectangle, reference size and selected area per executable; no captured text or images |
 | `resource-logs/resources-*.jsonl` | `maru-engine/resource_monitor.rs` | opt-in versioned local sessions: process/adapter samples, queue counts, numeric timing/error-stage/completion events; no subtitle/error text, bounded size, retained on stop/limit |
 | `vocab.db` | `maru-srs` | words, lookups, states, FSRS fields, contexts, Anki intervals |
 | `vocab.db` additional tables | `maru-srs::anki_store` | `anki_membership` (unique tracked words) and `anki_pending_adds` (owned incomplete note setup, scoped by endpoint/note type); additive initialization |
 | `dict.db` | `maru-dict` | dictionary entries, inflected forms, levels |
+| Anki collection (via AnkiConnect) | `maru-srs::anki`, `anki_sentence` | note types `Maru Korean` (words) and `Maru Korean Sentence` (sentence cards), created and updated in place by version stamps in their CSS; notes are only added, never edited except `Examples` on an existing word |
 | `labels.db` | `maru-engine::labels` | remembered scan labels `(scope, text)` and joins `(scope, parts)`; `scope` = program `.exe` |
 | `labels.db` additional table | `maru-engine::ocr_corrections` | exact `(scope, observed) → corrected` rules; only explicit Remember persists a fix, explicit Forget removes it; no fuzzy or cross-program lookup |
 | `labels.db` additional table | `maru-engine::scan_joining` | `join_spacing(scope,parts,as_word)` retains explicit word/sentence choices; separation removes only its exact scoped component rules and choices |
