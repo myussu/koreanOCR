@@ -80,9 +80,13 @@ impl Authentication {
     pub fn authenticated(&self) -> bool {
         self.key.is_some()
     }
-    /// Anthropic's OpenAI-compatible endpoint.
+    /// A Claude model is on the other end, through either of Anthropic's endpoints (thinking is handled the same).
     pub fn anthropic(&self) -> bool {
-        self.anthropic
+        self.anthropic || self.native_anthropic()
+    }
+    /// Anthropic's own Messages API: another request body and other stream events (`anthropic.rs`).
+    pub fn native_anthropic(&self) -> bool {
+        self.provider == ServerProvider::Anthropic
     }
     /// Write `mode` into a request for Claude; `limit` is the `max_tokens` the task asked for.
     pub fn claude_thinking(&self, body: &mut Value, mode: ClaudeThinking, limit: Option<u64>) {
@@ -104,7 +108,7 @@ impl Authentication {
     }
     /// A hosted API: no `/health`, no Ollama routes or fields, and it always needs a key.
     pub fn cloud(&self) -> bool {
-        matches!(self.provider, ServerProvider::Azure | ServerProvider::Gemini) || self.anthropic
+        matches!(self.provider, ServerProvider::Azure | ServerProvider::Gemini | ServerProvider::Anthropic) || self.anthropic
     }
     pub fn root(&self, root: &str) -> String {
         if self.provider == ServerProvider::Gemini {
@@ -122,7 +126,11 @@ impl Authentication {
     }
     /// Where chat completions live under [`Self::root`].
     pub fn chat_route(&self) -> &'static str {
-        if self.provider == ServerProvider::Gemini { "/chat/completions" } else { "/v1/chat/completions" }
+        match self.provider {
+            ServerProvider::Gemini => "/chat/completions",
+            ServerProvider::Anthropic => "/v1/messages",
+            _ => "/v1/chat/completions",
+        }
     }
     /// Where the list of models lives under [`Self::root`].
     pub fn models_route(&self) -> &'static str {
@@ -138,11 +146,16 @@ impl Authentication {
             if self.provider == ServerProvider::Gemini {
                 return Err(LlmError::Api("Enter the Gemini API key in Settings.".into()));
             }
-            if self.anthropic {
+            if self.anthropic() {
                 return Err(LlmError::Api("Enter the Anthropic API key in Settings.".into()));
             }
             return Ok(request);
         };
+        if self.native_anthropic() {
+            let mut header = HeaderValue::from_str(key.as_str()).map_err(|_| LlmError::Api("The API key is not a valid HTTP header. Enter it again.".into()))?;
+            header.set_sensitive(true);
+            return Ok(request.header("x-api-key", header).header("anthropic-version", crate::anthropic::API_VERSION));
+        }
         let (name, text) = if self.provider == ServerProvider::Azure {
             ("api-key", key.as_str().to_string())
         } else {

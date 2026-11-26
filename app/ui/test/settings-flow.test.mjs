@@ -119,7 +119,8 @@ test('a connection that cannot work is refused with what to do, before anything 
   assert.match(connectionProblem(servers, { ...ok, provider: 'azure', api_key: 'k', endpoint: 'https://contoso.openai.azure.com/openai/deployments/gpt-4.1-mini/chat/completions' }), /https:\/\/contoso\.openai\.azure\.com as the address and gpt-4\.1-mini as the model/);
   assert.throws(() => saveConnection(servers, { ...ok, name: '' }, null, value), /short name/);
   assert.deepEqual(azureParts('https://contoso.openai.azure.com/openai/deployments/my%20dep/x'), { endpoint: 'https://contoso.openai.azure.com', modelName: 'my dep' });
-  assert.ok(needsKey('azure') && needsKey('gemini') && !needsKey('openai'));
+  assert.ok(needsKey('azure') && needsKey('gemini') && needsKey('anthropic') && !needsKey('openai'));
+  assert.match(connectionProblem(servers, { ...ok, provider: 'anthropic', endpoint: 'https://api.anthropic.com' }), /Anthropic refuses requests without one/);
 });
 
 test('the restart banner names what is waiting once each, and only a few of them', () => {

@@ -268,11 +268,12 @@ export async function settingsView() {
       return h('label', { class: 'conn-field' }, h('span', { class: 'name', text: label }), h('span', { class: 'help', text: help }), h('div', { class: 'typed' }, el));
     };
     const inputs = {};
-    const types = [['openai', 'A server of yours, or Anthropic', 'Ollama, LM Studio, llama.cpp, a NAS; https://api.anthropic.com'], ['azure', 'Azure OpenAI', 'The address is your resource; the model is your deployment'], ['gemini', 'Google Gemini', 'Needs a key from Google AI Studio']];
+    const types = [['openai', 'A server of yours', 'Ollama, LM Studio, llama.cpp, a NAS, any OpenAI-style address'], ['anthropic', 'Anthropic (Claude)', 'Its own API at https://api.anthropic.com, with the prompt cache'], ['azure', 'Azure OpenAI', 'The address is your resource; the model is your deployment'], ['gemini', 'Google Gemini', 'Needs a key from Google AI Studio']];
     const typeBox = h('div', { class: 'choices', role: 'radiogroup', 'aria-label': 'Kind of server' });
     const drawTypes = () => typeBox.replaceChildren(...types.map(([v, label, detail]) => h('button', { class: 'choice', type: 'button', role: 'radio', 'aria-checked': String((f.provider ?? 'openai') === v), onclick: () => {
       f.provider = v;
       if (v === 'gemini' && !f.endpoint) { f.endpoint = 'https://generativelanguage.googleapis.com/v1beta/openai'; inputs.endpoint.value = f.endpoint; }
+      if (v === 'anthropic' && !f.endpoint) { f.endpoint = 'https://api.anthropic.com'; inputs.endpoint.value = f.endpoint; }
       drawTypes();
     } }, h('strong', { text: label }), h('small', { text: detail }))));
     drawTypes();
