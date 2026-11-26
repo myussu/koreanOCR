@@ -13,6 +13,11 @@ rows separated by a space). `--crop` is `x:y:width:height` in the video's pixels
 
 Several frames of the same subtitle share one text, so they are not independent tests: judge a change by how many different
 subtitles it fixes or breaks (the per-subtitle summary at the end), not by the picture count.
+
+A row whose text is `?` is a subtitle nobody has read yet (`tools/find_subtitles.py` writes such rows): its pictures are cut
+and no `name.txt` is written, so they wait for a label in `tools/label_review.html`. With `--prefix` the pictures are named
+`<prefix><nn>_s001_0.png`, where `nn` counts five-minute stretches of the video: `maru eval-ocr` keeps each stretch whole on
+one side of its dev / held-out split, and pictures from several videos can share a folder. `--tag` writes `name.tags`.
 """
 import argparse
 import subprocess
@@ -40,6 +45,16 @@ def read_truth(path):
     return rows
 
 
+UNREAD = "?"  # the text of a row nobody has read yet
+SCENE_SECONDS = 300  # as `[continuous] save_reads` groups its pictures
+
+
+def picture_name(prefix, start, index, k):
+    """`s012_3` as before; with a prefix, `<prefix>07_s012_3`: the part before the first `_` is the scene eval-ocr splits on."""
+    scene = f"{prefix}{int(start // SCENE_SECONDS):02d}_" if prefix else ""
+    return f"{scene}s{index:03d}_{k}"
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("clip")
@@ -47,6 +62,8 @@ def main():
     ap.add_argument("--crop", required=True, help="x:y:width:height of the subtitle area, in video pixels")
     ap.add_argument("--out", default="evalset", help="folder for the pictures (default: evalset)")
     ap.add_argument("--frames", type=int, default=4, help="frames per subtitle, spread over its middle (default 4; short subtitles get fewer)")
+    ap.add_argument("--prefix", help="name pictures <prefix><five-minute stretch>_s001_0.png instead of s001_0.png")
+    ap.add_argument("--tag", help="write this in name.tags beside every labelled picture (for example: gold)")
     args = ap.parse_args()
 
     try:
@@ -63,7 +80,7 @@ def main():
         for k in range(count):
             # the middle 60% of the subtitle: its edges are fading in or out
             t = start + length * (0.5 if count == 1 else 0.2 + 0.6 * k / (count - 1))
-            name = f"s{index:03d}_{k}"
+            name = picture_name(args.prefix, start, index, k)
             # ffmpeg's crop filter takes width:height:x:y
             cmd = ["ffmpeg", "-v", "error", "-y", "-ss", f"{t:.3f}", "-i", args.clip, "-frames:v", "1", "-vf", f"crop={w}:{h}:{x}:{y}", str(out / f"{name}.png")]
             try:
@@ -72,7 +89,10 @@ def main():
                 sys.exit("ffmpeg was not found; install it and try again")
             except subprocess.CalledProcessError:
                 sys.exit(f"ffmpeg could not read a frame at {t:.2f}s (is the time inside the video, and the crop inside the picture?)")
-            (out / f"{name}.txt").write_text(text, encoding="utf-8")
+            if text != UNREAD:
+                (out / f"{name}.txt").write_text(text, encoding="utf-8")
+                if args.tag:
+                    (out / f"{name}.tags").write_text(args.tag, encoding="utf-8")
             saved += 1
     print(f"{saved} pictures in {out}/")
 

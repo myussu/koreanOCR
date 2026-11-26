@@ -173,6 +173,8 @@ pub fn validate(cfg: &Config) -> Result<()> {
     check((1..=32).contains(&cfg.continuous.translation.cpu_threads), "live translation CPU threads must be between 1 and 32");
     check(cfg.continuous.translation.model == crate::live_model::LiveModel::Main || cfg.continuous.translation.selected_path().is_some_and(|p| !p.as_os_str().is_empty()), "choose a local GGUF file for the live translation model");
     check((1.0..=3.0).contains(&cfg.continuous.ocr_scale), "the subtitle area can be read at 1 to 3 times its size");
+    check([cfg.ocr.det_score_threshold, cfg.ocr.det_box_threshold].iter().flatten().all(|v| (0.0..=1.0).contains(v)), "the text detector's thresholds must be between 0 and 1");
+    check(cfg.ocr.det_unclip_ratio.is_none_or(|v| (0.5..=4.0).contains(&v)), "the text detector's box widening must be between 0.5 and 4");
     check((1024..=65535).contains(&cfg.tts.port), "speech server port must be between 1024 and 65535");
     check(cfg.tts.speed >= 0.25 && cfg.tts.speed <= 4.0, "speech speed must be between 0.25 and 4");
     check(cfg.tts.timeout_secs >= 5, "speech timeout must be at least 5 seconds");

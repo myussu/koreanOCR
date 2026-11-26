@@ -31,6 +31,20 @@ impl Split {
     }
 }
 
+/// Whose labels a run is scored against.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Labels {
+    /// `name.txt`: written by a person, or taken from a transcript a person checked. The only labels a decision may rest on.
+    Person,
+    /// `name.provisional.txt` where there is no `name.txt`: text two independent readers agreed on that no person has seen.
+    Provisional,
+    /// Both; the provisional ones carry the tag [`PROVISIONAL_TAG`], so the two kinds are reported apart.
+    All,
+}
+
+/// The tag a picture gets when its label is a provisional one.
+pub const PROVISIONAL_TAG: &str = "provisional";
+
 /// A picture with its true text and what is known about it.
 #[derive(Debug, Clone)]
 pub struct CaseInfo {
@@ -156,15 +170,24 @@ pub fn split_of(scene: &str) -> Split {
     if (h >> 33) & 1 == 0 { Split::Dev } else { Split::Held }
 }
 
-/// Everything known about a labelled picture.
+/// Everything known about a picture a person labelled.
+#[cfg(test)]
 pub fn case_info(root: &Path, img: &Path, truth_path: &Path) -> std::io::Result<CaseInfo> {
+    case_info_from(root, img, truth_path, false)
+}
+
+/// Everything known about a labelled picture; a provisional label is tagged as such.
+pub fn case_info_from(root: &Path, img: &Path, truth_path: &Path, provisional: bool) -> std::io::Result<CaseInfo> {
     let rel_path = img.strip_prefix(root).unwrap_or(img);
     let rel = rel_path.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/");
     let game = rel_path.parent().map(|p| p.components().map(|c| c.as_os_str().to_string_lossy().into_owned()).collect::<Vec<_>>().join("/")).unwrap_or_default();
     let stem = img.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let tags = std::fs::read_to_string(img.with_extension("tags"))
+    let mut tags: Vec<String> = std::fs::read_to_string(img.with_extension("tags"))
         .map(|t| t.split(',').map(|x| x.trim().to_lowercase()).filter(|x| !x.is_empty()).collect())
         .unwrap_or_default();
+    if provisional && !tags.iter().any(|t| t == PROVISIONAL_TAG) {
+        tags.push(PROVISIONAL_TAG.to_string());
+    }
     Ok(CaseInfo { img: img.to_path_buf(), rel, split: split_of(&scene_key(&game, &stem)), game, tags, truth: std::fs::read_to_string(truth_path)? })
 }
 
@@ -182,6 +205,7 @@ pub struct Summary {
     pub digit_errors: usize,
     pub negation_flips: usize,
     pub p50_ms: u32,
+    pub p95_ms: u32,
 }
 
 /// Mean per distinct subtitle (a subtitle's value is the mean over its pictures).
@@ -210,6 +234,7 @@ pub fn summarize(results: &[&CaseResult]) -> Summary {
         digit_errors: results.iter().map(|r| r.digit_errors).sum(),
         negation_flips: results.iter().filter(|r| r.negation_flip).count(),
         p50_ms: times.get(times.len() / 2).copied().unwrap_or(0),
+        p95_ms: times.get(((times.len().max(1) - 1) as f64 * 0.95).round() as usize).copied().unwrap_or(0),
     }
 }
 
@@ -311,6 +336,7 @@ pub fn to_json(name: &str, scale: f32, results: &[CaseResult]) -> serde_json::Va
         "pictures": results.iter().map(|r| serde_json::json!({
             "rel": r.rel, "game": r.game, "tags": r.tags, "split": r.split.name(), "unit": r.unit,
             "truth": r.truth, "got": r.got, "cer": r.cer, "cer_strict": r.cer_strict, "exact": r.exact, "ms": r.ms,
+            "missed": r.missed, "digit_errors": r.digit_errors, "negation_flip": r.negation_flip,
         })).collect::<Vec<_>>(),
     })
 }
@@ -334,16 +360,91 @@ pub fn from_json(value: &serde_json::Value) -> Option<(String, Vec<CaseResult>)>
                 cer: r.get("cer")?.as_f64()?,
                 cer_strict: r.get("cer_strict").and_then(|v| v.as_f64()).unwrap_or(0.0),
                 exact: r.get("exact").and_then(|v| v.as_bool()).unwrap_or(false),
-                missed: false,
+                missed: r.get("missed").and_then(|v| v.as_bool()).unwrap_or(false),
                 found: 0.0,
                 extra: 0.0,
-                digit_errors: 0,
-                negation_flip: false,
+                digit_errors: r.get("digit_errors").and_then(|v| v.as_u64()).unwrap_or(0) as usize,
+                negation_flip: r.get("negation_flip").and_then(|v| v.as_bool()).unwrap_or(false),
                 ms: r.get("ms").and_then(|v| v.as_u64()).unwrap_or(0) as u32,
             })
         })
         .collect();
     Some((name, results))
+}
+
+// ───────────── tables from saved reports ─────────────
+
+/// One engine's saved run (`--save-report`): what it read and what it cost.
+#[derive(Debug, Clone)]
+pub struct SavedRun {
+    pub name: String,
+    pub results: Vec<CaseResult>,
+    pub memory_mb: Option<u64>,
+    pub video_memory_mb: Option<u64>,
+}
+
+/// Every engine in a saved report.
+pub fn saved_runs(report: &serde_json::Value) -> Vec<SavedRun> {
+    let engines = report.get("engines").and_then(|e| e.as_array()).cloned().unwrap_or_default();
+    engines
+        .iter()
+        .filter_map(|e| {
+            let (name, results) = from_json(e)?;
+            let mb = |key: &str| e.get(key).and_then(|v| v.as_u64());
+            Some(SavedRun { name, results, memory_mb: mb("peak_memory_mb"), video_memory_mb: mb("peak_video_memory_mb") })
+        })
+        .collect()
+}
+
+/// The pictures of a run that are in `split` (when one is asked for) and carry `tag` (when one is asked for).
+pub fn keep(results: &[CaseResult], split: Option<Split>, tag: Option<&str>) -> Vec<CaseResult> {
+    results.iter().filter(|r| split.is_none_or(|s| s == r.split) && tag.is_none_or(|t| r.tags.iter().any(|x| x == t))).cloned().collect()
+}
+
+/// The comparison of several saved runs as Markdown tables: every engine overall, every engine game by game, and each
+/// engine against the first, subtitle by subtitle. The first run is the one the others are judged against.
+pub fn tables(runs: &[SavedRun]) -> String {
+    use std::fmt::Write;
+    let mut out = String::new();
+    let mb = |v: Option<u64>| v.map_or("–".to_string(), |v| v.to_string());
+    let _ = writeln!(out, "| engine | subtitles | letter error | exact lines | missed | lost digits | negation | p50 ms | p95 ms | memory MB | video memory MB |");
+    let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    for run in runs {
+        let all: Vec<&CaseResult> = run.results.iter().collect();
+        let s = summarize(&all);
+        let _ = writeln!(out, "| {} | {} | {} | {} | {} | {} | {} | {} | {} | {} | {} |", run.name, s.subtitles, pct(s.cer), pct(s.exact), s.missed, s.digit_errors, s.negation_flips, s.p50_ms, s.p95_ms, mb(run.memory_mb), mb(run.video_memory_mb));
+    }
+    let games: std::collections::BTreeSet<&str> = runs.iter().flat_map(|r| r.results.iter().map(|c| c.game.as_str())).collect();
+    if games.len() > 1 {
+        for game in games {
+            let _ = writeln!(out, "\n**{}**\n", if game.is_empty() { "(top folder)" } else { game });
+            let _ = writeln!(out, "| engine | subtitles | letter error | exact lines | missed | lost digits | negation | p50 ms | p95 ms |");
+            let _ = writeln!(out, "|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+            for run in runs {
+                let rows: Vec<&CaseResult> = run.results.iter().filter(|c| c.game == game).collect();
+                if rows.is_empty() {
+                    continue;
+                }
+                let s = summarize(&rows);
+                let _ = writeln!(out, "| {} | {} | {} | {} | {} | {} | {} | {} | {} |", run.name, s.subtitles, pct(s.cer), pct(s.exact), s.missed, s.digit_errors, s.negation_flips, s.p50_ms, s.p95_ms);
+            }
+        }
+    }
+    if let Some((first, rest)) = runs.split_first().filter(|(_, rest)| !rest.is_empty()) {
+        let _ = writeln!(out, "\nAgainst **{}**, subtitle by subtitle (a subtitle is better when its letter error went down):\n", first.name);
+        let _ = writeln!(out, "| engine | better | worse | the same | sign test p | |");
+        let _ = writeln!(out, "|---|---:|---:|---:|---:|---|");
+        for run in rest {
+            let c = compare(&first.results, &run.results);
+            let verdict = match (c.p < 0.05, c.better > c.worse) {
+                (true, true) => "better, unlikely to be chance",
+                (true, false) => "worse, unlikely to be chance",
+                (false, _) => "could easily be chance",
+            };
+            let _ = writeln!(out, "| {} | {} | {} | {} | {:.3} | {} |", run.name, c.better, c.worse, c.same, c.p, verdict);
+        }
+    }
+    out
 }
 
 // ───────────── printing ─────────────
@@ -377,6 +478,24 @@ pub fn print_summary(results: &[CaseResult]) {
         }
         let cells: Vec<String> = rows.iter().map(|(k, g)| format!("{k} {} ({})", pct(g.cer), g.subtitles)).collect();
         println!("  by {kind}: {}", cells.join(" · "));
+    }
+    print_table(results);
+}
+
+/// One row per game and per tag with everything that is counted, so a difference can be traced to where it comes from.
+/// Nothing is printed for a set that is one game with no tags: the headline already says it all.
+pub fn print_table(results: &[CaseResult]) {
+    let rows: Vec<(String, Summary)> = grouped(results)
+        .into_iter()
+        .filter(|(kind, _)| *kind != "split")
+        .flat_map(|(kind, rows)| rows.into_iter().map(move |(k, g)| (if kind == "tag" { format!("[{k}]") } else { k }, g)))
+        .collect();
+    if rows.len() < 2 {
+        return;
+    }
+    println!("  {:<34} {:>9} {:>8} {:>7} {:>6} {:>6} {:>8} {:>7} {:>7}", "game or [tag]", "subtitles", "letters", "exact", "missed", "digits", "negation", "p50 ms", "p95 ms");
+    for (name, g) in rows {
+        println!("  {:<34} {:>9} {:>8} {:>7} {:>6} {:>6} {:>8} {:>7} {:>7}", name, g.subtitles, pct(g.cer), pct(g.exact), g.missed, g.digit_errors, g.negation_flips, g.p50_ms, g.p95_ms);
     }
 }
 
@@ -508,6 +627,62 @@ mod tests {
         let c = compare(&back, &rs);
         assert_eq!((c.better, c.worse, c.same, c.not_in_both), (0, 0, 2, 0));
         assert!(from_json(&serde_json::json!({"nothing": true})).is_none());
+    }
+
+    #[test]
+    fn a_provisional_label_is_tagged_so_it_is_never_mixed_up_with_a_persons() {
+        let root = std::env::temp_dir().join(format!("maru-prov-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join("g")).unwrap();
+        let img = root.join("g/a00_s001_0.png");
+        std::fs::write(&img, b"").unwrap();
+        std::fs::write(img.with_extension("provisional.txt"), "안녕").unwrap();
+        std::fs::write(img.with_extension("tags"), "outlined").unwrap();
+        let i = case_info_from(&root, &img, &img.with_extension("provisional.txt"), true).unwrap();
+        assert_eq!(i.tags, ["outlined", PROVISIONAL_TAG]);
+        assert_eq!(i.truth, "안녕");
+        assert!(!case_info(&root, &img, &img.with_extension("provisional.txt")).unwrap().tags.contains(&PROVISIONAL_TAG.to_string()));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn the_slowest_reads_show_in_the_95th_percentile_and_what_was_counted_survives_a_saved_report() {
+        let mut rs: Vec<CaseResult> = (0..20).map(|i| score_case(&info("g", &format!("가나다{i}")), "", 10 + i)).collect();
+        rs[19].ms = 900;
+        let all: Vec<&CaseResult> = rs.iter().collect();
+        let s = summarize(&all);
+        assert_eq!((s.p50_ms, s.p95_ms), (20, 28), "the one slow read is beyond the 95th percentile of twenty");
+        assert_eq!(s.missed, 20);
+        let (_, back) = from_json(&to_json("x", 1.0, &rs)).unwrap();
+        let back_refs: Vec<&CaseResult> = back.iter().collect();
+        let b = summarize(&back_refs);
+        assert_eq!((b.missed, b.digit_errors, b.negation_flips), (s.missed, s.digit_errors, s.negation_flips));
+    }
+
+    #[test]
+    fn saved_runs_become_tables_and_can_be_narrowed_to_a_split_or_a_tag() {
+        let mut gold = result("elden", "가나다라", "가나다라");
+        gold.tags = vec!["gold".into()];
+        let mut held = result("sekiro", "마바사아", "마바사자");
+        held.split = Split::Held;
+        let baseline = vec![gold.clone(), held.clone(), result("sekiro", "자차카타", "자차")];
+        let mut candidate = baseline.clone();
+        candidate[1] = { let mut r = result("sekiro", "마바사아", "마바사아"); r.split = Split::Held; r };
+        let mut first = to_json("today", 1.0, &baseline);
+        first["peak_video_memory_mb"] = serde_json::json!(1900);
+        let report = serde_json::json!({ "engines": [first, to_json("candidate", 1.0, &candidate)] });
+        let runs = saved_runs(&report);
+        assert_eq!((runs.len(), runs[0].video_memory_mb, runs[1].video_memory_mb), (2, Some(1900), None));
+
+        let text = tables(&runs);
+        assert!(text.contains("| today | 3 |") && text.contains("| 1900 |"), "{text}");
+        assert!(text.contains("**sekiro**") && text.contains("**elden**"), "one table per game: {text}");
+        assert!(text.contains("| candidate | 1 | 0 | 2 | 1.000 | could easily be chance |"), "{text}");
+
+        assert_eq!(keep(&runs[0].results, Some(Split::Held), None).len(), 1);
+        assert_eq!(keep(&runs[0].results, None, Some("gold")).len(), 1);
+        assert_eq!(keep(&runs[0].results, Some(Split::Held), Some("gold")).len(), 0);
+        assert!(saved_runs(&serde_json::json!({"nothing": true})).is_empty());
     }
 
     #[test]

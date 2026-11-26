@@ -363,6 +363,59 @@ pub struct EngineScore {
     pub name: String,
     pub scale: f32,
     pub results: Vec<crate::evalreport::CaseResult>,
+    /// The most memory this program and its model server held while the pictures were read, when it was measured.
+    pub peaks: Peaks,
+}
+
+/// Peak memory use in megabytes; `None` where this PC gives no reading.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Peaks {
+    pub memory_mb: Option<u64>,
+    pub video_memory_mb: Option<u64>,
+}
+
+/// Watches the given processes from a thread of its own until it is asked for the peaks.
+pub struct PeakWatch {
+    stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    thread: Option<std::thread::JoinHandle<Peaks>>,
+}
+
+impl PeakWatch {
+    /// Start watching `pids` (this program, and the model server it started), a few times a second.
+    pub fn start(pids: Vec<u32>) -> Self {
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        let thread = std::thread::spawn(move || {
+            let mut monitor = maru_platform::resources::native();
+            let mut peaks = Peaks::default();
+            loop {
+                let targets = pids.iter().map(|&pid| maru_core::resources::ProcessTarget { role: "eval".into(), name: format!("process {pid}"), state: "running".into(), pid: Some(pid) }).collect();
+                let sample = monitor.sample(targets);
+                peaks = fold_peaks(peaks, sample.processes.iter().map(|p| (p.ram_bytes, p.dedicated_gpu_bytes)));
+                if flag.load(std::sync::atomic::Ordering::Acquire) {
+                    return peaks;
+                }
+                std::thread::sleep(Duration::from_millis(250));
+            }
+        });
+        Self { stop, thread: Some(thread) }
+    }
+
+    pub fn finish(mut self) -> Peaks {
+        self.stop.store(true, std::sync::atomic::Ordering::Release);
+        self.thread.take().and_then(|t| t.join().ok()).unwrap_or_default()
+    }
+}
+
+/// The larger of `peaks` and one moment's readings, added up over the processes (`(memory, video memory)` in bytes each).
+pub fn fold_peaks(peaks: Peaks, readings: impl Iterator<Item = (Option<u64>, Option<u64>)>) -> Peaks {
+    let (mut ram, mut vram): (Option<u64>, Option<u64>) = (None, None);
+    for (r, v) in readings {
+        ram = match (ram, r) { (a, None) => a, (a, Some(b)) => Some(a.unwrap_or(0) + b) };
+        vram = match (vram, v) { (a, None) => a, (a, Some(b)) => Some(a.unwrap_or(0) + b) };
+    }
+    let mb = |bytes: Option<u64>| bytes.map(|b| b / (1024 * 1024));
+    Peaks { memory_mb: peaks.memory_mb.max(mb(ram)), video_memory_mb: peaks.video_memory_mb.max(mb(vram)) }
 }
 
 /// Every picture in `dir` and the folders below it (a test set is one folder per game), sorted by path.
@@ -386,17 +439,32 @@ pub fn load_images(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
 
 /// `name.png` + `name.txt` (the true text) pairs found in `dir` and the folders below it, sorted by name.
 /// A picture marked `name.unreadable` (see `tools/label_review.html`) is left out.
+#[cfg(test)]
 pub fn load_cases(dir: &Path) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>> {
+    Ok(load_cases_labelled(dir, crate::evalreport::Labels::Person)?.into_iter().map(|(p, truth, _)| (p, truth)).collect())
+}
+
+/// [`load_cases`] for the kind of label asked for: `(picture, label file, the label is provisional)`.
+/// A provisional label (`name.provisional.txt`) only ever stands in where no person's label (`name.txt`) exists.
+pub fn load_cases_labelled(dir: &Path, labels: crate::evalreport::Labels) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf, bool)>> {
+    use crate::evalreport::Labels;
     let cases: Vec<_> = load_images(dir)?
         .into_iter()
         .filter(|p| !p.with_extension("unreadable").exists())
         .filter_map(|p| {
-            let truth = p.with_extension("txt");
-            truth.exists().then_some((p, truth))
+            let (person, provisional) = (p.with_extension("txt"), p.with_extension("provisional.txt"));
+            match (labels, person.exists(), provisional.exists()) {
+                (Labels::Person | Labels::All, true, _) => Some((p, person, false)),
+                (Labels::Provisional | Labels::All, false, true) => Some((p, provisional, true)),
+                _ => None,
+            }
         })
         .collect();
     if cases.is_empty() {
-        bail!("no `name.png` + `name.txt` pairs found in {}", dir.display());
+        match labels {
+            Labels::Person => bail!("no `name.png` + `name.txt` pairs found in {}", dir.display()),
+            _ => bail!("no labelled pictures (`name.txt` or `name.provisional.txt` beside `name.png`) found in {}", dir.display()),
+        }
     }
     Ok(cases)
 }
@@ -404,8 +472,27 @@ pub fn load_cases(dir: &Path) -> Result<Vec<(std::path::PathBuf, std::path::Path
 /// Read every picture that has no label yet and keep what `engine` read beside it as `name.<tag>.txt`, so
 /// `tools/label_review.html` can show a second opinion (and sort the pictures where the readers disagree to the front).
 /// Pictures that are already labelled or marked unreadable are skipped. Returns how many were written.
+#[cfg(test)]
 pub fn write_drafts(tag: &str, engine: &dyn maru_ocr::OcrEngine, images: &[std::path::PathBuf], scale: f32) -> Result<usize> {
-    let todo: Vec<_> = images.iter().filter(|p| !p.with_extension("txt").exists() && !p.with_extension("unreadable").exists()).collect();
+    write_drafts_with(tag, engine, images, scale, DraftRules::default())
+}
+
+/// Which pictures [`write_drafts_with`] reads beyond the unlabelled ones.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DraftRules {
+    /// Also read pictures that already have a label (to see how often the readers would have agreed on a wrong text).
+    pub labelled_too: bool,
+    /// Leave a draft that is already there alone, so a run that stopped half-way (or costs money per picture) can go on.
+    pub keep_existing: bool,
+}
+
+/// [`write_drafts`] with a say in which pictures are read.
+pub fn write_drafts_with(tag: &str, engine: &dyn maru_ocr::OcrEngine, images: &[std::path::PathBuf], scale: f32, rules: DraftRules) -> Result<usize> {
+    let todo: Vec<_> = images
+        .iter()
+        .filter(|p| (rules.labelled_too || !p.with_extension("txt").exists()) && !p.with_extension("unreadable").exists())
+        .filter(|p| !(rules.keep_existing && p.with_extension(format!("{tag}.txt")).exists()))
+        .collect();
     let mut written = 0;
     for (i, path) in todo.iter().enumerate() {
         let img = image::open(path)?.to_rgb8();
@@ -421,10 +508,10 @@ pub fn write_drafts(tag: &str, engine: &dyn maru_ocr::OcrEngine, images: &[std::
 }
 
 /// The labelled pictures of a test set with what is known about each, restricted to one half when asked.
-pub fn load_case_infos(dir: &Path, split: Option<crate::evalreport::Split>) -> Result<Vec<crate::evalreport::CaseInfo>> {
+pub fn load_case_infos_labelled(dir: &Path, split: Option<crate::evalreport::Split>, labels: crate::evalreport::Labels) -> Result<Vec<crate::evalreport::CaseInfo>> {
     let mut infos = Vec::new();
-    for (img, truth) in load_cases(dir)? {
-        let info = crate::evalreport::case_info(dir, &img, &truth).with_context(|| format!("reading {}", truth.display()))?;
+    for (img, truth, provisional) in load_cases_labelled(dir, labels)? {
+        let info = crate::evalreport::case_info_from(dir, &img, &truth, provisional).with_context(|| format!("reading {}", truth.display()))?;
         if split.is_none_or(|s| s == info.split) {
             infos.push(info);
         }
@@ -463,7 +550,7 @@ pub fn eval_engine(name: &str, engine: &dyn maru_ocr::OcrEngine, cases: &[crate:
     crate::evalreport::print_summary(&results);
     let times: Vec<u32> = results.iter().map(|r| r.ms).collect();
     println!("{}\n", summarize("latency", times));
-    Ok(EngineScore { name: name.to_string(), scale, results })
+    Ok(EngineScore { name: name.to_string(), scale, results, peaks: Peaks::default() })
 }
 
 /// Side-by-side comparison, best (lowest letter error) first.
@@ -477,9 +564,25 @@ pub fn print_scores(scores: &[EngineScore]) {
         .collect();
     rows.sort_by(|a, b| a.1.cer.total_cmp(&b.1.cer));
     println!("Summary (lower letter error and extra, higher exact and found, is better; spaces and punctuation are ignored):");
-    println!("  {:<34} {:>8} {:>8} {:>8} {:>8} {:>9}", "engine", "letters", "exact", "found", "extra", "median");
+    println!("  {:<34} {:>8} {:>8} {:>8} {:>8} {:>7} {:>7} {:>9} {:>9} {:>9}", "engine", "letters", "exact", "found", "extra", "missed", "digits", "negation", "median", "p95");
     for (name, s) in rows {
-        println!("  {:<34} {:>7.1}% {:>7.1}% {:>7.1}% {:>7.1}% {:>6} ms", name, s.cer * 100.0, s.exact * 100.0, s.found * 100.0, s.extra * 100.0, s.p50_ms);
+        println!(
+            "  {:<34} {:>7.1}% {:>7.1}% {:>7.1}% {:>7.1}% {:>7} {:>7} {:>9} {:>6} ms {:>6} ms",
+            name,
+            s.cer * 100.0,
+            s.exact * 100.0,
+            s.found * 100.0,
+            s.extra * 100.0,
+            s.missed,
+            s.digit_errors,
+            s.negation_flips,
+            s.p50_ms,
+            s.p95_ms
+        );
+    }
+    for score in scores.iter().filter(|s| s.peaks != Peaks::default()) {
+        let mb = |v: Option<u64>| v.map_or("no reading".to_string(), |v| format!("{v} MB"));
+        println!("  {}: peak memory {}, peak video memory {} (this program and the model server it started)", score.name, mb(score.peaks.memory_mb), mb(score.peaks.video_memory_mb));
     }
 }
 
@@ -536,6 +639,48 @@ mod tests {
         assert!(root.join("other/2-001.stub.txt").exists());
         assert!(!root.join("yuzu/1-001.stub.txt").exists() && !root.join("yuzu/1-002.stub.txt").exists());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn a_provisional_label_stands_in_only_where_no_person_has_labelled() {
+        use crate::evalreport::Labels;
+        let root = test_set("provisional");
+        std::fs::write(root.join("yuzu/1-001.txt"), "가나\n").unwrap();
+        std::fs::write(root.join("yuzu/1-001.provisional.txt"), "가냐\n").unwrap(); // the person's label wins
+        std::fs::write(root.join("yuzu/1-002.provisional.txt"), "다라\n").unwrap();
+        let names = |labels| -> Vec<(String, bool)> {
+            load_cases_labelled(&root, labels).unwrap().iter().map(|(p, t, prov)| (format!("{}<{}", p.file_name().unwrap().to_string_lossy(), t.file_name().unwrap().to_string_lossy()), *prov)).collect()
+        };
+        assert_eq!(names(Labels::Person), [("1-001.png<1-001.txt".to_string(), false)]);
+        assert_eq!(names(Labels::Provisional), [("1-002.png<1-002.provisional.txt".to_string(), true)]);
+        assert_eq!(names(Labels::All).len(), 2);
+        let infos = load_case_infos_labelled(&root, None, Labels::All).unwrap();
+        assert!(infos.iter().any(|i| i.tags.contains(&crate::evalreport::PROVISIONAL_TAG.to_string())) && infos.iter().any(|i| i.tags.is_empty()));
+        assert!(load_cases_labelled(&root.join("other"), Labels::Provisional).is_err(), "nothing provisional there");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn drafts_can_also_cover_labelled_pictures_and_leave_earlier_drafts_alone() {
+        let root = test_set("draft-rules");
+        std::fs::write(root.join("yuzu/1-001.txt"), "가나\n").unwrap();
+        std::fs::write(root.join("yuzu/1-003.stub.txt"), "earlier\n").unwrap();
+        let images = load_images(&root).unwrap();
+        let rules = DraftRules { labelled_too: true, keep_existing: true };
+        assert_eq!(write_drafts_with("stub", &Stub("안녕"), &images, 1.0, rules).unwrap(), 3, "four pictures, one already has this reader's draft");
+        assert!(root.join("yuzu/1-001.stub.txt").exists(), "the labelled picture was read too");
+        assert_eq!(std::fs::read_to_string(root.join("yuzu/1-003.stub.txt")).unwrap(), "earlier\n");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn peaks_add_up_the_processes_of_one_moment_and_keep_the_largest_moment() {
+        const MB: u64 = 1024 * 1024;
+        let first = fold_peaks(Peaks::default(), [(Some(300 * MB), None), (Some(200 * MB), Some(1500 * MB))].into_iter());
+        assert_eq!(first, Peaks { memory_mb: Some(500), video_memory_mb: Some(1500) });
+        let later = fold_peaks(first, [(Some(100 * MB), Some(1800 * MB))].into_iter());
+        assert_eq!(later, Peaks { memory_mb: Some(500), video_memory_mb: Some(1800) });
+        assert_eq!(fold_peaks(Peaks::default(), [(None, None)].into_iter()), Peaks::default(), "no reading stays no reading");
     }
 
     #[test]

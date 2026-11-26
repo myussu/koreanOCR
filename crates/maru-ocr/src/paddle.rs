@@ -31,6 +31,31 @@ pub struct PaddleConfig {
     pub detect_side: Option<u32>,
     /// Threads one read may use; `None` leaves ONNX Runtime's default (all cores).
     pub threads: Option<usize>,
+    /// The detector's tuning (`[ocr] det_score_threshold`, `det_box_threshold`, `det_unclip_ratio`).
+    pub det_tuning: DetTuning,
+}
+
+/// How sure a pixel and a whole box must be, and how far a box is widened around its text. Each `None` keeps the value
+/// the library uses for general text ([`DetTuning::USUAL`]).
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct DetTuning {
+    pub score_threshold: Option<f32>,
+    pub box_threshold: Option<f32>,
+    pub unclip_ratio: Option<f32>,
+}
+
+impl DetTuning {
+    /// What oar-ocr applies when it is given no detector settings.
+    pub const USUAL: (f32, f32, f32) = (0.3, 0.6, 2.0);
+
+    pub fn is_set(&self) -> bool {
+        self.score_threshold.is_some() || self.box_threshold.is_some() || self.unclip_ratio.is_some()
+    }
+
+    /// `(score, box, unclip)` with the usual value wherever none was given.
+    pub fn values(&self) -> (f32, f32, f32) {
+        (self.score_threshold.unwrap_or(Self::USUAL.0), self.box_threshold.unwrap_or(Self::USUAL.1), self.unclip_ratio.unwrap_or(Self::USUAL.2))
+    }
 }
 
 impl PaddleConfig {
@@ -44,6 +69,7 @@ impl PaddleConfig {
             device: cfg.device.clone(),
             detect_side: None,
             threads: (cfg.threads > 0).then_some(cfg.threads as usize),
+            det_tuning: DetTuning { score_threshold: cfg.det_score_threshold, box_threshold: cfg.det_box_threshold, unclip_ratio: cfg.det_unclip_ratio },
         }
     }
 
@@ -98,10 +124,26 @@ impl PaddleOcr {
             builder = builder.ort_session(session);
         }
         if let Some(side) = cfg.detect_side {
+            let d = TextDetectionConfig::default();
             builder = builder.text_detection_config(TextDetectionConfig {
+                score_threshold: cfg.det_tuning.score_threshold.unwrap_or(d.score_threshold),
+                box_threshold: cfg.det_tuning.box_threshold.unwrap_or(d.box_threshold),
+                unclip_ratio: cfg.det_tuning.unclip_ratio.unwrap_or(d.unclip_ratio),
                 limit_side_len: Some(side),
                 limit_type: Some(LimitType::Max),
                 max_side_len: Some(side.max(4000)),
+                ..d
+            });
+        } else if cfg.det_tuning.is_set() {
+            // Giving oar-ocr any settings switches off the ones it applies to general text by itself, so they are repeated here.
+            let (score_threshold, box_threshold, unclip_ratio) = cfg.det_tuning.values();
+            builder = builder.text_detection_config(TextDetectionConfig {
+                score_threshold,
+                box_threshold,
+                unclip_ratio,
+                limit_side_len: Some(960),
+                limit_type: Some(LimitType::Max),
+                max_side_len: Some(4000),
                 ..Default::default()
             });
         }
@@ -182,6 +224,16 @@ mod tests {
         let Err(err) = PaddleOcr::load(&cfg) else { panic!("expected an error") };
         let msg = err.to_string();
         assert!(msg.contains("det.onnx") && msg.contains("rec.onnx") && msg.contains("maru setup"), "{msg}");
+    }
+
+    #[test]
+    fn the_detectors_tuning_comes_from_the_config_and_unset_values_stay_the_usual_ones() {
+        let paths = Paths::under(Path::new("/m"));
+        assert!(!PaddleConfig::resolve(&OcrConfig::default(), &paths).det_tuning.is_set(), "nothing is changed unless asked");
+        let ocr = OcrConfig { det_score_threshold: Some(0.2), det_unclip_ratio: Some(1.4), ..Default::default() };
+        let tuning = PaddleConfig::resolve(&ocr, &paths).det_tuning;
+        assert!(tuning.is_set());
+        assert_eq!(tuning.values(), (0.2, 0.6, 1.4));
     }
 
     #[test]

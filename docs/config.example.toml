@@ -72,6 +72,19 @@ backend = "auto"      # auto | paddle | windows
 device  = "cpu"       # cpu | directml:0 (any DirectX 12 GPU; Windows builds include it) | cuda:0 (needs a CUDA build)
 threads = 0           # CPU threads per PP-OCR read; 0 = every core. 4 leaves the rest to the game during live subtitles
 vision_reader = true  # pair PP-OCR with PaddleOCR-VL when installed (`maru setup ocr-vl`); ~2 GB VRAM
+# Other OCR pieces, all optional and off. Measure one on your own games before using it:
+# `python tools/compare_ocr.py <data folder>\evalset\raw` (docs/reports/run-3.md has the numbers so far).
+# det_model = "D:/maru-models/pp-ocrv5-mobile-det/det.onnx"   # another detector (ONNX)
+# rec_model = "D:/maru-models/other-rec/rec.onnx"             # another recogniser; it needs its own character list:
+# dict_path = "D:/maru-models/other-rec/dict.txt"
+# det_score_threshold = 0.2    # the detector's own tuning; unset = 0.3, 0.6 and 2.0. PP-OCRv6 detectors are published
+# det_box_threshold = 0.45     # with 0.2, 0.45 and 1.4
+# det_unclip_ratio = 1.4
+# reader_dir = "D:/maru-models/paddleocr-vl-1.6"   # another reading model in place of PaddleOCR-VL-1.5: a folder with one
+#                                                  # .gguf, its mmproj .gguf and, if it has one, chat_template.jinja
+# reader_prompt = "OCR:"       # the instruction that model expects (GLM-OCR: "Text Recognition:")
+# reader_args = []             # extra llama-server arguments for it
+# reader_html = false          # true for a model that answers in HTML (Surya): the tags are taken out
 
 [learning]
 gloss_mode = "fade_known"    # all | fade_known | hide_known

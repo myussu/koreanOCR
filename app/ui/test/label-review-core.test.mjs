@@ -44,6 +44,16 @@ test('the box starts with the label if there is one, else the strongest reader t
   assert.equal(L.startingText({ label: '' }).from, 'label', 'an empty label that was written is still a label');
 });
 
+test('a provisional label is what the box starts with, then an outside reader, and neither counts as done', () => {
+  const agreed = { id: 'a', draft: 'live', drafts: { provisional: '둘이 같다', outside: '둘이 같다', hybrid: '둘이 같다', paddle: '둘이 갇다' } };
+  assert.deepEqual(L.startingText(agreed), { text: '둘이 같다', from: 'provisional' });
+  assert.deepEqual(L.startingText({ drafts: { outside: '밖', 'paddle-vl': '안', hybrid: '안' } }), { text: '밖', from: 'outside' });
+  assert.ok(L.pending(agreed), 'a person still has to look at it');
+  const [group] = L.groupFiles(['a.png', 'a.provisional.txt', 'a.outside.txt']);
+  assert.equal(group.label, null, 'name.provisional.txt is a draft, never the label');
+  assert.deepEqual(Object.keys(group.drafts).sort(), ['outside', 'provisional']);
+});
+
 test('pictures still to do come first, and the ones whose readers disagree most come first among them', () => {
   const items = [
     { id: 'a', draft: '가나다라', drafts: { 'paddle-vl': '가나다라' } }, // agree
