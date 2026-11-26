@@ -1,5 +1,6 @@
 //! `maru` — the command-line front end to the same engine the overlay uses.
 
+mod connections;
 mod render;
 mod live_compare;
 mod setup;
@@ -78,6 +79,13 @@ enum Command {
         /// The model name that server expects (Ollama chooses by name: what `ollama list` shows). Only with a server, not llama-server.
         #[arg(long, value_name = "NAME")]
         model: Option<String>,
+        /// With --live: time these saved connections one after another on the same lines and print one table.
+        /// A name from Settings (see `maru connection list`), `name=model` for another model of it, or `local`.
+        #[arg(long, value_name = "NAME[=MODEL]", requires = "live", conflicts_with_all = ["endpoint", "model"])]
+        connection: Vec<String>,
+        /// With --connection: also write the table and every line's result into this folder.
+        #[arg(long, value_name = "DIR", requires = "connection")]
+        out: Option<PathBuf>,
     },
     /// Read a screenshot the way the screen scan does: list every Korean text found and how it is labelled.
     Scan {
@@ -152,6 +160,22 @@ enum Command {
     /// Configuration file.
     #[command(subcommand)]
     Config(ConfigCommand),
+    /// The model connections saved in Settings: list them, check one, or ask it which models it offers.
+    #[command(subcommand)]
+    Connection(ConnectionCommand),
+}
+
+#[derive(Subcommand)]
+enum ConnectionCommand {
+    /// The saved connections (their keys are not shown).
+    List,
+    /// One live subtitle line and one card-meaning choice through this connection, as Maru would send them.
+    Test {
+        /// A saved name, `name=model`, or `local`.
+        name: String,
+    },
+    /// The models this connection's server offers to its key.
+    Models { name: String },
 }
 
 #[derive(Subcommand)]
@@ -455,7 +479,18 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             tools::doctor(&mut s, deep).await?;
             Ok(0)
         }
-        Command::Bench { file, runs, live, endpoint, model } => {
+        Command::Connection(cmd) => match cmd {
+            ConnectionCommand::List => {
+                connections::list(&cfg);
+                Ok(0)
+            }
+            ConnectionCommand::Test { name } => Ok(i32::from(!connections::test(&cfg, &paths, &connections::Target::parse(&name)).await?)),
+            ConnectionCommand::Models { name } => {
+                connections::models(&cfg, &paths, &connections::Target::parse(&name)).await?;
+                Ok(0)
+            }
+        },
+        Command::Bench { file, runs, live, endpoint, model, connection, out } => {
             let sentences: Vec<String> = match file {
                 Some(f) => std::fs::read_to_string(&f)?.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect(),
                 // Subtitles are Korean: the live lane has nothing to do with the English sentences.
@@ -464,6 +499,11 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             };
             if sentences.is_empty() {
                 bail!("no sentences to run");
+            }
+            if !connection.is_empty() {
+                let targets: Vec<connections::Target> = connection.iter().map(|c| connections::Target::parse(c)).collect();
+                connections::bench_live(&cfg, &paths, &targets, &sentences, runs.max(1), out.as_deref()).await?;
+                return Ok(0);
             }
             // This times the language model, so nothing else may compete for the GPU while it runs.
             cfg.ocr.vision_reader = false;
@@ -751,6 +791,15 @@ mod cli_tests {
         let o = Cli::try_parse_from(["maru", "bench", "--live", "--endpoint", "http://nas:11434", "--model", "hf.co/x/y:Q4"]).unwrap();
         assert!(matches!(o.command, Command::Bench { model: Some(ref m), .. } if m == "hf.co/x/y:Q4"));
         assert!(matches!(Cli::try_parse_from(["maru", "bench"]).unwrap().command, Command::Bench { live: false, endpoint: None, .. }));
+    }
+
+    #[test]
+    fn bench_can_time_several_saved_connections_on_the_same_lines() {
+        let b = Cli::try_parse_from(["maru", "bench", "--live", "--connection", "NAS", "--connection", "Gemini=gemini-flash", "--out", "results"]).unwrap();
+        assert!(matches!(b.command, Command::Bench { live: true, ref connection, out: Some(_), .. } if connection == &["NAS", "Gemini=gemini-flash"]));
+        assert!(Cli::try_parse_from(["maru", "bench", "--connection", "NAS"]).is_err(), "connections are timed on the live lane");
+        assert!(Cli::try_parse_from(["maru", "bench", "--live", "--connection", "NAS", "--endpoint", "http://x"]).is_err(), "a connection brings its own address");
+        assert!(matches!(Cli::try_parse_from(["maru", "connection", "test", "Azure"]).unwrap().command, Command::Connection(ConnectionCommand::Test { ref name }) if name == "Azure"));
     }
 
     #[test]

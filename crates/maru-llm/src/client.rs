@@ -84,6 +84,27 @@ pub struct LlmClient {
     auth: crate::auth::Authentication,
     /// Optional request fields this server refused (HTTP 400 naming them); shared by clones of this client.
     rejected: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
+    /// Ask the server to report token counts on every request ([`Self::counting_tokens`]); benchmarks only.
+    count_tokens: bool,
+    /// Tokens the server reported so far; shared by clones of this client.
+    used: std::sync::Arc<TokenCounter>,
+}
+
+#[derive(Debug, Default)]
+struct TokenCounter {
+    replies: std::sync::atomic::AtomicU64,
+    input: std::sync::atomic::AtomicU64,
+    output: std::sync::atomic::AtomicU64,
+}
+
+/// Tokens a server said it used, summed over the replies that carried a count.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TokenUse {
+    /// Replies that reported their tokens (a server that never does leaves this at 0).
+    pub replies: u64,
+    pub input: u64,
+    /// Everything generated, thinking included where the server counts it.
+    pub output: u64,
 }
 
 /// Fields Maru can leave out when a server refuses them: sampling, thinking, Ollama's keep-alive, usage reports.
@@ -119,7 +140,49 @@ impl LlmClient {
             keep_alive: (cfg.endpoint.is_some() && cfg.server_keep_minutes > 0 && !auth.cloud()).then(|| format!("{}m", cfg.server_keep_minutes)),
             auth,
             rejected: Default::default(),
+            count_tokens: false,
+            used: Default::default(),
         }
+    }
+
+    /// Ask the server for token counts on every request, to add up what a benchmark cost ([`Self::tokens_used`]).
+    pub fn counting_tokens(mut self) -> Self {
+        self.count_tokens = true;
+        self
+    }
+
+    /// What the server reported since this client was made.
+    pub fn tokens_used(&self) -> TokenUse {
+        use std::sync::atomic::Ordering::Relaxed;
+        TokenUse { replies: self.used.replies.load(Relaxed), input: self.used.input.load(Relaxed), output: self.used.output.load(Relaxed) }
+    }
+
+    /// The model this client asks for.
+    pub fn model(&self) -> &str {
+        &self.model
+    }
+
+    /// The models this server (and, for a hosted one, this key) offers, as it names them.
+    pub async fn list_models(&self) -> Result<Vec<String>> {
+        let url = format!("{}{}", self.root, self.auth.models_route());
+        let request = self.auth.request(self.http.get(&url).timeout(Duration::from_secs(20)))?;
+        let resp = request.send().await.map_err(|source| LlmError::Unreachable { url: self.root.clone(), source })?;
+        let status = resp.status();
+        let text = resp.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(LlmError::Http { status: status.as_u16(), body: self.auth.redact(text).chars().take(400).collect() });
+        }
+        let listed: Value = serde_json::from_str(&text).map_err(|_| LlmError::Api("the server's model list was not JSON".into()))?;
+        // OpenAI-style `data[].id`; Ollama's and Google's native lists use `models[].name`.
+        let entries = listed.get("data").or_else(|| listed.get("models")).and_then(Value::as_array).cloned().unwrap_or_default();
+        let mut names: Vec<String> = entries
+            .iter()
+            .filter_map(|m| m.get("id").or_else(|| m.get("name")).and_then(Value::as_str))
+            .map(|name| name.trim_start_matches("models/").to_string())
+            .collect();
+        names.sort();
+        names.dedup();
+        Ok(names)
     }
 
     /// Client for the configured endpoint, or the local llama-server port.
@@ -230,7 +293,7 @@ impl LlmClient {
         if !opts.stop.is_empty() {
             body["stop"] = json!(opts.stop);
         }
-        if opts.log_timings {
+        if opts.log_timings || self.count_tokens {
             body["stream_options"] = json!({ "include_usage": true });
         }
         if self.llama_extensions {
@@ -320,6 +383,16 @@ impl LlmClient {
         let mut reply = Reply::default();
         // Set once the server says why it stopped; a stream that just ends without it was cut short.
         let mut finished = false;
+        // Some servers repeat the running token count in every chunk: the last one is the reply's.
+        let mut usage: Option<(u64, u64)> = None;
+        let count = |usage: Option<(u64, u64)>| {
+            if let Some((input, output)) = usage {
+                use std::sync::atomic::Ordering::Relaxed;
+                self.used.replies.fetch_add(1, Relaxed);
+                self.used.input.fetch_add(input, Relaxed);
+                self.used.output.fetch_add(output, Relaxed);
+            }
+        };
         loop {
             let next = tokio::time::timeout(self.idle_timeout, stream.next())
                 .await
@@ -352,11 +425,16 @@ impl LlmClient {
                                 cache_tokens = t.get("cache_n").and_then(|v| v.as_u64()), "live model timings");
                         }
                     }
-                    SseEvent::Done => return Ok(reply),
+                    SseEvent::Usage { input, output } => usage = Some((input, output)),
+                    SseEvent::Done => {
+                        count(usage);
+                        return Ok(reply);
+                    }
                 }
             }
             if ended {
                 // Some servers (and llama.cpp's `/completion`) never send `[DONE]`; a stop reason is enough.
+                count(usage);
                 return if finished { Ok(reply) } else { Err(LlmError::Stream("the reply ended before the model finished".into())) };
             }
         }
@@ -377,6 +455,8 @@ pub enum SseEvent {
     Done,
     Timings(Value),
     Finish(String),
+    /// Token counts for the whole reply (the last chunk of a stream asked for with `stream_options.include_usage`).
+    Usage { input: u64, output: u64 },
 }
 
 /// Incremental `text/event-stream` parser for chat-completion chunks.
@@ -449,6 +529,14 @@ fn parse_line(line: &[u8]) -> Vec<SseEvent> {
         events.push(SseEvent::Finish(if capped { "length" } else { "stop" }.into()));
     }
     if let Some(timings) = v.get("timings") { events.push(SseEvent::Timings(timings.clone())); }
+    if let Some(usage) = v.get("usage").filter(|u| u.is_object()) {
+        let count = |name: &str| usage.get(name).and_then(Value::as_u64);
+        if let Some(input) = count("prompt_tokens") {
+            // Some servers leave thinking out of `completion_tokens` but not out of the total.
+            let output = count("completion_tokens").unwrap_or(0).max(count("total_tokens").map_or(0, |t| t.saturating_sub(input)));
+            events.push(SseEvent::Usage { input, output });
+        }
+    }
     events
 }
 
@@ -760,6 +848,35 @@ mod tests {
             let reply = LlmClient::new(&server.url, &cfg()).stream_chat_reply(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap();
             assert_eq!(reply, Reply { text: "Yes.".into(), capped: false }, "{tail:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn token_counts_are_asked_for_only_by_a_counting_client_and_a_repeated_count_is_added_once() {
+        // Like Gemini: the running count in every chunk; like OpenAI: once, in a last chunk without choices.
+        let repeated = "data: {\"choices\":[{\"delta\":{\"content\":\"Yes\"}}],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":1,\"total_tokens\":31}}\n\n\
+data: {\"choices\":[{\"delta\":{\"content\":\".\"},\"finish_reason\":\"stop\"}],\"usage\":{\"prompt_tokens\":30,\"completion_tokens\":2,\"total_tokens\":52}}\n\ndata: [DONE]\n\n";
+        let server = spawn_mock(move |_, _| MockResponse { status: 200, chunks: vec![repeated.as_bytes().to_vec()], delay_ms: 0 }).await;
+        let plain = LlmClient::new(&server.url, &cfg());
+        plain.stream_chat(&[Message::user("hi")], &ChatOpts::default(), &mut |_| {}).await.unwrap();
+        assert!(!server.requests.lock().unwrap()[0].1.contains("stream_options"), "ordinary requests are unchanged");
+        let counting = LlmClient::new(&server.url, &cfg()).counting_tokens();
+        for _ in 0..2 {
+            assert_eq!(counting.stream_chat(&[Message::user("hi")], &ChatOpts::default(), &mut |_| {}).await.unwrap(), "Yes.");
+        }
+        assert!(server.requests.lock().unwrap()[1].1.contains(r#""stream_options":{"include_usage":true}"#));
+        // 22 output tokens: the total says more was generated (thinking) than the visible completion.
+        assert_eq!(counting.tokens_used(), TokenUse { replies: 2, input: 60, output: 44 });
+        assert_eq!(counting.clone().tokens_used().replies, 2, "clones share the count");
+    }
+
+    #[tokio::test]
+    async fn the_models_a_server_offers_are_listed_by_name() {
+        let server = spawn_mock(|path, _| {
+            let body = if path == "/v1/models" { r#"{"data":[{"id":"models/gemini-flash"},{"id":"gemma"},{"id":"gemma"}]}"# } else { "{}" };
+            MockResponse { status: 200, chunks: vec![body.as_bytes().to_vec()], delay_ms: 0 }
+        })
+        .await;
+        assert_eq!(LlmClient::new(&server.url, &cfg()).list_models().await.unwrap(), ["gemini-flash", "gemma"]);
     }
 
     #[tokio::test]

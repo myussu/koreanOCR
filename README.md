@@ -449,6 +449,15 @@ Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless
 `maru bench` (latency percentiles) · `maru eval-ocr <folder>` (score OCR engines on **your own** screenshots:
 `name.png` + `name.txt` pairs) · `maru vocab …` · `maru dict …`. The CLI uses the same engine as the overlay.
 
+**Saved connections from the command line.** `maru connection list` shows the connections saved in Settings (never
+their keys); `maru connection test NAME` sends one live subtitle line and one card-meaning choice through that connection
+exactly as Maru would and says how long each took; `maru connection models NAME` asks the server which models it offers to
+your key (offered is not the same as callable: a free Gemini key lists models it then refuses for lack of quota).
+`NAME` is the saved name in any capitals, or its beginning when only one starts that way; `NAME=model` asks for another
+model of the same connection; `local` is the model this PC runs itself. `maru bench --live --connection NAS --connection
+Gemini=gemini-3.8-flash --file lines.txt -n 3 --out results` times live subtitles on each connection in turn with the same
+lines (first word, whole line, failures, lines cut off at the length limit, tokens) and prints one table.
+
 `eval-ocr` can also pit vision-language models against PP-OCR (each runs in its own `llama-server`, one at a time;
 the first run downloads the model): `maru eval-ocr <folder> --engine paddle paddle-vl hybrid gemma windows`.
 On a first set of Korean screenshots PaddleOCR-VL misread far less than PP-OCR (3.5% vs 15% CER), but skipped some
@@ -592,7 +601,10 @@ Switching still uses **Save → Restart Maru**. Registering a connection alone d
 For Azure, expand **Server type and API key**, choose **Azure OpenAI**, enter the resource URL
 (`https://YOUR-RESOURCE.openai.azure.com/` or its `/openai/v1/` base URL), its **deployment name** in the model field,
 and its resource API key. A pasted deployment URL (`…/openai/deployments/NAME/…`) is refused with the address and
-deployment name to use instead. For Google Gemini, choose **Google Gemini**, enter
+deployment name to use instead. For Claude through Anthropic's OpenAI-compatible endpoint, leave the type on
+**OpenAI-compatible**, enter `https://api.anthropic.com`, a model such as `claude-haiku-5-5` and your Anthropic API key:
+Maru recognises that address and treats it as a hosted service (no temperature, which current Claude models refuse, and
+none of the load, unload and keep-alive calls meant for a server of your own). For Google Gemini, choose **Google Gemini**, enter
 `https://generativelanguage.googleapis.com/v1beta/openai`, a model such as `gemini-2.5-flash`, and an API key from Google
 AI Studio. **Test connection** checks those draft credentials with the same fixed greeting. Other
 authenticated OpenAI-compatible servers use a Bearer key; ordinary NAS servers can leave authentication alone.
