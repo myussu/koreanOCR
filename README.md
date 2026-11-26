@@ -564,7 +564,7 @@ becomes `name.txt` and counts as yours.
 **Comparing OCR pieces.** `python tools/compare_ocr.py <data folder>\evalset\raw` scores today's setup and every candidate
 whose files are on this PC, one after another, and prints for each: letter error, exact lines, missed lines, lost digits,
 flipped negations, time per picture (median and 95th percentile), peak memory and video memory, game by game, and how many
-subtitles it reads better and worse than today's with a sign test. It takes about an hour for 600 pictures;
+subtitles it reads better and worse than today's with a sign test. It takes about half an hour for 550 pictures;
 `--tables` prints the tables again from the saved runs, `--only NAME` runs a few (`maru eval-report today.json other.json
 --split held-out` does the same for any reports saved with `--save-report`). Close games first, or the times mean
 little. What was measured so far, and why nothing was switched on, is in [docs/reports/run-3.md](docs/reports/run-3.md).
