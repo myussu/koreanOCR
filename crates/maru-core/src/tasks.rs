@@ -44,11 +44,42 @@ pub struct CaptureRoute {
     pub while_live_model: String,
 }
 
-/// Which voice speaks. Empty: the one in `[tts]`.
+/// Which voice speaks. Everything empty: the one in `[tts]`.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct VoiceRoute {
+    /// The speaker. Empty: the one in `[tts]` (or, with `endpoint`, whichever that server picks).
     pub voice: String,
+    /// Another OpenAI-style speech server for this task (`http://127.0.0.1:18097`). Empty: the voice in `[tts]`.
+    pub endpoint: String,
+    /// The model name sent to `endpoint`. Empty: the one in `[tts]`.
+    pub model: String,
+}
+
+impl VoiceRoute {
+    /// Another server than `[tts]` speaks for this task.
+    pub fn elsewhere(&self) -> bool {
+        !self.endpoint.trim().is_empty()
+    }
+}
+
+/// The speech settings one task speaks with: `[tts]` as it is, `[tts]` with another speaker, or another server.
+pub fn voice_config(base: &crate::config::TtsConfig, route: &VoiceRoute) -> crate::config::TtsConfig {
+    let mut cfg = base.clone();
+    let named = |text: &str| Some(text.trim().to_string()).filter(|t| !t.is_empty());
+    if route.elsewhere() {
+        cfg.provider = crate::config::TtsProvider::Endpoint;
+        cfg.endpoint = named(&route.endpoint);
+        // The key in `[tts]` belongs to the server named there, and so does its speaker's name.
+        cfg.api_key = None;
+        cfg.voice = route.voice.trim().to_string();
+        if let Some(model) = named(&route.model) {
+            cfg.model = model;
+        }
+    } else if let Some(voice) = named(&route.voice) {
+        cfg.voice = voice;
+    }
+    cfg
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -365,6 +396,12 @@ pub fn validate(cfg: &Config) -> std::result::Result<(), String> {
     }
     if is_local(&t.live.connection) && !t.live.model.trim().is_empty() && t.live.model.trim() != "main" && live_model_named(&t.live.model).is_none() {
         return Err(format!("Live subtitles: \"{}\" is not a model this PC can run for them.", t.live.model));
+    }
+    for (label, route) in [("The voice while reading", &t.voice_reading), ("The voice for cards", &t.voice_cards)] {
+        let address = route.endpoint.trim();
+        if !address.is_empty() && !(address.starts_with("http://") || address.starts_with("https://")) {
+            return Err(format!("{label}: the other voice server's address must start with http:// or https://."));
+        }
     }
     Ok(())
 }
@@ -696,5 +733,43 @@ deck = "Coreano::2 Media" # keep
         assert_eq!(utc_stamp(0), "19700101-000000");
         assert_eq!(utc_stamp(951_782_400), "20000229-000000");
         assert_eq!(utc_stamp(1_795_793_412), "20261127-153012");
+    }
+
+    #[test]
+    fn a_voice_task_speaks_with_tts_as_it_is_with_another_speaker_or_through_another_server() {
+        use crate::config::{TtsConfig, TtsProvider};
+        let base = TtsConfig { enabled: true, api_key: Some("paid-key".into()), ..Default::default() };
+        assert_eq!(voice_config(&base, &VoiceRoute::default()), base, "nothing chosen: the voice in [tts]");
+
+        let speaker = voice_config(&base, &VoiceRoute { voice: " vivian ".into(), ..Default::default() });
+        assert_eq!((speaker.voice.as_str(), speaker.provider, speaker.model.as_str()), ("vivian", TtsProvider::Local, "qwen3-tts"));
+        assert_eq!(speaker.api_key, base.api_key, "the same server, so the same key");
+
+        let route = VoiceRoute { endpoint: " http://127.0.0.1:18097 ".into(), voice: "F1".into(), model: "supertonic-3".into() };
+        assert!(route.elsewhere() && !VoiceRoute::default().elsewhere());
+        let other = voice_config(&base, &route);
+        assert_eq!((other.provider, other.endpoint.as_deref(), other.voice.as_str(), other.model.as_str()), (TtsProvider::Endpoint, Some("http://127.0.0.1:18097"), "F1", "supertonic-3"));
+        assert_eq!(other.api_key, None, "the key in [tts] is not sent to another server");
+        let unnamed = voice_config(&base, &VoiceRoute { endpoint: "http://nas:8080".into(), ..Default::default() });
+        assert_eq!((unnamed.voice.as_str(), unnamed.model.as_str()), ("", "qwen3-tts"), "this PC's speaker name means nothing to another server");
+    }
+
+    #[test]
+    fn an_older_file_and_a_file_with_only_a_speaker_keep_parsing_and_a_bad_voice_address_is_refused() {
+        let cfg: Config = toml::from_str("[tasks]\nversion = 1\n[tasks.voice_reading]\nvoice = \"sohee\"\n").unwrap();
+        assert_eq!(cfg.tasks.voice_reading, VoiceRoute { voice: "sohee".into(), ..Default::default() });
+        let mut cfg = effective_default();
+        cfg.tasks.voice_reading.endpoint = "127.0.0.1:18097".into();
+        let refused = validate(&cfg).unwrap_err();
+        assert!(refused.contains("voice while reading") && refused.contains("http://"), "{refused}");
+        cfg.tasks.voice_reading.endpoint = "http://127.0.0.1:18097".into();
+        assert_eq!(validate(&cfg), Ok(()));
+    }
+
+    /// A default file with its task table written, as the app has after its first start.
+    fn effective_default() -> Config {
+        let mut cfg = Config::default();
+        cfg.tasks = effective(&cfg);
+        cfg
     }
 }

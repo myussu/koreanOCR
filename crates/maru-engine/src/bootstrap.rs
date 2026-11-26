@@ -55,6 +55,8 @@ pub struct Services {
     pub vision_status: watch::Receiver<LlmStatus>,
     /// Speech, when it is switched on and set up (see `[tts]`); `None` otherwise.
     pub tts: Option<maru_tts::Tts>,
+    /// The voice each task speaks with (`[tasks.voice_reading]`, `[tasks.voice_cards]`); both are `tts` unless chosen.
+    pub voices: crate::voices::Voices,
     /// Updates as the speech server starts (a remote one is just checked); `Disabled` when speech is off.
     pub tts_status: watch::Receiver<LlmStatus>,
     /// Keeps the local `tts-server` alive.
@@ -657,8 +659,9 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     let (tts_tx, tts_rx) = watch::channel(LlmStatus::Disabled);
     let tts_server: Arc<Mutex<Option<maru_tts::local::LocalTts>>> = Arc::new(Mutex::new(None));
     let (tts, deferred_speech) = start_speech(&cfg, &paths, lite, opts, &mut notes, tts_tx, tts_server.clone());
+    let voices = crate::voices::build(&cfg, &paths, tts.as_ref(), &mut notes);
 
-    Services { engine, paths, notes, lite, tts, tts_status: tts_rx, tts_server, llm_status: status_rx, vision_status: vision_rx, server, vision_server, model_runtime, deferred_vision, deferred_speech, model_controls: Default::default() }
+    Services { engine, paths, notes, lite, tts, voices, tts_status: tts_rx, tts_server, llm_status: status_rx, vision_status: vision_rx, server, vision_server, model_runtime, deferred_vision, deferred_speech, model_controls: Default::default() }
 }
 
 fn start_speech(

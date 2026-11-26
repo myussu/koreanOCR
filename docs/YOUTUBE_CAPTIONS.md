@@ -30,7 +30,7 @@ YouTube watch page
   page-bridge.js   (page's own JS world)  reads the player's list of caption tracks
   content.js       (extension's world)    picks the track, fetches its cues, watches the video's time
         │ chrome.runtime.sendMessage({type: "line", …})
-  background.js    (service worker)       POST http://127.0.0.1:18096/captions/v1/line   X-Maru-Token: <code>
+  background.js    (service worker)       POST http://127.0.0.1:18098/captions/v1/line   X-Maru-Token: <code>
         ▼
 Maru  maru-engine/src/captions.rs         loopback listener: host, path, origin, method, code, size → rules → CaptionLine
       app/src-tauri/src/captions.rs       starts it at launch, forwards each line
@@ -56,7 +56,7 @@ One line per request, to this PC only. Version 1 is in the path.
 
 ```
 POST /captions/v1/line HTTP/1.1
-Host: 127.0.0.1:18096
+Host: 127.0.0.1:18098
 Origin: chrome-extension://abcdefghijklmnopabcdefghijklmnop
 Content-Type: application/json
 X-Maru-Token: 5f0c1d7a9b3e4c2188a6d0f4e7b2c391
@@ -102,7 +102,7 @@ Windows command line reaches `curl` in another encoding and is then dropped as `
 ```
 line.json:   {"text":"저는 학교에서 공부했어요","video":"dQw4w9WgXcQ","start_ms":4000,"lang":"ko"}
 
-curl -s -X POST http://127.0.0.1:18096/captions/v1/line -H "X-Maru-Token: <code>" -H "Content-Type: application/json" --data-binary @line.json
+curl -s -X POST http://127.0.0.1:18098/captions/v1/line -H "X-Maru-Token: <code>" -H "Content-Type: application/json" --data-binary @line.json
 ```
 
 ## Security choices
@@ -170,7 +170,7 @@ and they will be read." Whether either route works today is exactly what has not
 | Making and saving the code (with the switch, or at launch for a hand-edited file) | tested (`app/src-tauri/src/captions.rs`) |
 | The standalone listener with a real HTTP client | run once by the agent (2026-11-26, Windows 11): the `captions_listen` example and `curl`. `hello` answered; a Korean line from a UTF-8 file was taken and printed; the same cue again was `duplicate`; a wrong code got 401; `Origin: https://www.youtube.com` got 403. No browser was involved |
 | The shell starting the listener in the running app and lines reaching History | **not verified**: it compiles and passes clippy; the app was not run |
-| Settings fields and the Status row | looked at once in the hub's browser demo (headless Chrome, mocked commands, 2026-11-26): the switch and the code field show under Live subtitles and the Status row reads `ON · port 18096 on this PC · 12 lines taken · 3 repeats or empty lines dropped`. **Not verified** in the real window, and saving the switch was not exercised there |
+| Settings fields and the Status row | looked at once in the hub's browser demo (headless Chrome, mocked commands, 2026-11-26): the switch and the code field show under Live subtitles and the Status row reads `ON · port 18098 on this PC · 12 lines taken · 3 repeats or empty lines dropped`. **Not verified** in the real window, and saving the switch was not exercised there |
 | The extension's decisions (track choice, parsing, timing, seeking, messages) | tested with `node --test` (23 tests) against data shaped as described above, written from memory of the format, not captured from the site |
 | The extension loaded in Chrome or Edge | **not verified**: never loaded; `manifest.json` only parses as JSON |
 | Against YouTube: the track list, the caption request, the token fallback, navigation between videos, advertisements | **not verified against YouTube** |
@@ -184,7 +184,7 @@ and they will be read." Whether either route works today is exactly what has not
    **Code for the browser extension** appears with a code. Restart Maru (the banner offers it).
 2. In Chrome or Edge open `chrome://extensions` (or `edge://extensions`), switch on **Developer mode**, press
    **Load unpacked** and choose the folder `extension/youtube-captions` of this repository.
-3. Press the extension's button, paste the code, leave the port at 18096 unless you changed it in Maru, press
+3. Press the extension's button, paste the code, leave the port at 18098 unless you changed it in Maru, press
    **Save**, then **Test the connection**. It should say "Maru answered: the code is right."
 
 Loading it unpacked from a checkout means the browser runs whatever is in that folder: after pulling changes, press
@@ -192,7 +192,7 @@ the reload arrow on the extension's card.
 
 ## Try it, step by step
 
-1. Maru running, captions switched on and restarted. The Status tab shows `YouTube captions: ON · port 18096 on this PC · 0 lines taken`.
+1. Maru running, captions switched on and restarted. The Status tab shows `YouTube captions: ON · port 18098 on this PC · 0 lines taken`.
 2. Open a YouTube video with Korean captions uploaded by its author (the captions menu lists "Korean", not
    "Korean (auto-generated)"). Open the extension's popup.
 3. Expected: "Sending this video's Korean captions (uploaded by the author) to Maru: N lines so far", N growing as
@@ -222,7 +222,7 @@ refuses caption requests that its own player did not make.
 
 1. Settings → Live subtitles → switch on "Take YouTube captions from the browser" → Save. **Expect** a 32-character
    code in "Code for the browser extension" and a restart banner. Restart. **Expect** Status → "YouTube captions: ON ·
-   port 18096 on this PC · 0 lines taken". `maru-app.log` must not contain the code.
+   port 18098 on this PC · 0 lines taken". `maru-app.log` must not contain the code.
 2. Load the extension, paste the code, Test the connection. **Expect** "Maru answered: the code is right." Change one
    character of the code: **expect** "Maru refused the code." Quit Maru: **expect** "Maru is not listening on that port."
 3. Play a video with author-uploaded Korean captions. **Expect** the popup to count lines, and History to list each
@@ -237,7 +237,7 @@ refuses caption requests that its own player did not make.
 7. A video with an advertisement first: **expect** no lines during the advertisement.
 8. Star a caption line with the shortcut while the video plays, and from History. Make cards from one. **Expect** the
    star in History → Starred and the tag `maru::youtube` on the cards.
-9. From any web page's console: `fetch('http://127.0.0.1:18096/captions/v1/hello', {method: 'POST', headers: {'X-Maru-Token': '<the code>'}})`.
+9. From any web page's console: `fetch('http://127.0.0.1:18098/captions/v1/hello', {method: 'POST', headers: {'X-Maru-Token': '<the code>'}})`.
    **Expect** it to fail (the page's origin is refused); Status counts one more refused request.
 10. Another program already on the port: **expect** Status to say captions are not listening and why, and Maru
     otherwise unaffected.

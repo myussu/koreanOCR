@@ -244,9 +244,9 @@ test('a request carries the line and where it is from, and nothing else', () => 
 });
 
 test('lines only ever go to this PC', () => {
-  assert.equal(core.endpoint(18096, '/captions/v1/line'), 'http://127.0.0.1:18096/captions/v1/line');
+  assert.equal(core.endpoint(18098, '/captions/v1/line'), 'http://127.0.0.1:18098/captions/v1/line');
   assert.equal(core.endpoint('19000', '/captions/v1/hello'), 'http://127.0.0.1:19000/captions/v1/hello');
-  for (const port of [80, 0, -1, 70000, 1.5, 'evil.example', '18096@evil.example', null, undefined, NaN]) {
+  for (const port of [80, 0, -1, 70000, 1.5, 'evil.example', '18098@evil.example', null, undefined, NaN]) {
     assert.equal(core.endpoint(port, '/x'), `http://127.0.0.1:${core.DEFAULT_PORT}/x`, String(port));
   }
 });

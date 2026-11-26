@@ -48,7 +48,7 @@ pub fn ui_config(state: S) -> UiConfig {
         max_width_px: cfg.ui.max_width_px,
         theme: cfg.ui.theme.clone(),
         anki: state.engine().config().learning.anki.enabled,
-        tts: state.services.tts.is_some(),
+        tts: state.services.voices.reading.is_some(),
     }
 }
 
@@ -342,13 +342,19 @@ fn clip_of(audio: maru_tts::Audio, cached: bool, started: std::time::Instant) ->
 /// Speak a sentence with the *saved* speech settings, so a change can be tried without a restart
 /// (changing the local server's model or port still needs a restart).
 #[tauri::command]
-pub async fn tts_test(state: S<'_>, text: Option<String>) -> Res<Clip> {
+pub async fn tts_test(state: S<'_>, text: Option<String>, task: Option<String>) -> Res<Clip> {
     use maru_core::config::TtsProvider;
     let paths = state.services.paths.clone();
-    let cfg = maru_core::Config::load(&paths.config_file).map_err(err)?.tts;
-    if !cfg.enabled {
+    let saved = maru_core::Config::load(&paths.config_file).map_err(err)?;
+    if !saved.tts.enabled {
         return Err("Speech is switched off. Turn it on, save, and restart.".into());
     }
+    // `task` picks the voice of one task ("reading", "cards"); without it, the voice in `[tts]`.
+    let cfg = match task.as_deref() {
+        Some("reading") => maru_core::tasks::voice_config(&saved.tts, &saved.tasks.voice_reading),
+        Some("cards") => maru_core::tasks::voice_config(&saved.tts, &saved.tasks.voice_cards),
+        _ => saved.tts,
+    };
     let _speech = if cfg.provider == TtsProvider::Local {
         // Speech switched on after start-up has no local voice yet: only a restart starts one.
         state.services.speech_lease().await.map_err(|e| match state.services.tts_status() {
@@ -374,12 +380,12 @@ pub fn tts_plan(text: String) -> Vec<String> {
 /// Speech for one sentence (or a single word) with the voice that is running now.
 #[tauri::command]
 pub async fn tts_clip(state: S<'_>, text: String) -> Res<Clip> {
-    let Some(tts) = state.services.tts.clone() else {
-        return Err("Speech is off. Turn it on in Settings → Speech.".into());
+    let Some(voice) = state.services.voices.reading.clone() else {
+        return Err("Speech is off. Turn it on in Settings → Voice.".into());
     };
-    let _speech = state.services.speech_lease().await?;
+    let _speech = state.services.voice_lease(&voice).await?;
     let started = std::time::Instant::now();
-    let (audio, cached) = tts.speak(&text).await.map_err(err)?;
+    let (audio, cached) = voice.tts.speak(&text).await.map_err(err)?;
     Ok(clip_of(audio, cached, started))
 }
 
@@ -419,10 +425,11 @@ pub struct AnkiAddReply {
     pub note: Option<String>,
 }
 
-/// Spoken `text` as a file for Anki: `Ok(None)` when speech is off or not ready.
+/// Spoken `text` as a file for Anki, in the voice for cards: `Ok(None)` when speech is off or not ready.
 pub(crate) async fn spoken(state: &AppState, text: &str) -> Result<Option<maru_engine::anki_flow::Media>, String> {
-    let Some(tts) = state.services.tts.clone() else { return Ok(None) };
-    let _speech = state.services.speech_lease().await?;
+    let Some(voice) = state.services.voices.cards.clone() else { return Ok(None) };
+    let tts = voice.tts.clone();
+    let _speech = state.services.voice_lease(&voice).await?;
     let (audio, _) = tts.speak(text).await.map_err(err)?;
     let ext = match audio.mime.as_str() {
         "audio/mpeg" => "mp3",
@@ -467,6 +474,7 @@ pub async fn anki_add(state: S<'_>, request: AnkiAddRequest) -> Res<AnkiAddReply
         .finish_anki_add(permit, AnkiAddOptions { key: request.key, deck: request.deck, tags: request.tags, reverse, app: request.app, word_audio, sentence_audio, context: None, meaning_es: None })
         .await
         .map_err(err)?;
+    state.services.release_card_voice().await;
     Ok(AnkiAddReply { added, note })
 }
 
