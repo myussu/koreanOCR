@@ -238,7 +238,11 @@ read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
   list. `finish_anki_add` fills it for a panel add only when the word has exactly one sense. The sheet shows
   `MineSheet::credit`. Tests: `nikl.rs`, `senses.rs` (both), `tests/pipeline.rs` (`…one_dictionary_sense…`,
   `…several_senses…`, `…first_sense…`, `…spanish…`, `coverage…`), `anki.rs` (note type upgrade), `mine.test.mjs`,
-  `tools/test_build_nikl.py`. Real Anki: M-41.
+  `tools/test_build_nikl.py`. Real Anki: M-41. The decision itself is two pure functions, `senses::questions` (what a
+  model is asked) and `senses::decide` (what each word gets from the dictionary and the answers), shared with the
+  comparison tools: `Engine::card_words` / `maru dict senses` (a line's words and senses), `maru bench --cards` (each
+  connection decides them), `tools/rerank_senses.py` (a CPU reranker instead of a model) and
+  `tools/build_card_review.py` (the blind review page and its separate key; `tools/test_card_review.py`).
 * **Sound added later** (`maru-srs/src/anki_sounds.rs`, `Engine::{anki_silent_notes, anki_add_sounds}`, shell
   `mining::anki_fill_sounds`): an add whose speech is off or fails still adds the card and says so (`SOUND_LATER`).
   `silent_notes` searches Anki for Maru notes with an empty `WordAudio`, or an empty `SentenceAudio` beside a filled
@@ -554,7 +558,10 @@ OpenAI-compatible protocol. Keys serialize into local config, but Debug and auth
 Anthropic's OpenAI-compatible endpoint has no provider of its own: a server saved as OpenAI-compatible whose host is
 `api.anthropic.com` is recognised by `auth.rs` and handled as a hosted service (key required; `temperature`,
 `reasoning_effort` and `keep_alive` left out of the body; no `/health` probe, hold or release), so a connection saved
-before this works unedited. `LlmClient::{counting_tokens, tokens_used, list_models}` are additive and used only by the
+before this works unedited. Claude thinks by default and the endpoint ignores `reasoning_effort`, so with the effort at
+`none` the client sends `thinking: {"type": "disabled"}`, switches to `{"type": "between_tools"}` when the model's 400
+names it, and otherwise leaves thinking on and adds room to `max_tokens` (`auth::ClaudeThinking`, remembered per client;
+a set effort starts at "left on"). `LlmClient::{counting_tokens, tokens_used, list_models}` are additive and used only by the
 CLI (`maru-cli/src/connections.rs`: `maru connection list|test|models`, `maru bench --live --connection`): a counting
 client asks for `stream_options.include_usage` and adds up the last count of each reply; other clients send what they did.
 `maru-llm/auth.rs` attaches Bearer or Azure `api-key` headers, disables redirects when carrying a key, and normalizes

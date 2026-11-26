@@ -15,6 +15,40 @@ pub(crate) struct Authentication {
     anthropic: bool,
 }
 
+/// How a Claude model is kept from thinking before a short answer. The endpoint ignores `reasoning_effort`, thinking
+/// is on by default, and what it thinks counts against `max_tokens`: with Maru's small limits a line came back empty.
+/// Which way of switching it off a model accepts differs, so they are tried in this order and the answer remembered.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClaudeThinking {
+    /// `thinking: {"type": "disabled"}`.
+    Disabled = 0,
+    /// `thinking: {"type": "between_tools"}`, for the models that refuse `disabled` and name this instead.
+    BetweenTools = 1,
+    /// Thinking stays on (wanted, or the model cannot switch it off): the answer gets room beyond it instead.
+    Left = 2,
+}
+
+/// Tokens added to a request's limit when a Claude model thinks first.
+const THINKING_ROOM: u64 = 2048;
+
+impl ClaudeThinking {
+    pub fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Disabled,
+            1 => Self::BetweenTools,
+            _ => Self::Left,
+        }
+    }
+    /// Where to start: off for `reasoning_effort = "none"` (the default), on for anything else.
+    pub fn for_effort(effort: Option<&str>) -> Self {
+        if effort.is_some_and(|e| e.eq_ignore_ascii_case("none")) { Self::Disabled } else { Self::Left }
+    }
+    /// What to try after the endpoint refused the `thinking` field with this message.
+    pub fn after_refusal(self, message: &str) -> Self {
+        if self == Self::Disabled && message.contains("between_tools") { Self::BetweenTools } else { Self::Left }
+    }
+}
+
 /// `https://api.anthropic.com`, with or without `/v1`.
 fn is_anthropic(root: &str) -> bool {
     let host = root.split_once("://").map_or(root, |(_, rest)| rest).split(['/', ':']).next().unwrap_or_default();
@@ -45,6 +79,28 @@ impl Authentication {
     }
     pub fn authenticated(&self) -> bool {
         self.key.is_some()
+    }
+    /// Anthropic's OpenAI-compatible endpoint.
+    pub fn anthropic(&self) -> bool {
+        self.anthropic
+    }
+    /// Write `mode` into a request for Claude; `limit` is the `max_tokens` the task asked for.
+    pub fn claude_thinking(&self, body: &mut Value, mode: ClaudeThinking, limit: Option<u64>) {
+        let Some(fields) = body.as_object_mut() else { return };
+        match mode {
+            ClaudeThinking::Disabled => fields.insert("thinking".into(), serde_json::json!({ "type": "disabled" })),
+            ClaudeThinking::BetweenTools => fields.insert("thinking".into(), serde_json::json!({ "type": "between_tools" })),
+            ClaudeThinking::Left => fields.remove("thinking"),
+        };
+        if let Some(limit) = limit {
+            let room = if mode == ClaudeThinking::Left { THINKING_ROOM } else { 0 };
+            fields.insert("max_tokens".into(), serde_json::json!(limit + room));
+        }
+    }
+    #[cfg(test)]
+    pub fn with_anthropic_dialect(mut self) -> Self {
+        self.anthropic = true;
+        self
     }
     /// A hosted API: no `/health`, no Ollama routes or fields, and it always needs a key.
     pub fn cloud(&self) -> bool {

@@ -458,6 +458,17 @@ model of the same connection; `local` is the model this PC runs itself. `maru be
 Gemini=gemini-3.8-flash --file lines.txt -n 3 --out results` times live subtitles on each connection in turn with the same
 lines (first word, whole line, failures, lines cut off at the length limit, tokens) and prints one table.
 
+**Comparing who chooses card meanings best.** `maru dict senses lines.txt --out tasks.jsonl` writes, for each line, its
+words to learn with their dictionary senses; `maru bench --cards tasks.jsonl --connection dictionary --connection NAS
+--connection Claude=claude-haiku-5-5 --out results` lets each candidate decide every meaning the way the cards sheet does
+(`dictionary` is the first sense with no model) and records each decision with its time and tokens.
+`python tools/rerank_senses.py tasks.jsonl results/cards-reranker.jsonl` adds a candidate that asks no language model: a
+small multilingual reranker on the CPU (`Alibaba-NLP/gte-multilingual-reranker-base`; needs `torch` and
+`sentence-transformers`). `python tools/build_card_review.py build tasks.jsonl --cards results/cards-*.jsonl --out
+review.html --key key.json` makes a page that shows the candidates as A, B, C… in a different order in every line, with
+the key in a separate file; mark each meaning right or wrong, save the marks, and `… score marks.json key.json` counts
+them per candidate. The tools choose no winner.
+
 `eval-ocr` can also pit vision-language models against PP-OCR (each runs in its own `llama-server`, one at a time;
 the first run downloads the model): `maru eval-ocr <folder> --engine paddle paddle-vl hybrid gemma windows`.
 On a first set of Korean screenshots PaddleOCR-VL misread far less than PP-OCR (3.5% vs 15% CER), but skipped some
@@ -604,7 +615,10 @@ and its resource API key. A pasted deployment URL (`…/openai/deployments/NAME/
 deployment name to use instead. For Claude through Anthropic's OpenAI-compatible endpoint, leave the type on
 **OpenAI-compatible**, enter `https://api.anthropic.com`, a model such as `claude-haiku-5-5` and your Anthropic API key:
 Maru recognises that address and treats it as a hosted service (no temperature, which current Claude models refuse, and
-none of the load, unload and keep-alive calls meant for a server of your own). For Google Gemini, choose **Google Gemini**, enter
+none of the load, unload and keep-alive calls meant for a server of your own). With **Reasoning effort** left at `none`
+it also asks Claude not to think before answering, in whichever way the model accepts: thinking is on by default there and
+counts against Maru's short answer limits, which left live lines empty. Set a reasoning effort to keep it on (the answer
+then gets extra room). For Google Gemini, choose **Google Gemini**, enter
 `https://generativelanguage.googleapis.com/v1beta/openai`, a model such as `gemini-2.5-flash`, and an API key from Google
 AI Studio. **Test connection** checks those draft credentials with the same fixed greeting. Other
 authenticated OpenAI-compatible servers use a Bearer key; ordinary NAS servers can leave authentication alone.

@@ -84,6 +84,9 @@ pub struct LlmClient {
     auth: crate::auth::Authentication,
     /// Optional request fields this server refused (HTTP 400 naming them); shared by clones of this client.
     rejected: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
+    /// How thinking is switched off on Anthropic's endpoint (`auth::ClaudeThinking`), learned from its refusals;
+    /// shared by clones of this client.
+    claude_thinking: std::sync::Arc<std::sync::atomic::AtomicU8>,
     /// Ask the server to report token counts on every request ([`Self::counting_tokens`]); benchmarks only.
     count_tokens: bool,
     /// Tokens the server reported so far; shared by clones of this client.
@@ -138,6 +141,7 @@ impl LlmClient {
             runtime: None,
             request_deadline: None,
             keep_alive: (cfg.endpoint.is_some() && cfg.server_keep_minutes > 0 && !auth.cloud()).then(|| format!("{}m", cfg.server_keep_minutes)),
+            claude_thinking: std::sync::Arc::new(std::sync::atomic::AtomicU8::new(crate::auth::ClaudeThinking::for_effort(Some(cfg.reasoning_effort.trim())) as u8)),
             auth,
             rejected: Default::default(),
             count_tokens: false,
@@ -346,11 +350,16 @@ impl LlmClient {
         let started = std::time::Instant::now();
         let url = format!("{}{route}", self.root);
         let mut body = body.clone();
+        let limit = body.get("max_tokens").and_then(Value::as_u64);
+        let claude = || crate::auth::ClaudeThinking::from_u8(self.claude_thinking.load(std::sync::atomic::Ordering::Relaxed));
         let resp = loop {
             if let Some(fields) = body.as_object_mut() {
                 for field in self.rejected.lock().unwrap_or_else(|p| p.into_inner()).iter() {
                     fields.remove(*field);
                 }
+            }
+            if self.auth.anthropic() {
+                self.auth.claude_thinking(&mut body, claude(), limit);
             }
             let request = self.auth.request(self.http.post(&url).json(&body))?;
             let request = match deadline.or(self.request_deadline) { Some(deadline) => request.timeout(deadline), None => request };
@@ -365,6 +374,13 @@ impl LlmClient {
             let text = tokio::time::timeout(self.idle_timeout, resp.text()).await
                 .map_err(|_| LlmError::Stalled(self.idle_timeout.as_secs()))?
                 .unwrap_or_default();
+            // A Claude model that does not take this way of switching thinking off: try the next one.
+            if status == reqwest::StatusCode::BAD_REQUEST && self.auth.anthropic() && body.get("thinking").is_some() && text.contains("thinking") {
+                let next = claude().after_refusal(&text);
+                tracing::info!(server = %self.root, ?next, "this Claude model does not accept that thinking setting; trying another");
+                self.claude_thinking.store(next as u8, std::sync::atomic::Ordering::Relaxed);
+                continue;
+            }
             // Hosted models refuse some optional fields (a reasoning model's temperature, Gemini 3's "no thinking",
             // Ollama's keep_alive elsewhere): leave the named field out for this server and ask once more.
             if status == reqwest::StatusCode::BAD_REQUEST && let Some(field) = rejected_field(&text, &body) {
@@ -848,6 +864,77 @@ mod tests {
             let reply = LlmClient::new(&server.url, &cfg()).stream_chat_reply(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap();
             assert_eq!(reply, Reply { text: "Yes.".into(), capped: false }, "{tail:?}");
         }
+    }
+
+    /// A client that takes `server` for Anthropic's endpoint (which is otherwise told by its address).
+    fn claude_client(server: &testing::MockServer, effort: &str) -> LlmClient {
+        let cfg = LlmConfig { endpoint: Some(server.url.clone()), api_key: Some("sk-test".to_string().into()), model_name: "claude".into(), reasoning_effort: effort.into(), ..cfg() };
+        let mut client = LlmClient::from_config(&cfg);
+        client.auth = client.auth.clone().with_anthropic_dialect();
+        client
+    }
+
+    fn bodies(server: &testing::MockServer) -> Vec<Value> {
+        server.requests.lock().unwrap().iter().map(|(_, b)| serde_json::from_str(b).unwrap()).collect()
+    }
+
+    /// Answers like Anthropic's endpoint for a model that accepts only the `accepted` thinking settings.
+    fn claude_endpoint(accepted: &'static [&'static str]) -> impl Fn(&str, &str) -> MockResponse + Send + Sync + 'static {
+        move |_, body| {
+            let body: Value = serde_json::from_str(body).unwrap();
+            match body["thinking"]["type"].as_str() {
+                Some(kind) if !accepted.contains(&kind) => {
+                    let message = if kind == "disabled" && accepted.contains(&"between_tools") {
+                        r#"{"error":{"message":"To turn thinking off on this model, send \"thinking\": {\"type\": \"between_tools\"} instead of {\"type\": \"disabled\"}."}}"#.to_string()
+                    } else {
+                        format!(r#"{{"error":{{"message":"\"thinking.type.{kind}\" is not supported for this model."}}}}"#)
+                    };
+                    MockResponse { status: 400, chunks: vec![message.into_bytes()], delay_ms: 0 }
+                }
+                _ => MockResponse { status: 200, chunks: sse_answer(&["Yes."]), delay_ms: 0 },
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn claude_is_asked_not_to_think_in_the_way_each_model_accepts_and_the_answer_is_remembered() {
+        async fn ask(client: LlmClient) {
+            let opts = ChatOpts { max_tokens: Some(60), ..Default::default() };
+            for _ in 0..2 {
+                assert_eq!(client.stream_chat(&[Message::user("hi")], &opts, &mut |_| {}).await.unwrap(), "Yes.");
+            }
+        }
+        // A model that takes "disabled": one request each time, the limit as asked.
+        let haiku = spawn_mock(claude_endpoint(&["disabled"])).await;
+        ask(claude_client(&haiku, "none")).await;
+        let sent = bodies(&haiku);
+        assert_eq!(sent.len(), 2);
+        assert!(sent.iter().all(|b| b["thinking"]["type"] == "disabled" && b["max_tokens"] == 60 && b.get("temperature").is_none()), "{sent:?}");
+
+        // A model that names "between_tools" instead: one refusal, then that, also for the next request.
+        let sonnet = spawn_mock(claude_endpoint(&["between_tools"])).await;
+        ask(claude_client(&sonnet, "none")).await;
+        let kinds: Vec<String> = bodies(&sonnet).iter().map(|b| b["thinking"]["type"].as_str().unwrap_or("-").to_string()).collect();
+        assert_eq!(kinds, ["disabled", "between_tools", "between_tools"]);
+
+        // A model whose thinking cannot be switched off: the answer gets room beyond the thinking instead.
+        let always = spawn_mock(claude_endpoint(&[])).await;
+        ask(claude_client(&always, "none")).await;
+        let sent = bodies(&always);
+        assert_eq!(sent.len(), 3, "one refusal, then two requests that leave thinking alone");
+        assert!(sent[1].get("thinking").is_none() && sent[1]["max_tokens"] == 60 + 2048 && sent[2]["max_tokens"] == 60 + 2048, "{sent:?}");
+    }
+
+    #[tokio::test]
+    async fn claude_keeps_thinking_when_a_reasoning_effort_is_set_and_other_servers_never_get_the_field() {
+        let server = spawn_mock(claude_endpoint(&["disabled"])).await;
+        let opts = ChatOpts { max_tokens: Some(60), ..Default::default() };
+        claude_client(&server, "low").stream_chat(&[Message::user("hi")], &opts, &mut |_| {}).await.unwrap();
+        let cfg = LlmConfig { endpoint: Some(server.url.clone()), ..cfg() };
+        LlmClient::from_config(&cfg).stream_chat(&[Message::user("hi")], &opts, &mut |_| {}).await.unwrap();
+        let sent = bodies(&server);
+        assert!(sent[0].get("thinking").is_none() && sent[0]["max_tokens"] == 60 + 2048, "thinking was asked for: {:?}", sent[0]);
+        assert!(sent[1].get("thinking").is_none() && sent[1]["max_tokens"] == 60 && sent[1]["reasoning_effort"] == "none", "an ordinary server: {:?}", sent[1]);
     }
 
     #[tokio::test]
