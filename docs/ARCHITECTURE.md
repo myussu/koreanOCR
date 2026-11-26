@@ -123,6 +123,7 @@ Rules that keep it that way (and that tests and reviews rely on):
 | `app/src-tauri` | the overlay shell: windows, hotkeys, tray, background loops, Tauri commands |
 | `app/ui` | plain ES modules, no build step: panel, picker, hub (history/review/status/settings), scan overlay, live band |
 | `docs/` | this file, `MANUAL_TESTS.md`, `config.example.toml` (every option, documented) |
+| `extension/youtube-captions` | the browser extension that sends a video's Korean captions to Maru (§4.7a); not part of any build |
 | `.github/workflows/` | `ci.yml` (Windows build + tests + node tests; Linux clippy + tests), `tts-server.yml` (builds the speech server) |
 | `old/` | the original Python prototype, kept for reference only |
 
@@ -550,6 +551,28 @@ it is wiring only in `commands.rs`. Reader warm-up moves its lease into the bloc
 an unfinished request. Cancellation resets lifecycle state before awaiting stop; no false Ready is retained.
 Tests: `model_control_tests.rs`, `deferred_models.rs`, `model_runtime.rs`, `launcher.test.mjs`; M-23 covers real UI/game checks.
 
+### 4.7a YouTube captions as text (browser extension → `[captions]`)
+Design note: [YOUTUBE_CAPTIONS.md](YOUTUBE_CAPTIONS.md). **Not verified against YouTube or in a browser** (M-45).
+* **Extension** (`extension/youtube-captions/`, Manifest V3, no build step): `page-bridge.js` (page world) reads the player's
+  caption tracks; `content.js` picks the Korean track the author uploaded (never a translated one; auto-generated only with
+  the popup's switch), fetches its cues and follows the video's time; `background.js` posts each line to
+  `http://127.0.0.1:<port>/captions/v1/line` with the code; `popup.html/js` holds the code, port and switch. Every decision
+  is a pure function in `captions-core.js` (a plain script on `globalThis.MaruCaptions`, because content scripts cannot `import`).
+* **Receiver** (`maru-engine/src/captions.rs`): a small hand-written HTTP/1.1 listener on 127.0.0.1 (`listen`), refusing in
+  this order a foreign `Host`, another path, an `Origin` that is not an extension's, another method, a wrong code
+  (`same_token`), a missing or oversized length; then `accept` applies the line rules (empty, no Hangul, translated,
+  duplicate cue). It yields `CaptionLine`s; `Engine::translate_caption` sends one through `translate_live` with
+  `CaptureSource::Caption` and the program `youtube`. `pipeline::live` skips its two OCR repairs for that source (stray-mark
+  trimming, merging with a similar recent line); everything else (cache, history, `history.db`, stars, cards) is the live lane's.
+* **Shell** (`app/src-tauri/src/captions.rs`): writes the code when the switch is saved (`add_code_when_switched_on`, called
+  from `save_settings`) or at launch for a hand-edited file (`write_code_if_missing`), starts the listener at launch
+  (`start`), forwards lines, sets `AppState::live_shown` so the star shortcut means the newest caption, and answers
+  `captions_status` for the Status tab (`app/ui/captions-core.js::captionsLine`). No band is drawn for a caption line.
+* **Config:** `[captions]` (`enabled`, `port`, `token`, `allowed_origin`; `maru-core/src/captions.rs`), all with defaults, read at start.
+* **Tests:** `maru-engine/src/captions.rs` (real local socket), `tests/pipeline.rs` (`…caption…`), `maru-core/src/captions.rs`,
+  `app/src-tauri/src/captions.rs`, `app/ui/test/captions.test.mjs`, `extension/youtube-captions/test/captions-core.test.mjs`.
+  `cargo run -p maru-engine --example captions_listen -- <code>` prints received lines without starting Maru.
+
 ### 4.8 Speech (TTS)
 `maru-tts` (`Tts`: split into sentences → disk cache → provider → remember). Providers: the local `tts-server`
 (qwentts.cpp running Qwen3-TTS, built by `.github/workflows/tts-server.yml`, supervised by `local.rs`, started by
@@ -821,6 +844,8 @@ model), a `hint` for the prompts, `register`, `gloss_mode`, and Anki deck/tags.
 | `hardware.rs` · `plan.rs` | what this PC has · what to install on it |
 | `routes.rs` | one model per task: the live route, the card routes with their fallbacks, per-task status and test |
 | `romanized.rs` | dictionary "equivalents" that are only the headword in Latin letters, and what a card shows instead |
+
+| `captions.rs` | caption lines from the browser extension: the loopback listener, its request and line rules, the code |
 | `resource_targets.rs` · `resource_monitor.rs` | owned process identities, demand-driven platform samples and bounded local resource sessions |
 
 ## 6. Contracts
@@ -839,6 +864,7 @@ request and drop events of older ids, which is how superseded requests are cance
 | scan correction | additive `ScanCorrection` (old item and replacement number) → `ScanItems` → `ScanLabel`? → `ScanLabelsFinished` → `Done`, under the scan's id |
 | scan separation | additive `ScanSeparated` (removed item and reserved next-item boundary) → `ScanItems` (original pieces with fresh IDs) → label/completion events → `Done`, under the scan's id |
 | live line | the translate events, without `Breakdown`/`Gloss` |
+| caption line | as a live line; `Started.capture.source` is `caption` (additive `CaptureSource::Caption`, last variant) and its program is `youtube` |
 
 Rules for changing events: **add variants, do not repurpose or reorder existing ones**; every consumer must tolerate a variant it
 does not know (the overlay ignores unknown `type`s); update `Event::id`, the round-trip test in `event.rs`, `app/ui` consumers and
@@ -982,6 +1008,7 @@ feedback adds no setting or database field; normal translation cache/history ret
 | `config.toml` (config dir) | `maru-core::config`, `settings.rs` | every setting; comments are preserved on edit |
 | `config.toml` saved servers | `maru-core::external_servers`, settings | `[llm].servers` named connections and their plaintext keys; active main/snapshot provider/key fields are independent; no new database |
 | `config.toml` `[tasks]` and `config.toml.before-tasks-<stamp>.bak` (config dir) | `maru-core::tasks` | which connection and model each task uses; written once into an older file, after a copy of that file is saved beside it |
+| `config.toml` `[captions]` | `maru-core::captions`, `app/src-tauri/captions.rs` | the switch, port and the plaintext code the browser extension must send (written by Maru when first switched on); caption lines themselves are `live_lines` rows of `history.db` with the program `youtube` |
 | `launcher-position.json` | `app/src-tauri/launcher.rs` | collapsed floating window top-left in physical pixels; clamped to an available monitor on startup |
 | `history.db` | `maru-engine::history_store` | additive `live_lines`: each live subtitle line once (session, times, game executable, Korean, translation, timings, `starred`, `mined`); starred rows are kept for study, no images; `mined` is added to older files at open |
 | `reading-areas.db` | `maru-engine::reading_store` | additive `reading_areas`: names and game/executable metadata, normalized client rectangle, reference size and selected area per executable; no captured text or images |

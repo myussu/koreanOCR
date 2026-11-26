@@ -441,6 +441,22 @@ Sonnet in tests): the sheet then shows both forms and a button to use the model'
 A word added from the panel (**Add to Anki**) now gets its Spanish meaning also when the dictionary has several senses
 for it: the sense that fits the sentence you saw it in is chosen by the card-meanings connection.
 
+## YouTube captions as text (experimental)
+
+When a YouTube video has Korean captions uploaded by its author, a small browser extension
+(`extension/youtube-captions`, Chrome or Edge, loaded unpacked) can send each line to Maru as it comes up, so the text
+is exact instead of read from the picture. The lines are listed in History like live subtitles, from the program
+`youtube` (cards get the tag `maru::youtube`); starring and Make cards work as usual. No translation is drawn on the
+video. Auto-translated captions are never used; auto-generated Korean only with a switch in the extension. A video
+without usable captions sends nothing ("No Korean captions on this video") and live subtitles keep working as before.
+
+To use it: Settings → Live subtitles → **Take YouTube captions from the browser** → Save, copy the **Code for the
+browser extension** that appears, restart Maru, load the extension and paste the code in its popup. Maru then listens on
+this PC only (`127.0.0.1`, port 18096, `[captions]` in `config.toml`); it is off by default.
+
+**Not verified against YouTube:** the receiver and the extension's logic are tested, but the extension has not yet been
+run in a browser. [docs/YOUTUBE_CAPTIONS.md](docs/YOUTUBE_CAPTIONS.md) has the design, the install steps and what to check (M-45).
+
 ## Saved reading areas
 
 If the game hides or confines the pointer, press **Ctrl+Alt+Q** to open the controls wheel at its position.
