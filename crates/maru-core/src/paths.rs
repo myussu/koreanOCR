@@ -45,6 +45,11 @@ impl Paths {
     pub fn dict_db(&self) -> PathBuf {
         self.data_dir.join("dict.db")
     }
+    /// The learner's dictionary (한국어기초사전), when it has been imported.
+    pub fn nikl_db(&self) -> PathBuf {
+        self.data_dir.join("nikl.db")
+    }
+
     pub fn cache_db(&self) -> PathBuf {
         self.data_dir.join("cache.db")
     }

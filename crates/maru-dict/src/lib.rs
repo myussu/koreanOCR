@@ -4,10 +4,12 @@
 //! (JSON lines, one entry per line, as published by kaikki.org / wiktextract)
 //! and `import_levels` ingests a `lemma<TAB>level` list such as the NIKL
 //! learner vocabulary. Everything lands in one SQLite file that is opened
-//! read-mostly at run time.
+//! read-mostly at run time. The learner's dictionary with English and Spanish
+//! senses (`nikl.rs`) is a second, separate file.
 
 mod import;
 mod lookup;
+mod nikl;
 mod schema;
 
 use std::path::Path;
@@ -18,6 +20,7 @@ use thiserror::Error;
 
 pub use import::{ImportStats, normalize_level};
 pub use lookup::{lookup_keys, short_gloss};
+pub use nikl::{Nikl, NiklSense, NiklStats};
 
 #[derive(Debug, Error)]
 pub enum DictError {
