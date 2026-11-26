@@ -1097,6 +1097,149 @@ whose `Maru Korean` note type was the older layout: the field was added at the e
 mined card held its Spanish meaning (results log). Not checked: whether the chosen senses are right (that needs a reader
 and a real model: see the blind review page of run 1), the sync question in step 4, and the owner's real collection.
 
+## M-42 One model per task, the migration, and Settings by flow
+
+**Needs:** the app on the owner's real `config.toml` (written before `[tasks]` existed), with its saved connections.
+
+**Why it is unverified:** the task table, the migration and the fallbacks are tested against scripted servers, and
+`maru config migrate --dry-run` was run on the real file (results log); the app itself has not been started on it, and
+the Settings pages were only rendered in headless Chromium with demo data: no button was clicked by a person.
+
+1. Before starting Maru: `maru config migrate --dry-run`. **Expect** a table of what each task will use and no change
+   to the file.
+2. Start Maru. **Expect** a file `config.toml.before-tasks-<date>-<time>.bak` beside `config.toml`, a `[tasks]` table
+   with `version = 1` in the file, every comment and other key as it was, and the app behaving as before except that
+   card meanings ask this PC's model.
+3. Settings → Overview. **Expect** one card per flow (live subtitles, captures, making cards, voice) saying which
+   connection and model it uses, with a state that is true: stop a server and press **Test** on its card. **Expect** a
+   plain sentence ("NAS cannot be reached.", "Gemini has no quota left.", "Azure has no API key, or the key was
+   refused."), never a server's raw reply.
+4. Settings → Live subtitles → "Translate live lines with": choose this PC or a saved connection, Save, restart.
+   **Expect** live lines to come from it (stop the other server to be sure).
+5. Settings → Captures → "While live subtitles are on, use": choose a connection. **Expect** snapshots taken while
+   live subtitles run to use it, and the main choice otherwise.
+6. Settings → Making cards → "Choose word meanings with" = a saved connection, then stop that server and open Make
+   cards on a line. **Expect** the sheet to say which model answered (this PC's, as the fallback) and why the chosen
+   one did not; with this PC's model stopped as well, the dictionary's first senses with the note to check them.
+7. With live subtitles running and card meanings on this PC's model: open Make cards. **Expect** no model to be loaded
+   for the card (the sheet says live subtitles are running) and a button to ask when they stop.
+8. Settings → Connections: add, edit, test and remove a connection; remove one a task still uses. **Expect** the
+   removal to be refused with the task named. Nothing is written until Save.
+9. Type in the search box ("deck", "Gemini", "voice"). **Expect** matching settings from every section.
+10. Copy the `.bak` file over `config.toml` and start again. **Expect** the migration to run again with a new backup.
+
+## M-43 Make cards: two decks, the program as a tag, the queue, and asking another model
+
+**Needs:** Anki with AnkiConnect, a starred line, the learner's dictionary, and at least two connections.
+
+**Why it is unverified:** the engine path ran against a real Anki in the test profile (results log) with a scripted
+model; nobody has seen the sheet in the app or a resulting card in Anki's reviewer.
+
+1. Settings → Making cards: "Deck for word cards" and "Deck for sentence cards" set to two different decks. Open Make
+   cards. **Expect** both decks shown and editable for this add.
+2. Add two words and the sentence. **Expect** in Anki: the words in the first deck, the sentence in the second, no
+   subdeck named after the program, and the tag `maru::<program>` on each.
+3. **Expect** under the decks a line per deck saying how many new cards wait there and in how many days the ones you
+   add would come up at your per-day numbers (3 words, 1 sentence by default). Change the numbers in Settings and check
+   the arithmetic. Anki's own per-deck limits are not read: say whether the forecast matched what Anki did.
+4. Edit an English and a Spanish meaning by hand; pick another sense from a word's list. **Expect** the card to hold
+   what the sheet showed.
+5. **Expect** the sheet to say which model chose the meanings. Press "Retry with …" for another connection. **Expect**
+   new choices from it and your hand edits kept.
+6. A word with more than eight senses (하다, 보다, 치다): **expect** a second, short wait and sometimes a sense from
+   beyond the first eight; judge whether it fits better.
+7. From the panel, add a word that has several senses. **Expect** a Spanish meaning on the card (it was empty before).
+8. With "Suggest a deck per program" on: **expect** the per-program deck offered again.
+
+## M-44 Claude through Anthropic's own API
+
+**Needs:** an Anthropic API key.
+
+**Why it is only partly verified:** the client was run against the real service from the command line (results log);
+the connection editor's new kind was not used in the app.
+
+1. Settings → Connections → Add → kind **Anthropic (Claude)**. **Expect** the address `https://api.anthropic.com`
+   filled in and Save refused without a key. Enter the key and a model (`claude-haiku-5-5`), Test. **Expect** "working".
+2. Choose it under Making cards → "Choose word meanings with", open Make cards. **Expect** meanings, and the sheet
+   naming the connection.
+3. A wrong key: **expect** "… has no API key, or the key was refused." on the task's card, not the service's message.
+4. `maru bench --live -n 2 --file <20 lines> --connection "<name>"`. **Expect** a table with a last column "Input read
+   from cache" (0 for Maru's short prompts), and afterwards no new line in History → Live subtitles.
+5. The older connection saved as "A server of yours" with Anthropic's address still works unchanged.
+
+## M-45 YouTube captions from the browser extension
+
+**Needs:** Chrome or Edge with the unpacked extension (`extension/youtube-captions`), Maru with `[captions] enabled`,
+a translation model, and YouTube videos of four kinds: Korean captions uploaded by the author; only auto-generated
+Korean; captions but no Korean; Korean burned into the picture with no caption track.
+
+**Why it is unverified:** the receiver and the extension's logic are unit-tested, but the extension has never been
+loaded in a browser and has never met YouTube. The page fields it reads are not a public API, and YouTube often
+refuses caption requests that its own player did not make.
+
+1. Settings → Live subtitles → switch on "Take YouTube captions from the browser" → Save. **Expect** a 32-character
+   code in "Code for the browser extension" and a restart banner. Restart. **Expect** Status → "YouTube captions: ON ·
+   port 18098 on this PC · 0 lines taken". `maru-app.log` must not contain the code.
+2. Load the extension, paste the code, Test the connection. **Expect** "Maru answered: the code is right." Change one
+   character of the code: **expect** "Maru refused the code." Quit Maru: **expect** "Maru is not listening on that port."
+3. Play a video with author-uploaded Korean captions. **Expect** the popup to count lines, and History to list each
+   line once as `live · youtube` with a translation, in the order spoken, with the text exactly as the captions show it.
+   Note whether the captions had to be turned on (CC) first.
+4. Wind back, jump ahead, drag the seek bar, pause, play at 2× speed. **Expect** no line twice, no line that was not
+   played, none while dragging.
+5. Click through to another video without reloading the page. **Expect** the new video's lines, none of the old one's.
+6. A video with only auto-generated Korean: **expect** nothing sent and the popup saying so; with the switch on,
+   lines arrive. A video with captions but no Korean, and one with burned-in Korean only: **expect** "No Korean
+   captions on this video", nothing sent, and live subtitles (OCR) working over the same video as before.
+7. A video with an advertisement first: **expect** no lines during the advertisement.
+8. Star a caption line with the shortcut while the video plays, and from History. Make cards from one. **Expect** the
+   star in History → Starred and the tag `maru::youtube` on the cards.
+9. From any web page's console: `fetch('http://127.0.0.1:18098/captions/v1/hello', {method: 'POST', headers: {'X-Maru-Token': '<the code>'}})`.
+   **Expect** it to fail (the page's origin is refused); Status counts one more refused request.
+10. Another program already on the port: **expect** Status to say captions are not listening and why, and Maru
+    otherwise unaffected.
+
+**Record:** browser and version, the video kinds tried (not their addresses if private), whether the direct caption
+request or the player's own was needed, and any popup message that did not match what happened.
+
+## M-46 Two voices: reading on another server, the card voice only while cards are made
+
+**Needs:** the local voice installed (`maru setup tts`), Python with `pip install supertonic`, Anki.
+
+**Why it is unverified:** which voice speaks for which task is unit-tested; unloading the card voice goes through the
+real `tts-server` and the app, which were not run. The Supertonic package was not installed during the run (a new
+download is the owner's decision), so Maru has never spoken through it from the app.
+
+1. `python tools/supertonic_server.py --port 18097` (the first start downloads the model). Settings → Voice: "While
+   reading, use another voice server" = `http://127.0.0.1:18097`, "Speaker while reading" = `F1`; Advanced → "Model
+   name sent to the reading server" = `supertonic-3`. Save, restart.
+2. **Test the reading voice** and **Test the card voice**. **Expect** two different voices; the second takes a few
+   seconds the first time (the model loads) and Status then shows the voice loaded.
+3. Read a line aloud from the panel. **Expect** the Supertonic voice at once, and no voice model on the graphics card
+   (Task Manager → GPU memory, or Status).
+4. Make cards with sound on. **Expect** the Qwen voice on the cards, and a few seconds after the sheet reports the
+   cards, the voice gone from the graphics card again (Status: not loaded). Make cards a second time: it loads again.
+5. Stop the Supertonic server and read a line aloud. **Expect** a plain message that the voice server is not
+   answering, and no fall-back to the other voice.
+6. Empty the address, save, restart. **Expect** one voice for both, loaded on first use and kept, as before.
+7. Listen to `%APPDATA%\maru\Maru\data\run-2\voices\index.html`: the 0.6B and 1.7B card voices and Supertonic 3
+   on the same sentences. Nobody has listened to it.
+
+## M-47 The dictionary's corrections for a card: borrowed words, long entries, corrected forms
+
+**Needs:** the learner's dictionary, a model for card meanings, lines from a game with dialect or misread text.
+
+**Why it is unverified:** the rules are tested and were measured on 50 of the owner's lines (results log), but whether
+a meaning is *right* needs a reader. The Kiwi review page is unmarked.
+
+1. Make cards on a line with a borrowed word whose dictionary "English" is only its sound (for example a food or a
+   place name). **Expect** an English meaning taken from the definition, or the field left for you, never the Korean
+   word spelled in Latin letters as if it were a translation.
+2. In `config.toml` set `correct_forms = true` under `[learning.anki]` (it has no switch in Settings), restart, and put
+   card meanings on Claude Sonnet. Make cards on a dialect line. **Expect** a suggested dictionary form beside the analyser's, never applied without
+   you choosing it. Judge the suggestions: in the run several were not dictionary forms.
+3. Mark `%APPDATA%\maru\Maru\data\run-2\kiwi-review\index.html`: is each dictionary form right for the line?
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.
@@ -1113,3 +1256,10 @@ Add a line per test run. An empty log means **nothing below has been checked on 
 | 2026-11-26 | Card meanings by candidate (`maru dict senses`, `maru bench --cards`, `tools/rerank_senses.py`; 50 lines of the same copy, 223 words, 171 needing a decision) | run by the agent; same PC and connections; dictionary built from the 2019-08-02 XML | recorded, not judged | Every candidate's meanings are in a blind review page for the owner; nobody has marked it. Request time per line, median / p95 ms: local 675 / 1238, NAS 838 / 1635, Azure 1058 / 1571, Claude Haiku 817 / 1343, Claude Sonnet 1350 / 2108, reranker on the CPU 2847 / 9520, dictionary only 0. No failures except Gemini on the free-tier key: 3.8 Flash failed all 48 requests (HTTP 429), 4 Hydrogen answered 9 of 48. |
 | 2026-11-26 | M-8 voices compared (`maru tts-eval --voice sohee --candidate "Supertonic 3 (F1)=…"`, the 8 built-in test sentences, speech made fresh) | run by the agent; RTX 5070 Ti PC; Qwen3-TTS 1.7B CustomVoice Q8 in the installed `tts-server` (Vulkan), Supertonic 3 (`Supertone/supertonic-3`, package 1.3.1, ONNX Runtime 1.32 on the CPU) behind `tools/supertonic_server.py` | measured, not listened to | **Qwen3-TTS, voice sohee:** server ready in 10.2 s and 11.7 s (two runs); peak working set 2,447 MB, peak private memory 4,480 MB, peak dedicated GPU memory 3,996 MB; made speech at 0.10–0.26 of real time, and one take in the first run ran long and was asked for again. **Supertonic 3, voice F1:** loaded in 0.9 s (8.4 s the first time, with its download); peak working set 519 MB, peak private memory 1,246 MB, no GPU memory; 0.17–0.26 of real time. Memory was sampled once a second from Windows' process and GPU-process counters. **Nobody has listened to the page**: which voice sounds right is the owner's judgement. The default voice was not changed. |
 | 2026-11-26 | Hover and screen-scan demo pages in Chromium (`index.html?replay=demo/hover.json&instant`, `scan.html?demo=menu`) | run by the agent; headless Chrome, mocked commands, a hover lookup recorded from the real engine (Kiwi, dictionary) | loaded | The panel shows the word, its romanization, pronunciation and dictionary meaning with the hover chip; the scan overlay shows its nine menu labels. No script error on either page. Screenshots in docs/reports/run-1/. This is the pages with demo data, not hover or scan on a real screen. |
+| 2026-11-26 | M-43 two decks, the program tag and the queue against a real Anki (`maru-srs --test real_anki`, `maru-engine --test real_anki`) | run by the agent; Anki 26.9, AnkiConnect API 6, profile "User 2" (it held three of the owner's Maru cards and the decks `Coreano`, `Coreano::2 Media`, `Coreano::2 Media::Eden`, `Default`, which were only counted), throwaway decks under `MaruTest`; scripted model for meanings | passed | Client 4.6 s, engine 16.4 s. Words went to `MaruTest::engine::1 Palabras`, the sentence to `MaruTest::engine::2 Oraciones`, with the tag `maru::eldenring` and no deck named after the program; the queue read 2 new words and 1 new sentence, then 1 word after one was suspended. Nothing was left behind. Not seen: any card in the reviewer, the sheet in the app. |
+| 2026-11-26 | M-42 migration on the real file (`maru config migrate --dry-run`) and Settings pages (`hub.html?demo=1&settings=…`) | run by the agent; the owner's `config.toml` read but not written; headless Chrome with mocked commands | dry run printed; pages loaded | The dry run mapped live subtitles and captures to the hosted connection the file already used for them (captures to a second one while live subtitles run), card meanings to this PC's model, and wrote nothing. The nine Settings pages rendered (screenshots under `docs/reports/run-2/`); no control was clicked, and the app was not started on the real file. |
+| 2026-11-26 | Whole-sentence translations by candidate (`tools/build_sentence_review.py`, 50 lines of a copy of the owner's history) | run by the agent; RTX 5070 Ti PC; local, NAS, Azure, Claude Haiku, Claude Sonnet | recorded, not judged | All five answered 50 of 50. Median ms for a whole line: local 233, NAS 324, Claude Haiku 631, Claude Sonnet 812, Azure 1,039. 193 different translations are in a blind review page for the owner; nobody has marked it. One Haiku line and one Sonnet line are flagged as cut off. Gemini was left out: its key answered HTTP 429 to the first request and was not asked again. |
+| 2026-11-26 | M-47 what the dictionary gives a card (`maru dict romanized`, `maru bench --cards [--forms]`, `tools/nikl_stats.py`) | run by the agent; a copy of the dictionary (48,353 entries, 67,653 senses); the same 50 lines (223 words) | measured, not judged | Romanized "English": 3,280 senses in 2,448 entries; 521 replaced by a gloss from the definition, 406 kept as borrowed words, 44 kept other words, 2,309 left without English. More than eight senses: 257 of 44,436 word groups (치다 has 49); on the 50 lines the local model's wrong share in run 1's marks was 27.6% on those words against 12.3% on words with 2 to 8 senses, and the second request changed 6 words. Corrected forms: local and NAS models offered none; Claude Haiku 7; Claude Sonnet 25 (11 on dialect lines, 14 on misread lines, none on standard text), several of them not dictionary forms. Whether any changed answer is right was not judged. |
+| 2026-11-26 | M-46 card voice candidates (`maru tts-eval`, 50 lines, speech made fresh) | run by the agent; RTX 5070 Ti PC; the installed `tts-server` (Vulkan); Qwen3-TTS 1.7B CustomVoice Q8 and 0.6B CustomVoice Q8 (968,588,544 bytes, Apache-2.0) | measured, not listened to | 1.7B: ready in 1.7 s, about 3.9 GB of GPU memory, 11.0 s to make 68.2 s of speech, 3 of 50 lines needed another take. 0.6B: ready in 1.1 to 1.7 s, 2.9 to 3.2 GB, 16.7 s to make 99.4 s of speech, 10 of 50 needed another take and 2 stayed too long; its clips are about 1.5 times longer with more silence. The smaller model was not faster and saved about 1 GB. Supertonic 3 was not measured again (its package is not installed). Nobody listened. |
+| 2026-11-26 | M-44 Claude through Anthropic's own API (`maru connection test "Claude+native=…"`, `maru bench --live -n 2`, 20 lines × 2 passes, one request at a time) | run by the agent; the owner's saved Claude connection asked through `/v1/messages` and through the compatible endpoint | passed; measured | Both answered 40 of 40. Median ms to the first word / whole line: Haiku 506 / 615 native against 544 / 644 compatible; Sonnet 790 / 1,249 against 762 / 1,296. Input read from the prompt cache: 0 in every run (Maru's system prompts are shorter than the service caches). The connection editor's new kind was not used in the app. |
+| 2026-11-26 | M-45 caption receiver on its own (`captions_listen` example and `curl` on a spare port) | run by the agent; no browser, no YouTube | passed for the receiver only | A Korean line was accepted and printed, the same cue again was answered `duplicate`, a wrong code got 401, a request with a web page's `Origin` got 403. The extension was never loaded in a browser. |
