@@ -167,6 +167,34 @@ screen capture, OCR and the app's other model resources, so its figures are not 
 **Why unverified:** fake-server tests establish scheduling and OCR isolation; the optional real-model recording replay can establish
 timings on that video, but neither exercises physical-screen capture, the overlay or game rendering during a real cutscene.
 
+## M-48 Save what you read (raw material for a test set)
+**Needs:** live subtitles working (M-3) and a cutscene with Korean subtitles.
+**Steps:** Settings → Live subtitles → Advanced → **Save the subtitles it reads**, restart live mode, watch a minute or two of a cutscene, then open
+`<data folder>\evalset\raw\<program name>\`.
+**Expect:** one `.png` and one `.json` per subtitle line the band showed (no repeats of the same line); the picture is the subtitle strip; the `.json`
+`draft` is what the band translated from; with the setting off, nothing new appears; playback does not stutter more than without it.
+**Bring:** the folder's file count against the number of lines you saw, one sample picture with its `.json`, and any frame drops you noticed.
+**Why unverified:** tested against a fake screen and fake reader only (pictures and drafts match the reported lines); not run on the real PC or with a real game.
+
+## M-49 Labelling saved pictures (the review page)
+**Needs:** a folder of pictures from M-48 on the real PC, Edge or Chrome, and (optional) PaddleOCR-VL installed (`maru setup ocr-vl`).
+**Steps:** `maru eval-ocr <data>\evalset\raw --engine paddle-vl --write-drafts`; open `tools\label_review.html`, press **Open the folder…**, pick `evalset\raw`
+(allow editing when the browser asks); label ten pictures with Enter, mark one with Alt+U, close the tab, reopen the folder.
+**Expect:** pictures where the readers differ come first; after reopening, the ones you did are counted as done and `.txt`, `.unreadable` files sit beside the pictures;
+the Korean typing box takes IME input without Enter confirming half a syllable; `maru eval-ocr <data>\evalset\raw --engine paddle` scores the labelled ones.
+**Bring:** the count line at the top of the page after ten pictures, and anything that was awkward to type or read.
+**Why unverified:** checked in Chromium on Linux against a stand-in for the folder picker (reading, writing and removing real files) and its `?demo` mode; the real folder picker, Windows paths and IME typing were not run.
+
+## M-50 Does enlarging the subtitle picture help PP-OCR on your game?
+**Needs:** labelled pictures of your game's subtitles (M-48 and M-49, or `tools/sample_subtitle_frames.py` on a recording), and the PP-OCR models.
+**Steps:** `maru eval-ocr <set> --engine paddle --save-report base.json`, then `maru eval-ocr <set> --engine paddle --scale 2 --compare base.json`
+(also `--scale 1.5`). Use `--split dev` to try things and `--split held-out` to judge.
+**Expect:** the comparison says "better on" clearly more subtitles than "worse on", with a sign-test p below 0.05, before you set `[continuous] ocr_scale = 2`.
+**Bring:** both summaries, the comparison, and what the game and its subtitle font look like (outlined, shadowed, plain).
+**Why unverified:** Claude measured it once, on one recorded cutscene (13 distinct subtitles, 49 pictures, Linux CPU, ONNX Runtime 1.31): letter error
+1.4% at scale 1 and 1.8% at scale 2 (better on 2 subtitles, worse on 4, the same on 7; p = 0.69). Earlier numbers that looked like a gain (4.5% down to
+3.9%) counted missing commas and question marks as reading errors and moved with the resize method; they are withdrawn. Not run on Windows, a real game or the live path.
+
 ---
 
 ## M-12 Live OCR duplicates and subtitle area

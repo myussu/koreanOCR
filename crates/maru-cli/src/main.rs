@@ -1,6 +1,7 @@
 //! `maru` — the command-line front end to the same engine the overlay uses.
 
 mod connections;
+mod evalreport;
 mod render;
 mod live_compare;
 mod setup;
@@ -127,6 +128,23 @@ enum Command {
         /// Instruction sent to the `endpoint` engine (default: the PaddleOCR-VL `OCR:` prompt).
         #[arg(long)]
         vlm_prompt: Option<String>,
+        /// Ask PP-OCR to enlarge each picture this many times first, as live subtitles do (`[continuous] ocr_scale`).
+        #[arg(long, default_value_t = 1.0)]
+        scale: f32,
+        /// Do not score: read every picture that has no label yet (in the folder and the ones below it) and save what each engine
+        /// read beside it as `name.<engine>.txt`, for `tools/label_review.html` to show as a second opinion.
+        #[arg(long)]
+        write_drafts: bool,
+        /// Score only one half of the test set. The halves are fixed (a whole scene is always on one side), so tune on `dev` and
+        /// judge on `held-out`.
+        #[arg(long, value_enum, default_value_t = SplitArg::All)]
+        split: SplitArg,
+        /// Save every picture's result to this file, to compare a later run with it (`--compare`).
+        #[arg(long)]
+        save_report: Option<PathBuf>,
+        /// Compare this run, subtitle by subtitle, with a report saved earlier by `--save-report` (before and after a change).
+        #[arg(long)]
+        compare: Option<PathBuf>,
     },
     /// Speak text with the voice from your settings (sentence by sentence) into a WAV file.
     Tts {
@@ -348,6 +366,16 @@ enum RegisterArg {
     Polite,
     Formal,
     Casual,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+enum SplitArg {
+    /// Every picture.
+    All,
+    /// The half to tune on.
+    Dev,
+    /// The half to judge on.
+    HeldOut,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -609,11 +637,16 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             // Nothing read *because* something is wrong is a failure; an honestly empty screen is not.
             Ok(if report.items.is_empty() && !report.errors.is_empty() { 1 } else { 0 })
         }
-        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt } => {
+        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, scale, write_drafts, split, save_report, compare } => {
             use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};
             let s = services(&paths, cfg, false).await;
-            let cases = tools::load_cases(&dir)?;
-            println!("{} test image(s)\n", cases.len());
+            let split = match split {
+                SplitArg::All => None,
+                SplitArg::Dev => Some(evalreport::Split::Dev),
+                SplitArg::HeldOut => Some(evalreport::Split::Held),
+            };
+            let (cases, images) = if write_drafts { (Vec::new(), tools::load_images(&dir)?) } else { (tools::load_case_infos(&dir, split)?, Vec::new()) };
+            println!("{} test image(s)\n", if write_drafts { images.len() } else { cases.len() });
             let mut scores = Vec::new();
             let extra: Vec<String> = vlm_args.as_deref().unwrap_or("").split_whitespace().map(str::to_string).collect();
             // Vision-model servers take turns, so they never compete for VRAM (or for timing).
@@ -694,18 +727,54 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         ("Vision model (endpoint)".into(), Arc::new(VlmOcr::new(&url, &cfg, &prompt)) as Arc<dyn maru_ocr::OcrEngine>, None)
                     }
                 };
+                if write_drafts {
+                    // clap names the engine the way the command line spells it (`paddle-vl`), which is what the review page lists it as.
+                    let tag = clap::ValueEnum::to_possible_value(&e).map(|v| v.get_name().to_string()).unwrap_or_else(|| "draft".into());
+                    println!("{name}: reading the pictures that have no label yet …");
+                    let (tag2, images) = (tag.clone(), images.clone());
+                    match tokio::task::spawn_blocking(move || tools::write_drafts(&tag2, ocr.as_ref(), &images, scale)).await? {
+                        Ok(n) => println!("  wrote {n} draft(s) as name.{tag}.txt\n"),
+                        Err(err) => eprintln!("({name} failed: {err:#})\n"),
+                    }
+                    continue;
+                }
                 // Recognition is blocking (and for vision models waits on HTTP): keep the runtime free.
                 let (task_name, cases) = (name.clone(), cases.clone());
-                let result = tokio::task::spawn_blocking(move || tools::eval_engine(&task_name, ocr.as_ref(), &cases)).await?;
+                let result = tokio::task::spawn_blocking(move || tools::eval_engine(&task_name, ocr.as_ref(), &cases, scale)).await?;
                 match result {
                     Ok(score) => scores.push(score),
                     Err(err) => eprintln!("({name} failed: {err:#})\n"),
                 }
             }
+            if write_drafts {
+                return Ok(0);
+            }
             if scores.is_empty() {
                 bail!("no OCR engine could be evaluated; run `maru setup ocr` first");
             }
             tools::print_scores(&scores);
+            println!();
+            // Several engines in one run: each later one against the first, subtitle by subtitle.
+            for later in scores.iter().skip(1) {
+                evalreport::print_comparison(&scores[0].name, &later.name, &evalreport::compare(&scores[0].results, &later.results));
+            }
+            if let Some(path) = compare {
+                let saved: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?)?;
+                let before: Vec<(String, Vec<evalreport::CaseResult>)> = saved["engines"].as_array().map(|a| a.iter().filter_map(evalreport::from_json).collect()).unwrap_or_default();
+                if before.is_empty() {
+                    bail!("{} is not a report saved by --save-report", path.display());
+                }
+                for now in &scores {
+                    // The same engine if the file has it, else its first one.
+                    let (name, results) = before.iter().find(|(n, _)| *n == now.name).unwrap_or(&before[0]);
+                    evalreport::print_comparison(&format!("{name} (saved)"), &now.name, &evalreport::compare(results, &now.results));
+                }
+            }
+            if let Some(path) = save_report {
+                let report = serde_json::json!({ "engines": scores.iter().map(|s| evalreport::to_json(&s.name, s.scale, &s.results)).collect::<Vec<_>>() });
+                std::fs::write(&path, serde_json::to_string_pretty(&report)?).with_context(|| format!("writing {}", path.display()))?;
+                println!("Saved this run's results to {}. Next time: --compare {}", path.display(), path.display());
+            }
             Ok(0)
         }
         Command::Tts { text, out } => {

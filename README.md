@@ -526,6 +526,22 @@ See [M-31](docs/MANUAL_TESTS.md#m-31-borderless-controls-wheel-and-saved-area-re
 See [M-32](docs/MANUAL_TESTS.md#m-32-wheel-manager-handoff-and-manual-reading-feedback) for manager focus,
 controller behavior and manual-reading feedback checks.
 
+## Building a test set from your own games
+
+To find out whether an OCR change really helps *your* games, you need a few hundred subtitles with their true text. Turn on
+Settings → Live subtitles → Advanced → **Save the subtitles it reads** (`[continuous] save_reads = true`), restart live mode and play: every line
+the watcher reads is saved as a picture plus the reader's draft text under `<data folder>\evalset\raw\<game>\` (`maru doctor` prints the data folder).
+Nothing leaves your PC and nothing is saved while the setting is off. The pictures are the raw material; the true text is still written by you:
+
+1. *(Optional, recommended)* Get a second opinion on every picture: `maru eval-ocr <data folder>\evalset\raw --engine paddle-vl --write-drafts`
+   (needs `maru setup ocr-vl`; it writes `name.paddle-vl.txt` beside each unlabelled picture and scores nothing).
+2. Open `tools\label_review.html` in Edge or Chrome, press **Open the folder…** and pick `evalset\raw`. For each picture the box starts with the
+   strongest reading; fix it so it says exactly what is on screen and press **Enter**. Pictures where the readers disagree come first, because
+   that is where a draft is most likely to be wrong. **Alt+U** marks a picture you cannot read. Labels are saved as `name.txt` next to the picture.
+3. Score on it: `maru eval-ocr <data folder>\evalset\raw --engine paddle` (it reads the game folders below it).
+
+`tools/sample_subtitle_frames.py` makes the same kind of pictures from a screen recording (and covers subtitles the watcher never noticed).
+
 ## Game menus: screen labels
 
 Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless-windowed games; an exclusive-fullscreen game cannot be drawn over), finds every piece of Korean text, and puts a short English label beside each.
@@ -582,6 +598,18 @@ On a first set of Korean screenshots PaddleOCR-VL misread far less than PP-OCR (
 blocks of text; a general chat model (Gemma 4) "corrected" clean text into different sentences and is not usable as OCR.
 `hybrid` runs PP-OCR (lines and positions) and PaddleOCR-VL (whole-image reading) together and matches them by text.
 (Feeding the vision model one crop per line was tried and was much worse: crops carry pieces of neighbouring lines.)
+
+To score PP-OCR on **your game's subtitles** (the kind of picture live mode reads), build a labelled set (see *Building a test set* below), then:
+
+* `maru eval-ocr <set> --engine paddle` prints the pictures it got wrong and a summary: **letter error** (spaces and punctuation ignored, because a
+  missing comma does not change a translation; the rate with punctuation is shown beside it), exact lines, missed lines, lost digits, and lines where a
+  negation was lost or added. Several frames of one subtitle count once, and the result is broken down by game (one folder each), by the tags you gave
+  pictures, and by a fixed dev / held-out split that keeps a whole scene on one side (`--split dev` to experiment, `--split held-out` to judge).
+* To see whether a change helps: `--save-report before.json` first, make the change, then `--compare before.json`. It counts how many *subtitles* got
+  better and worse and gives a sign test, because a lower average alone can be a few lucky lines. Several engines in one run are compared the same way.
+* `--scale 2` makes PP-OCR enlarge each picture first, as the experimental `[continuous] ocr_scale = 2` does for live subtitles (default `1`, off). On the
+  one cutscene tried it made no real difference (slightly worse), so it stays off until a test on your own games shows a clear gain.
+
 If a model will not start, run it yourself and use `--engine endpoint --vlm-endpoint http://127.0.0.1:8080`
 (`--vlm-args "…"` passes extra flags such as `--jinja --chat-template-file …`). Vision models return text only, no word
 positions, so they are a candidate for a "double-check" mode rather than a replacement for PP-OCR's geometry.

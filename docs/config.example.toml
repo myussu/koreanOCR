@@ -119,9 +119,11 @@ filter_ocr_jitter = false # experimental: compare changed OCR readings with subt
 # Live subtitles: translation only, drawn just above or below the original line (never over it). Word breakdowns come from the history.
 interval_ms = 100     # how often the area is looked at
 stable_ms = 150       # a picture this still is a finished line and is read at once (a fading line is read sooner)
+ocr_scale = 1.0       # experimental, not shown to help (1 = as it is, up to 3): PP-OCR reads the area enlarged this many times; test with `maru eval-ocr <folder> --scale 2 --compare <report>`
 linger_ms = 1500      # how long a translation stays after the original line is gone
 context_lines = 4     # earlier lines the model sees, for pronouns and names
 history_len = 300     # lines kept for review after a cutscene
+save_reads = false    # keep a picture + draft text of every line read, in <data>/evalset/raw/<game>/, to build a test set of your own games (nothing leaves the PC)
 # region = { x = 480.0, y = 900.0, w = 960.0, h = 120.0 }   # saved automatically if you set it from the tray
 
 [continuous.translation]
