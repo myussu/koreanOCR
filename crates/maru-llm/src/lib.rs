@@ -10,6 +10,7 @@
 pub mod client;
 pub mod connection;
 mod auth;
+pub mod anthropic;
 pub mod discovery;
 pub mod demux;
 pub mod live_bench;

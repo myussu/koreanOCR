@@ -147,7 +147,7 @@ export function usedBy(name, value) {
 }
 
 /** Server types that refuse requests without an API key. */
-export const needsKey = (provider) => provider === 'azure' || provider === 'gemini';
+export const needsKey = (provider) => provider === 'azure' || provider === 'gemini' || provider === 'anthropic';
 
 /** A pasted Azure deployment URL, split into the resource address and the deployment name. */
 export function azureParts(endpoint) {
@@ -166,7 +166,8 @@ export function connectionProblem(servers, edited, original = null) {
   if (azure) return `For Azure, use ${azure.endpoint} as the address and ${azure.modelName} as the model.`;
   if (!/^https?:\/\//.test(String(edited.endpoint ?? '').trim())) return 'Enter the full address, starting with http:// or https://. For a bare IP or name, press Find the server.';
   if (!String(edited.model_name ?? '').trim()) return 'Enter the model the server should use.';
-  if (needsKey(edited.provider) && !edited.api_key) return `Enter the API key: ${edited.provider === 'azure' ? 'Azure' : 'Gemini'} refuses requests without one.`;
+  const service = { azure: 'Azure', gemini: 'Gemini', anthropic: 'Anthropic' }[edited.provider];
+  if (needsKey(edited.provider) && !edited.api_key) return `Enter the API key: ${service} refuses requests without one.`;
   return null;
 }
 

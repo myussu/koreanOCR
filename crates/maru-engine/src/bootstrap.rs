@@ -30,11 +30,14 @@ pub struct BootOptions {
     pub start_llm: bool,
     /// Interactive front ends leave GPU models unloaded until a feature requests them.
     pub defer_models: bool,
+    /// For measurements (`maru bench`): what the run translates stays in memory. The saved history, the saved
+    /// reading areas and the remembered screen labels are neither opened nor written.
+    pub read_only: bool,
 }
 
 impl Default for BootOptions {
     fn default() -> Self {
-        Self { start_llm: true, defer_models: false }
+        Self { start_llm: true, defer_models: false, read_only: false }
     }
 }
 
@@ -423,7 +426,7 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     };
 
     // Screen-scan labels are remembered between sessions.
-    let labels = match crate::labels::LabelCache::open(&paths.labels_db()) {
+    let labels = match if opts.read_only { crate::labels::LabelCache::open_in_memory() } else { crate::labels::LabelCache::open(&paths.labels_db()) } {
         Ok(c) => Arc::new(c),
         Err(e) => {
             notes.push(format!("Screen labels: could not open {} ({e}); they will not be remembered.", paths.labels_db().display()));
@@ -590,11 +593,15 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         labels: Some(labels),
     });
     engine.set_routes(routes);
-    if let Err(e) = engine.open_reading_areas(&paths.data_dir.join("reading-areas.db")) {
-        notes.push(e.to_string());
-    }
-    if let Err(e) = engine.open_history(&paths.data_dir.join("history.db")) {
-        notes.push(e.to_string());
+    if opts.read_only {
+        notes.push("Read-only run: the history, reading areas and screen labels are not saved.".into());
+    } else {
+        if let Err(e) = engine.open_reading_areas(&paths.data_dir.join("reading-areas.db")) {
+            notes.push(e.to_string());
+        }
+        if let Err(e) = engine.open_history(&paths.data_dir.join("history.db")) {
+            notes.push(e.to_string());
+        }
     }
     match engine.open_learner_dictionary(&paths.nikl_db()) {
         Ok(Some(stats)) => notes.push(format!("Learner's dictionary: 한국어기초사전, {} words (card meanings in English and Spanish)", stats.words)),

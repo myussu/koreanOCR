@@ -50,18 +50,24 @@ struct CardRecord<'a> {
     corrected: Vec<(usize, String)>,
 }
 
-/// `name`, or `name=model` to ask that connection for another model.
+/// `name`, or `name=model` to ask that connection for another model. `name+native` asks a connection saved for
+/// Anthropic's OpenAI-compatible endpoint through Anthropic's own Messages API instead, for this run only.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
     pub name: String,
     pub model: Option<String>,
+    pub native: bool,
 }
 
 impl Target {
     pub fn parse(text: &str) -> Self {
-        match text.split_once('=') {
-            Some((name, model)) if !model.trim().is_empty() => Self { name: name.trim().into(), model: Some(model.trim().into()) },
-            _ => Self { name: text.trim().into(), model: None },
+        let (name, model) = match text.split_once('=') {
+            Some((name, model)) if !model.trim().is_empty() => (name.trim(), Some(model.trim().to_string())),
+            _ => (text.trim(), None),
+        };
+        match name.strip_suffix("+native") {
+            Some(name) => Self { name: name.trim().into(), model, native: true },
+            None => Self { name: name.into(), model, native: false },
         }
     }
 }
@@ -92,6 +98,13 @@ pub fn resolve(cfg: &Config, target: &Target) -> Result<(String, LlmConfig)> {
     llm.provider = saved.provider;
     llm.api_key = saved.api_key.clone();
     llm.model_name = target.model.clone().unwrap_or_else(|| saved.model_name.clone());
+    if target.native {
+        if !saved.endpoint.to_ascii_lowercase().contains("api.anthropic.com") {
+            bail!("+native is for a connection to Anthropic (api.anthropic.com); \"{}\" is not one", saved.name);
+        }
+        llm.provider = ServerProvider::Anthropic;
+        return Ok((format!("{} (Messages API)", saved.name), llm));
+    }
     Ok((saved.name.clone(), llm))
 }
 
@@ -133,6 +146,7 @@ pub fn list(cfg: &Config) {
             ServerProvider::Openai => "OpenAI-compatible",
             ServerProvider::Azure => "Azure OpenAI",
             ServerProvider::Gemini => "Gemini",
+            ServerProvider::Anthropic => "Anthropic",
         };
         println!("{:<16} {:<18} {:<46} {}  key: {}", s.name, provider, s.endpoint, s.model_name, if s.api_key.is_some() { "saved" } else { "none" });
     }
@@ -251,6 +265,8 @@ pub struct LiveSummary {
     pub total_max_ms: Option<u32>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Of the input tokens, those the server said it read from its prompt cache (0 when it reports none).
+    pub cached_input_tokens: u64,
     /// The different failure messages, each with how often it came.
     pub errors: Vec<(String, usize)>,
 }
@@ -302,6 +318,7 @@ pub fn summarize(connection: &str, model: &str, results: &[LiveResult], tokens: 
         total_max_ms: total.last().copied(),
         input_tokens: tokens.0,
         output_tokens: tokens.1,
+        cached_input_tokens: 0,
         errors,
     }
 }
@@ -313,14 +330,14 @@ pub fn table(summaries: &[LiveSummary], sentences: usize, runs: usize, context: 
     let mut out = String::new();
     let how = if context { "each line sent with the lines before it as context" } else { "each line sent by itself" };
     let _ = writeln!(out, "Live subtitles: {sentences} lines × {runs} passes per connection, {how}, one at a time. Times in ms; failed lines are counted, not timed.\n");
-    let _ = writeln!(out, "| Connection | Model | First word p50 | First word p95 | Whole line p50 | Whole line p95 | Slowest | Failed | Cut off | Tokens in / out |");
-    let _ = writeln!(out, "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+    let _ = writeln!(out, "| Connection | Model | First word p50 | First word p95 | Whole line p50 | Whole line p95 | Slowest | Failed | Cut off | Tokens in / out | Input read from cache |");
+    let _ = writeln!(out, "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for s in summaries {
         let tokens = if s.input_tokens + s.output_tokens == 0 { "not reported".to_string() } else { format!("{} / {}", s.input_tokens, s.output_tokens) };
         let _ = writeln!(
             out,
-            "| {} | {} | {} | {} | {} | {} | {} | {} of {} | {} | {} |",
-            s.connection, s.model, ms(s.first_p50_ms), ms(s.first_p95_ms), ms(s.total_p50_ms), ms(s.total_p95_ms), ms(s.total_max_ms), s.failures, s.lines, s.cut_off, tokens
+            "| {} | {} | {} | {} | {} | {} | {} | {} of {} | {} | {} | {} |",
+            s.connection, s.model, ms(s.first_p50_ms), ms(s.first_p95_ms), ms(s.total_p50_ms), ms(s.total_p95_ms), ms(s.total_max_ms), s.failures, s.lines, s.cut_off, tokens, s.cached_input_tokens
         );
     }
     for s in summaries.iter().filter(|s| !s.errors.is_empty()) {
@@ -372,7 +389,9 @@ pub async fn bench_live(cfg: &Config, paths: &Paths, targets: &[Target], sentenc
             eprintln!("  pass {} of {runs} done", pass + 1);
         }
         let used = opened.client.tokens_used();
-        summaries.push(summarize(&opened.connection, &opened.model, &results, (used.input - before.input, used.output - before.output)));
+        let mut summary = summarize(&opened.connection, &opened.model, &results, (used.input - before.input, used.output - before.output));
+        summary.cached_input_tokens = used.cached_input - before.cached_input;
+        summaries.push(summary);
     }
     let table = table(&summaries, sentences.len(), runs, context_lines > 0);
     println!("{table}");
@@ -532,7 +551,7 @@ mod tests {
         assert_eq!((s.first_p50_ms, s.total_p50_ms, s.total_p95_ms, s.total_max_ms), (Some(100), Some(1000), Some(1900), Some(2000)));
         assert_eq!(s.errors, [("HTTP 429: slow down".to_string(), 2)]);
         let text = table(&[s, summarize("NAS", "gemma", &[failed("unreachable")], (0, 0))], 23, 1, true);
-        assert!(text.contains("| Gemini | flash | 100 | 190 | 1000 | 1900 | 2000 | 2 of 23 | 1 | 1200 / 340 |"), "{text}");
+        assert!(text.contains("| Gemini | flash | 100 | 190 | 1000 | 1900 | 2000 | 2 of 23 | 1 | 1200 / 340 | 0 |"), "{text}");
         assert!(text.contains("| NAS | gemma | – | – | – | – | – | 1 of 1 | 0 | not reported |"), "{text}");
         assert!(text.contains("NAS · gemma: 1× unreachable"));
     }

@@ -43,7 +43,8 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 # ...or an already-running OpenAI-compatible server (LM Studio, a LAN box):
 # endpoint = "http://127.0.0.1:1234/v1"
 # model_name = "qwen3:8b"     # servers that choose by name (Ollama: exactly what `ollama list` shows)
-# provider = "openai"         # default: OpenAI-compatible/NAS servers; "azure" = Azure OpenAI v1; "gemini" = Google Gemini
+# provider = "openai"         # default: OpenAI-compatible/NAS servers; "azure" = Azure OpenAI v1; "gemini" = Google Gemini;
+#                              # "anthropic" = Anthropic's own Messages API (address https://api.anthropic.com, key required)
 #                              # (endpoint = "https://generativelanguage.googleapis.com/v1beta/openai", model e.g. gemini-2.5-flash)
 # api_key = "..."             # optional Bearer key; Azure and Gemini require theirs (stored locally in plain text)
 # Named registrations are shared by both Settings server selectors. Selection copies endpoint/model/provider/key

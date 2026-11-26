@@ -9,6 +9,9 @@ pub enum ServerProvider {
     Azure,
     /// Google's Gemini API through its OpenAI-compatible route (`/v1beta/openai`), with an API key.
     Gemini,
+    /// Anthropic's own Messages API (`/v1/messages`), with an API key: the system prompt is cached between requests.
+    /// (A connection saved as `openai` with Anthropic's address keeps using its OpenAI-compatible endpoint.)
+    Anthropic,
 }
 
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -81,6 +84,9 @@ pub fn validate_connection(
     }
     if provider == ServerProvider::Gemini && key.is_none_or(|key| key.as_str().trim().is_empty()) {
         return Err("Enter the Gemini API key (from Google AI Studio).".into());
+    }
+    if provider == ServerProvider::Anthropic && key.is_none_or(|key| key.as_str().trim().is_empty()) {
+        return Err("Enter the Anthropic API key (from the Claude Console).".into());
     }
     Ok(())
 }

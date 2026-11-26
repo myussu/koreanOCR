@@ -584,7 +584,8 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             if let Some(name) = model {
                 cfg.llm.model_name = name;
             }
-            let mut s = services(&paths, cfg, true).await;
+            // A benchmark must leave no trace in the history its lines would otherwise be saved to.
+            let mut s = boot(paths.clone(), cfg, BootOptions { start_llm: true, read_only: true, ..Default::default() }).await;
             if live {
                 tools::bench_live(&mut s, sentences, runs.max(1)).await?;
             } else {

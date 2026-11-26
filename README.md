@@ -396,6 +396,11 @@ looks for a bare IP or name on ports 11434, 1234 and 8080 and lists its models; 
 answers in plain words ("Gemini has no quota left."). A connection cannot be removed while a task uses it, and renaming
 it follows into the tasks that named it.
 
+Claude can be reached two ways. A connection of the kind **Anthropic (Claude)** uses Anthropic's own API; one saved earlier
+as an ordinary server with the address `https://api.anthropic.com` keeps using the OpenAI-compatible endpoint and works
+as before. For Maru's short requests the two measured the same speed, and the prompt cache of Anthropic's API does not
+come into play because the prompts are shorter than it caches.
+
 Changes are collected and written with **Save**. Shortcuts, the panel's look, the list of connections and the two card
 tasks take effect at once; what holds a model or a server (the live and capture connections, the voice, this PC's
 model) waits for a restart, and one banner at the top lists what is waiting.
@@ -515,6 +520,9 @@ Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless
 `maru translate "저는 학교에서 공부했어요"` · `maru explain 공부했어요 --in "…"` · `maru doctor` ·
 `maru bench` (latency percentiles) · `maru eval-ocr <folder>` (score OCR engines on **your own** screenshots:
 `name.png` + `name.txt` pairs) · `maru vocab …` · `maru dict …`. The CLI uses the same engine as the overlay.
+
+`maru bench` never writes to your history: it runs the engine read-only (nothing is saved to `history.db`, the reading
+areas or the screen labels).
 
 **Saved connections from the command line.** `maru connection list` shows the connections saved in Settings (never
 their keys); `maru connection test NAME` sends one live subtitle line and one card-meaning choice through that connection

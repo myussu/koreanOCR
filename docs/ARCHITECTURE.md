@@ -729,6 +729,25 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
   model, live on its own connection, the Test button), `remote_model_tests.rs` (start-up from an older file and from a
   task table). Real connections and the real config: M-42.
 
+### 4.9d Anthropic's own API, and measurements that leave no trace
+
+* **Provider `anthropic`** (`maru-core::external_servers::ServerProvider::Anthropic`, `maru-llm/src/anthropic.rs`): a
+  connection saved with it talks to `POST /v1/messages` (`x-api-key`, `anthropic-version`). The request puts the system
+  prompt in a block of its own marked `cache_control: ephemeral` and sends no sampling parameter (this API version refuses
+  them); `anthropic::events` turns the typed stream events into the client's (`text_delta` → text, `message_delta` → the
+  stop reason and the token count, `max_tokens` → a capped reply, `refusal` and `error` → an error). Thinking is switched
+  off for short answers by the same `auth::ClaudeThinking` steps as on the compatible endpoint (`disabled`, then
+  `between_tools` when the model's 400 names it). `LlmClient::tokens_used().cached_input` reports what the server read
+  from its prompt cache. **A connection saved as `openai` with Anthropic's address keeps using the OpenAI-compatible
+  endpoint**, unchanged. `maru … --connection "Claude+native=model"` asks such a connection through the Messages API
+  for one run, which is how the two were compared. Measured (run 2, 20 lines × 2 passes): no latency difference, and no
+  cache reads, because Maru's system prompts are shorter than the smallest cacheable prompt (512 tokens on the current
+  models). Tests: `anthropic.rs` (request shape, events, headers and route against the scripted server, the thinking
+  retry, missing key / 401 / 429 / 529 told apart), `settings-flow.test.mjs`. Real service: M-44.
+* **`BootOptions::read_only`** (additive): the saved history, the reading areas and the screen labels are neither opened
+  nor written; a run's lines stay in memory. `maru bench` boots with it, so a benchmark never adds to `history.db`.
+  Test: `remote_model_tests.rs::a_read_only_run_translates_live_lines_without_writing…`.
+
 ### 4.10 Setup wizard and installers (`maru setup`)
 * `maru-engine::hardware`: reads `nvidia-smi` and one PowerShell/CIM probe (GPUs, driver CUDA version, memory, free disk);
   parsers are separate from process calls and tested with real command output.

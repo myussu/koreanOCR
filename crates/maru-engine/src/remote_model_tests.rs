@@ -541,3 +541,30 @@ async fn a_task_table_can_put_live_subtitles_on_a_server_and_captures_on_this_pc
     assert!(events.iter().any(|e| matches!(e, Event::TranslationDone { .. })), "{events:?}");
     assert!(!services.llm_server_running(), "this PC's model was not started for it");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_read_only_run_translates_live_lines_without_writing_the_history_or_any_other_database() {
+    let server = spawn_mock(model).await;
+    let line = |text: &str| {
+        let mut capture = Capture::typed(text);
+        capture.source = maru_core::CaptureSource::Continuous;
+        crate::LiveLine { capture, appeared: std::time::Instant::now(), ready_ms: 0, ocr_ms: 0 }
+    };
+    for read_only in [true, false] {
+        let home = Home::new();
+        let mut cfg = config(&server.url);
+        cfg.continuous.translation.model = LiveModel::Main;
+        let services = boot(Paths::under(home.path()), cfg, BootOptions { defer_models: true, read_only, ..Default::default() }).await;
+        let events = collect(services.engine.translate_live(line("학교에 갑니다.")).1).await;
+        assert!(events.iter().any(|e| matches!(e, Event::TranslationDone { .. })), "{events:?}");
+        assert_eq!(services.engine.history().len(), 1, "the line is in this run's history either way");
+        let data = home.path().join("data");
+        let saved = |name: &str| data.join(name).exists();
+        if read_only {
+            assert!(!saved("history.db") && !saved("labels.db") && !saved("reading-areas.db"), "a benchmark leaves no file behind");
+            assert!(services.notes.iter().any(|n| n.starts_with("Read-only run")), "{:?}", services.notes);
+        } else {
+            assert!(saved("history.db"), "an ordinary run saves its live lines");
+        }
+    }
+}
