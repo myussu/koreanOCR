@@ -8,6 +8,10 @@
 *.bat text eol=crlf
 *.sh  text eol=lf
 
+# Patched copies of other people's crates are kept byte for byte: their build scripts read data files that
+# must not gain carriage returns on a Windows checkout (ort-sys's list of download hashes did, and failed).
+vendor/** -text
+
 # Never converted or diffed as text.
 *.png  binary
 *.ico  binary
