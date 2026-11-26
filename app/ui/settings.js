@@ -4,7 +4,7 @@
 // never re-renders the page (that would drop the cursor): each field updates itself.
 
 import { invoke } from './bridge.js';
-import { ankiSettingsPending } from './anki.js';
+import { ankiSettingsPending, soundsText } from './anki.js';
 import { LIVE_MODELS, modelEdits, matchesSetting } from './settings-live-core.js';
 import { connectionFields, connectionKey, canTestConnection, connectionResult, connectionPaths, needsServerDetection } from './settings-connection-core.js';
 import { discoveryControls } from './settings-discovery.js';
@@ -399,12 +399,12 @@ export async function settingsView() {
 
   function ankiActions() {
     const res = h('span', { class: 'res' });
-    const run = (what, command, ok) =>
+    const run = (what, command, ok, waiting = 'Asking Anki…') =>
       btn(what, async (e) => {
         const button = e.target;
         button.disabled = true;
         res.className = 'res';
-        res.textContent = 'Asking Anki…';
+        res.textContent = waiting;
         try {
           const r = await invoke(command);
           res.textContent = ok(r);
@@ -418,13 +418,15 @@ export async function settingsView() {
     const check = run('Check Anki', 'anki_check', (r) => r);
     const sync = run('Sync now', 'anki_sync', () => 'Asked Anki to sync with AnkiWeb. Anki shows its own progress.');
     const progress = run('Refresh progress', 'anki_refresh', (n) => `Read ${n} words from Anki; local learning progress is updated.`);
+    // Notes added while speech was off or failing; the voice may take a minute to start the first time.
+    const sounds = run('Add missing sounds', 'anki_fill_sounds', soundsText, 'Making sounds… the voice can take a minute to start.');
     const sync_ = () => {
       const dirty = ankiSettingsPending(draft,data.pending_restart);
-      check.disabled = sync.disabled = progress.disabled = dirty;
-      check.title = sync.title = progress.title = dirty ? 'Save first, then restart: these use the settings Maru started with' : '';
+      check.disabled = sync.disabled = progress.disabled = sounds.disabled = dirty;
+      check.title = sync.title = progress.title = sounds.title = dirty ? 'Save first, then restart: these use the settings Maru started with' : '';
     };
     updaters.push(sync_);
-    return h('div', { class: 'test-row' }, check, sync, progress, res);
+    return h('div', { class: 'test-row' }, check, sync, progress, sounds, res);
   }
 
   // ───────────── components and the file ─────────────

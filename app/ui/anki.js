@@ -81,6 +81,14 @@ export function reverseChoice(wanted, configured) {
   return configured === 'off' ? 'subdeck' : null;
 }
 
+/** The result of "Add missing sounds" in plain words. */
+export function soundsText(r) {
+  const notes = (n) => (n === 1 ? '1 note' : `${n} notes`);
+  if (r.error) return r.filled ? `Added sound to ${notes(r.filled)}, then stopped: ${r.error}` : r.error;
+  if (!r.filled && !r.left) return 'Every Maru note in Anki has its sound.';
+  return r.left ? `Added sound to ${notes(r.filled)}; ${notes(r.left)} still need it — press again.` : `Added sound to ${notes(r.filled)}.`;
+}
+
 /** Keyboard submission must respect the same busy state as the Add button. */
 export function canSubmitAnki(u) {
   return !!u && !u.busy && !u.loading && !!u.overview?.connected;

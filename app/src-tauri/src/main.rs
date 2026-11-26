@@ -23,6 +23,7 @@ mod wheel;
 mod input_session;
 mod picker_session;
 mod reading_feedback;
+mod mining;
 
 use std::sync::{Arc, Mutex};
 
@@ -237,6 +238,9 @@ fn main() {
             commands::history,
             commands::history_star,
             commands::history_starred,
+            mining::mine_sheet,
+            mining::mine_add,
+            mining::anki_fill_sounds,
             commands::status,
             commands::resize_panel,
             commands::dismiss_panel,

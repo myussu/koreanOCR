@@ -85,7 +85,7 @@ fn parts_of(e: &Eojeol) -> String {
         .join(" + ")
 }
 
-fn gloss_words(eojeols: &[Eojeol], skip_known: bool) -> Vec<GlossWord> {
+pub(crate) fn gloss_words(eojeols: &[Eojeol], skip_known: bool) -> Vec<GlossWord> {
     eojeols
         .iter()
         .filter(|e| e.content && !(skip_known && e.state == WordState::Known))
@@ -237,7 +237,7 @@ pub(crate) fn effective_gloss_mode(inner: &Inner, profile: Option<&maru_core::co
 }
 
 /// A snapshot captures its route once, even if the live toggle changes while it runs.
-async fn snapshot_model(inner: &Inner, em: &Emitter, active: bool) -> Option<(LlmClient, bool)> {
+pub(crate) async fn snapshot_model(inner: &Inner, em: &Emitter, active: bool) -> Option<(LlmClient, bool)> {
     if active {
         let cfg = &inner.cfg.continuous.translation;
         if cfg.snapshot_endpoint.is_some() {

@@ -1388,6 +1388,97 @@ mod scan {
     }
 }
 
+/// The model and AnkiConnect on one server, told apart by path; Anki already has 학교.
+fn model_and_anki(path: &str, body: &str) -> MockResponse {
+    if path.contains("chat/completions") {
+        return model(path, body);
+    }
+    let req: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    if req["action"] == "findNotes" && req["params"]["query"].as_str().unwrap_or_default().contains("\"Word:학교\"") {
+        return MockResponse { status: 200, chunks: vec![br#"{"result":[5],"error":null}"#.to_vec()], delay_ms: 0 };
+    }
+    ankiconnect(path, body)
+}
+
+fn mining_harness(server: MockServer) -> Harness {
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    cfg.learning.anki.sync_after_add = false;
+    let llm = LlmClient::new(&server.url, &cfg.llm);
+    build(cfg, Some(llm), Some(server))
+}
+
+fn added_notes(h: &Harness) -> Vec<serde_json::Value> {
+    h.requests().iter().filter_map(|b| serde_json::from_str::<serde_json::Value>(b).ok()).filter(|r| r["action"] == "addNote").map(|r| r["params"]["note"].clone()).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_mining_sheet_offers_each_word_with_its_meaning_in_the_line_and_skips_what_anki_has() {
+    let h = mining_harness(spawn_mock(model_and_anki).await);
+    let sheet = h.engine.mine_sheet(SENTENCE, "I studied at school.", Some("game.exe")).await.unwrap();
+    let word = |surface: &str| sheet.words.iter().find(|w| w.surface == surface).unwrap_or_else(|| panic!("{surface} in {:?}", sheet.words));
+    assert_eq!((word("학교에서").meaning.as_str(), word("학교에서").in_context), ("school", true));
+    assert!(word("학교에서").in_anki && !word("학교에서").pick, "Anki has it: not ticked");
+    assert_eq!(word("공부했어요").meaning, "to study");
+    assert!(word("공부했어요").pick && !word("공부했어요").in_anki);
+    assert!(sheet.anki_error.is_none() && sheet.note.is_none() && !sheet.sentence_in_anki);
+    assert_eq!(sheet.decks, ["Default", "Korean"]);
+    assert_eq!(h.requests().iter().filter(|b| b.contains("Words:")).count(), 1, "one model request for all the meanings");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_model_the_sheet_uses_the_dictionary_and_says_so() {
+    let server = spawn_mock(ankiconnect).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    let h = build(cfg, None, Some(server));
+    let sheet = h.engine.mine_sheet(SENTENCE, "I studied at school.", None).await.unwrap();
+    let school = sheet.words.iter().find(|w| w.surface == "학교에서").unwrap();
+    assert_eq!((school.meaning.as_str(), school.in_context), ("school", false));
+    assert!(sheet.note.as_deref().unwrap_or_default().contains("dictionary"), "{:?}", sheet.note);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_mined_word_card_shows_this_line_and_the_chosen_meaning_and_the_line_becomes_a_sentence_card() {
+    use maru_engine::anki_flow::AnkiAdded;
+    use maru_engine::mining::{MineChoice, MineLine, MinedSentence};
+    let h = mining_harness(spawn_mock(ankiconnect).await);
+    // A newer sentence for the word must not take the place of the line being mined.
+    let later = maru_srs::now_secs() + 100;
+    h.vocab.record_lookup(&maru_srs::LookupInfo { key: "학교".into(), surface: "학교".into(), context: Some(maru_srs::Context { sentence: "학교에 가요".into(), ..Default::default() }), ..Default::default() }, later).unwrap();
+    let line = MineLine { sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: Some("game.exe".into()), deck: "Korean::Games".into(), reverse: maru_core::config::ReverseMode::Subdeck };
+    let choice = MineChoice { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), level: Some("TOPIK 1".into()), meaning: "school (where I studied)".into() };
+    let permit = h.engine.begin_mine_word(&line, &choice).await.unwrap();
+    assert!(matches!(h.engine.finish_mine_word(permit, &line, &choice, None, None).await.unwrap(), AnkiAdded::Added { .. }));
+    assert_eq!(h.engine.mine_sentence(&line, std::slice::from_ref(&choice), None).await.unwrap(), MinedSentence::Added { deck: "Korean::Games".into() });
+
+    let notes = added_notes(&h);
+    let card = notes.iter().find(|n| n["modelName"] == "Maru Korean").unwrap();
+    assert_eq!(card["fields"]["Meaning"], "school (where I studied)");
+    assert_eq!(card["fields"]["Sentence"], "저는 <b>학교에서</b> 공부했어요");
+    assert_eq!(card["fields"]["Translation"], "I studied at school.");
+    assert_eq!(card["fields"]["Reverse"], "y", "word cards get their reverse card");
+    let sentence = notes.iter().find(|n| n["modelName"] == "Maru Korean Sentence").unwrap();
+    assert_eq!(sentence["fields"]["Sentence"], SENTENCE);
+    assert_eq!(sentence["fields"]["Words"], "<div><b>학교</b> — school (where I studied)</div>");
+    assert!(sentence["tags"].as_array().unwrap().iter().any(|t| t == "sentence"));
+    assert_eq!(sentence["deckName"], "Korean::Games");
+    assert_eq!(h.vocab.get("학교").unwrap().unwrap().meaning.as_deref(), Some("school (where I studied)"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_word_without_a_meaning_is_refused_before_anything_reaches_anki() {
+    use maru_engine::mining::{MineChoice, MineLine};
+    let h = mining_harness(spawn_mock(ankiconnect).await);
+    let line = MineLine { sentence: SENTENCE.into(), translation: String::new(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
+    let choice = MineChoice { key: "공부하다".into(), surface: "공부했어요".into(), pos: String::new(), level: None, meaning: "  ".into() };
+    let err = h.engine.begin_mine_word(&line, &choice).await.err().expect("refused").to_string();
+    assert!(err.contains("needs a meaning"), "{err}");
+    assert!(h.requests().is_empty(), "Anki was not called");
+}
+
 /// An AnkiConnect that has the note type already and no words yet; every call is logged.
 fn ankiconnect(_path: &str, body: &str) -> MockResponse {
     let req: serde_json::Value = serde_json::from_str(body).unwrap_or_default();

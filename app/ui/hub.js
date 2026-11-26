@@ -4,6 +4,7 @@ import { canStar, historyRows, latencyText, liveHistory } from './live-core.js';
 import { settingsView } from './settings.js';
 import { resourcesView } from './resources.js';
 import { readingView } from './reading.js';
+import { mineSheet } from './mine.js';
 
 const view = document.getElementById('view');
 const tabs = [...document.querySelectorAll('#tabs button')];
@@ -110,14 +111,40 @@ async function history() {
       : historyMode === 'live' ? 'Live subtitles you have watched will appear here, in order, so you can read them after a cutscene.' : 'Lines you translate will appear here — handy for subtitles that disappear before you finish reading.';
     return [bar, h('p', { class: 'center', text: msg })];
   }
-  const row = (i) =>
-    h(
+  const star = (i) =>
+    canStar(i) &&
+    h('button', {
+      class: 'star', 'aria-pressed': String(!!i.starred), title: i.starred ? 'Take the star off' : 'Star this line to study it later', text: i.starred ? '★' : '☆',
+      onclick: (e) => { e.stopPropagation(); invoke('history_star', { savedId: i.saved_id, starred: !i.starred }).then(() => show('history')).catch((err) => alert(String(err))); },
+    });
+  // "Make cards" opens the mining sheet (mine.js) under its line; one at a time.
+  const mine = (i) =>
+    i.live &&
+    h('button', {
+      class: i.mined ? 'mine-open done' : 'mine-open', title: 'Make Anki cards from this line: its words and the line itself', text: i.mined ? '✓ Cards made' : 'Make cards',
+      onclick: (e) => {
+        e.stopPropagation();
+        const button = e.currentTarget;
+        const open = view.querySelector('.mine');
+        open?.remove();
+        if (open?.dataset.for === button.dataset.for) return;
+        const sheet = mineSheet(h, i, { onClose: () => sheet.remove(), onAdded: () => { i.mined = true; button.className = 'mine-open done'; button.textContent = '✓ Cards made'; } });
+        sheet.dataset.for = button.dataset.for;
+        button.closest('.hist').after(sheet);
+      },
+    });
+  const row = (i, n) => {
+    const r = h(
       'div',
       { class: i.live ? 'hist live' : 'hist', title: 'Click for the word-by-word breakdown', onclick: () => invoke('history_open', { text: i.direction === 'en_to_ko' ? i.translation : i.source }).catch(() => {}) },
+      star(i),
       h('div', { class: i.direction === 'en_to_ko' ? 'en' : 'ko', text: i.source }),
       h('div', { class: i.direction === 'en_to_ko' ? 'ko' : 'en', text: i.translation }),
-      h('div', { class: 'status', text: [i.live ? 'live' : '', i.app, new Date((i.appeared_at ?? i.at) * 1000).toLocaleTimeString(), latencyText(i)].filter(Boolean).join(' · ') }),
+      h('div', { class: 'status', text: [i.live ? 'live' : '', i.app, new Date((i.appeared_at ?? i.at) * 1000).toLocaleTimeString(), latencyText(i)].filter(Boolean).join(' · ') }, mine(i)),
     );
+    r.querySelector('.mine-open')?.setAttribute('data-for', String(n));
+    return r;
+  };
   return [bar, ...items.map(row)];
 }
 
@@ -205,7 +232,12 @@ if (!inTauri) {
     due_words: () => [{ key: '공부하다', meaning: 'to study', level: 'TOPIK 1', state: 'learning', lookups: 2, saved: true }, { key: '학교', meaning: 'school', state: 'learning', lookups: 2, saved: true }],
     word_contexts: () => [{ sentence: '저는 학교에서 공부했어요', translation: 'I studied at school.' }],
     review_word: () => ({}),
-    history: () => [{ id: 1, at: 1760000000, source: '저는 학교에서 공부했어요', translation: 'I studied at school.', direction: 'ko_to_en', app: 'chrome.exe', live: false, first_ms: null, total_ms: null }, { id: 2, at: 1760000030, source: '다시는 못 볼 줄 알았어요', translation: 'I thought I would never see you again.', direction: 'ko_to_en', app: 'game.exe', live: true, first_ms: 820, total_ms: 1410 }, { id: 3, at: 1760000034, source: '저도요', translation: 'Me too.', direction: 'ko_to_en', app: 'game.exe', live: true, first_ms: 610, total_ms: 790 }],
+    history: () => [{ id: 1, at: 1760000000, source: '저는 학교에서 공부했어요', translation: 'I studied at school.', direction: 'ko_to_en', app: 'chrome.exe', live: false, first_ms: null, total_ms: null }, { id: 2, at: 1760000030, source: '다시는 못 볼 줄 알았어요', translation: 'I thought I would never see you again.', direction: 'ko_to_en', app: 'game.exe', live: true, first_ms: 820, total_ms: 1410, saved_id: 11, starred: demoStars.has(11) }, { id: 3, at: 1760000034, source: '저도요', translation: 'Me too.', direction: 'ko_to_en', app: 'game.exe', live: true, first_ms: 610, total_ms: 790, saved_id: 12, starred: demoStars.has(12) }],
+    history_starred: () => [{ id: 0, at: 1759990000, source: '이걸 타면 위로 갈 수 있어요.', translation: 'If you ride this, you can go up.', direction: 'ko_to_en', app: 'game.exe', live: true, first_ms: 400, total_ms: 900, saved_id: 3, starred: true }, ...[...demoStars].map((id) => id === 11 ? { id: 2, at: 1760000030, source: '다시는 못 볼 줄 알았어요', translation: 'I thought I would never see you again.', direction: 'ko_to_en', app: 'game.exe', live: true, saved_id: 11, starred: true } : { id: 3, at: 1760000034, source: '저도요', translation: 'Me too.', direction: 'ko_to_en', app: 'game.exe', live: true, saved_id: 12, starred: true })],
+    mine_sheet: ({ sentence, translation, app }) => new Promise((resolve) => setTimeout(() => resolve({ sentence, translation, app, app_name: 'Game', note: null, sentence_in_anki: false, anki_error: null, reverse: 'subdeck', audio: true, decks: ['Default', 'Korean', 'Korean::Games'], suggestions: [{ deck: 'Korean::Games', reason: 'what you chose last time in Game', exists: true }, { deck: 'Korean', reason: 'your default deck', exists: true }],
+      words: [{ key: '다시', surface: '다시는', pos: 'adverb', level: 'TOPIK 1', formula: '다시 + 는', dictionary: ['again', 'once more'], meaning: 'ever again', in_context: true, known: false, in_anki: false, pick: true }, { key: '못', surface: '못', pos: 'adverb', level: 'TOPIK 1', formula: '', dictionary: ['cannot'], meaning: 'cannot', in_context: true, known: true, in_anki: false, pick: false }, { key: '보다', surface: '볼', pos: 'verb', level: 'TOPIK 1', formula: '보다 + ㄹ', dictionary: ['to see', 'to look at', 'to watch'], meaning: 'to see', in_context: true, known: false, in_anki: true, pick: false }, { key: '알다', surface: '알았어요', pos: 'verb', level: 'TOPIK 1', formula: '알다 + 았 + 어요', dictionary: ['to know'], meaning: 'to think (wrongly) that', in_context: true, known: false, in_anki: false, pick: true }] }), 600)),
+    mine_add: ({ request }) => new Promise((resolve) => setTimeout(() => resolve({ audio_note: null, outcomes: [...request.words.map((w, n) => n === 1 ? { what: w.key, kind: 'word', result: 'failed', detail: 'Another Anki add is still running; wait for it to finish.' } : { what: w.key, kind: 'word', result: 'added', detail: request.reverse ? `2 cards: ${request.deck}, reverse in ${request.deck}::Reverse` : `1 card in ${request.deck}` }), ...(request.sentence_card ? [{ what: request.sentence, kind: 'sentence', result: 'added', detail: `sentence card in ${request.deck}` }] : [])] }), 700)),
+    history_star: ({ savedId, starred }) => { if (starred) demoStars.add(savedId); else demoStars.delete(savedId); },
     history_open: () => {},
     status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'ready', analyser: 'kiwi', ocr: true, dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape', star: 'Ctrl+Alt+B' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, anki: false, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'ready', tts: 'off', tts_source: '' }),
   });

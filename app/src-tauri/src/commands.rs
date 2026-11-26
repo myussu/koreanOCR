@@ -409,7 +409,7 @@ pub struct AnkiAddReply {
 }
 
 /// Spoken `text` as a file for Anki: `Ok(None)` when speech is off or not ready.
-async fn spoken(state: &AppState, text: &str) -> Result<Option<maru_engine::anki_flow::Media>, String> {
+pub(crate) async fn spoken(state: &AppState, text: &str) -> Result<Option<maru_engine::anki_flow::Media>, String> {
     let Some(tts) = state.services.tts.clone() else { return Ok(None) };
     let _speech = state.services.speech_lease().await?;
     let (audio, _) = tts.speak(text).await.map_err(err)?;
@@ -447,8 +447,9 @@ pub async fn anki_add(state: S<'_>, request: AnkiAddRequest) -> Res<AnkiAddReply
         }
         .await;
         match made {
+            Ok((None, _)) => note = Some(format!("Added without sound: speech is off or not ready. {}", crate::mining::SOUND_LATER)),
             Ok((w, s)) => (word_audio, sentence_audio) = (w, s),
-            Err(e) => note = Some(format!("Added without audio: {e}")),
+            Err(e) => note = Some(format!("Added without audio: {e}. {}", crate::mining::SOUND_LATER)),
         }
     }
     let added = engine

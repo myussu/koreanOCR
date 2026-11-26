@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { cleanDeck, deckChoices, tagOf, addTags, removeTag, intervalText, addedText, reverseChoice, canSubmitAnki, ankiSettingsPending, ankiWordCounts } from '../anki.js';
+import { cleanDeck, deckChoices, tagOf, addTags, removeTag, intervalText, addedText, reverseChoice, canSubmitAnki, ankiSettingsPending, ankiWordCounts, soundsText } from '../anki.js';
 
 const decks = ['Default', 'Korean', 'Korean::Games', 'Korean::Games::Elden Ring', 'Korean::YouTube', 'Spanish'];
 const sugg = [
@@ -95,4 +95,12 @@ test('the reverse box overrides the configured choice only when it must', () => 
   assert.equal(reverseChoice(true, 'same_deck'), null);
   assert.equal(reverseChoice(true, 'off'), 'subdeck', 'asked for it although it is off by default');
   assert.equal(reverseChoice(false, 'subdeck'), 'off');
+});
+
+test('adding missing sounds reports what it did, what is left, and why it stopped', () => {
+  assert.equal(soundsText({ filled: 0, left: 0, error: null }), 'Every Maru note in Anki has its sound.');
+  assert.equal(soundsText({ filled: 1, left: 0, error: null }), 'Added sound to 1 note.');
+  assert.equal(soundsText({ filled: 30, left: 12, error: null }), 'Added sound to 30 notes; 12 notes still need it — press again.');
+  assert.equal(soundsText({ filled: 0, left: 5, error: 'Speech is off or not ready (Settings → Speech).' }), 'Speech is off or not ready (Settings → Speech).');
+  assert.equal(soundsText({ filled: 2, left: 3, error: 'Speech failed: timeout' }), 'Added sound to 2 notes, then stopped: Speech failed: timeout');
 });

@@ -21,6 +21,7 @@ mod history_store;
 mod live_backup;
 mod live_merge;
 pub mod live_star;
+pub mod mining;
 mod live_lane;
 mod live_noise;
 mod live_context;
