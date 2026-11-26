@@ -141,7 +141,7 @@ unsafe fn rects_from_safearray(sa: *mut windows::Win32::System::Com::SAFEARRAY) 
         let mut data: *mut c_void = std::ptr::null_mut();
         if count >= 4 && SafeArrayAccessData(sa, &mut data).is_ok() && !data.is_null() {
             let values = std::slice::from_raw_parts(data as *const f64, count);
-            rects.extend(values.chunks_exact(4).map(|c| Rect::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32)));
+            rects.extend(values.as_chunks::<4>().0.iter().map(|c| Rect::new(c[0] as f32, c[1] as f32, c[2] as f32, c[3] as f32)));
             let _ = SafeArrayUnaccessData(sa);
         }
         let _ = SafeArrayDestroy(sa);

@@ -91,14 +91,16 @@ pub fn grab(region: Rect) -> Result<RgbImage> {
         let previous = SelectObject(gdi.mem, gdi.bitmap.into());
         let blit = BitBlt(gdi.mem, 0, 0, w, h, Some(screen), x, y, SRCCOPY | CAPTUREBLT);
 
-        let mut info = BITMAPINFO::default();
-        info.bmiHeader = BITMAPINFOHEADER {
-            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: w,
-            biHeight: -h, // negative = top-down rows
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB.0,
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: w,
+                biHeight: -h, // negative = top-down rows
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB.0,
+                ..Default::default()
+            },
             ..Default::default()
         };
         let mut bgra = vec![0u8; (w as usize) * (h as usize) * 4];
@@ -110,7 +112,7 @@ pub fn grab(region: Rect) -> Result<RgbImage> {
         }
 
         let mut rgb = Vec::with_capacity((w as usize) * (h as usize) * 3);
-        for px in bgra.chunks_exact(4) {
+        for px in bgra.as_chunks::<4>().0 {
             rgb.extend_from_slice(&[px[2], px[1], px[0]]);
         }
         RgbImage::from_raw(w as u32, h as u32, rgb).ok_or_else(|| fail("capture", "pixel buffer size mismatch"))
