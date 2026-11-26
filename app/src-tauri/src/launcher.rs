@@ -15,6 +15,14 @@ pub struct LauncherState {
     offset: Mutex<(f32, f32)>,
     picker_hidden: std::sync::atomic::AtomicBool,
     last_error: Mutex<Option<String>>,
+    /// The window was shown, hidden, moved or resized since the pointer loop last asked it.
+    stale: std::sync::atomic::AtomicBool,
+}
+
+fn mark_stale(app: &AppHandle) {
+    if let Some(controls) = app.try_state::<LauncherState>() {
+        controls.stale.store(true, std::sync::atomic::Ordering::Release);
+    }
 }
 
 pub fn create(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
@@ -53,18 +61,33 @@ pub fn create(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
         win.show()?;
     }
     app.manage(LauncherState::default());
+    let handle = app.clone();
+    win.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Moved(_) | tauri::WindowEvent::Resized(_)) {
+            mark_stale(&handle);
+        }
+    });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         let mut poll = tokio::time::interval(std::time::Duration::from_millis(12));
         poll.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         let mut interactive = false;
+        let (mut visible, mut origin) = (false, None);
+        let mut since_asked = u32::MAX;
         loop {
             poll.tick().await;
             let Some(win) = app.get_webview_window(LABEL) else { break };
             let controls = app.state::<LauncherState>();
+            // Asking the window is a round trip to the main thread: only after a change we made, and
+            // about twice a second in case something else changed it, not on every 12 ms tick.
+            since_asked = since_asked.saturating_add(1);
+            if controls.stale.swap(false, std::sync::atomic::Ordering::AcqRel) || since_asked >= 40 {
+                visible = win.is_visible().unwrap_or(false);
+                origin = win.outer_position().ok();
+                since_asked = 0;
+            }
             let dragging = controls.drag_origin.lock().unwrap_or_else(|p| p.into_inner()).is_some();
-            let over = if win.is_visible().unwrap_or(false) {
-                let origin = win.outer_position().ok();
+            let over = if visible {
                 let pointer = state.engine().platform().screen.cursor();
                 let rects = controls.rects.lock().unwrap_or_else(|p| p.into_inner());
                 match (origin, pointer) {
@@ -86,6 +109,7 @@ pub fn create(app: &AppHandle, state: Arc<AppState>) -> tauri::Result<()> {
 pub fn show(app: &AppHandle, visible: bool) {
     if let Some(win) = app.get_webview_window(LABEL) {
         let _ = if visible { win.show() } else { win.hide() };
+        mark_stale(app);
     }
 }
 pub fn toggle(app: &AppHandle) {
@@ -100,6 +124,7 @@ pub fn pause_for_picker(app: &AppHandle) {
             controls.picker_hidden.store(true, std::sync::atomic::Ordering::Release);
         }
         let _ = win.hide();
+        mark_stale(app);
     }
 }
 pub fn resume_after_picker(app: &AppHandle) {

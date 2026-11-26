@@ -61,8 +61,19 @@ pub fn show_translation(app: &AppHandle, state: &Arc<AppState>, capture: Capture
 /// content word as soon as the breakdown arrives (a click on a scan label that is one word). With
 /// `auto_speak` the panel reads the text aloud as soon as it has it.
 pub fn show_capture(app: &AppHandle, state: &Arc<AppState>, capture: Capture, word_only: bool, auto_deep: bool, auto_speak: bool) {
+    // Something the person asked for replaces the reading: hold automatic reading so it does not take the panel back.
     crate::reading_feedback::dismiss(app);
     state.engine().interrupt_reading();
+    show_without_interrupting(app, state, capture, word_only, auto_deep, auto_speak);
+}
+
+/// A hover dwell is passive and frequent: it shows its word but leaves automatic and queued reading,
+/// and their progress, alone.
+fn show_hover(app: &AppHandle, state: &Arc<AppState>, capture: Capture) {
+    show_without_interrupting(app, state, capture, true, false, false);
+}
+
+fn show_without_interrupting(app: &AppHandle, state: &Arc<AppState>, capture: Capture, word_only: bool, auto_deep: bool, auto_speak: bool) {
     let cursor = state.engine().platform().screen.cursor();
     {
         let mut p = state.panel();
@@ -211,7 +222,7 @@ pub fn hover_at(app: AppHandle, state: Arc<AppState>, at: Point) {
         match state.engine().capture_hover(at).await {
             Ok(capture) => {
                 tracing::debug!("hover: {:?} capture {:?}", capture.source, capture.text);
-                show_translation(&app, &state, capture, true);
+                show_hover(&app, &state, capture);
             }
             Err(e) => tracing::debug!("hover: {e}"),
         }

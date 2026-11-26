@@ -126,7 +126,7 @@ fn combine(pieces: &[JoinedFound], as_word: bool) -> Option<JoinedFound> {
             parts.push(ScanPart {
                 text: found.text.clone(),
                 rect: found.rect,
-                observed: None,
+                observed: piece.observed.clone(),
             });
         }
     }
@@ -148,9 +148,20 @@ pub(crate) fn apply_saved(
     labels: Option<&LabelCache>,
     scope: &str,
 ) -> Vec<JoinedFound> {
+    // Rules are saved with the corrected text the person joined, so match against that; the OCR's
+    // own reading stays the observed text (and an alias, for rules saved before the correction).
     let mut found: Vec<_> = found
         .into_iter()
-        .map(|f| JoinedFound::new(f, None))
+        .map(|f| match labels.and_then(|c| c.ocr_correction(scope, &f.text).ok().flatten()) {
+            Some(text) if text != f.text => {
+                let raw = f.text.clone();
+                let mut corrected = JoinedFound::new(Found { text, ..f }, None);
+                corrected.aliases.push(key(&raw));
+                corrected.observed = Some(raw);
+                corrected
+            }
+            _ => JoinedFound::new(f, None),
+        })
         .collect();
     for rule in rules {
         let Some((first, rest)) = rule.parts.split_first() else {

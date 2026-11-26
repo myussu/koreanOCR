@@ -1019,6 +1019,24 @@ mod scan {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_join_that_includes_a_remembered_correction_comes_back_on_the_next_scan() {
+        let cache=Arc::new(LabelCache::open_in_memory().unwrap());
+        let s=setup(tight_words(&["가메라","설정"]),true,|_|{},Some(cache.clone())).await;
+        let (id,rx)=s.engine.scan(SCREEN);collect(rx).await;
+        let fixed=items_of(&collect(s.engine.correct_scan(id,0,"카메라",true).unwrap()).await).remove(0);
+        collect(s.engine.join_scan_items(id,3,vec![fixed.item,1],false).await.unwrap()).await;
+        assert_eq!(cache.joins_for("game.exe")[0].parts,["카메라","설정"]);
+        // The OCR still reads 가메라: the saved correction must apply before the saved join is matched.
+        let (next,rx)=s.engine.scan(SCREEN);let again=items_of(&collect(rx).await);
+        assert_eq!(again.len(),1,"{again:?}");
+        assert_eq!(again[0].text,"카메라 설정");
+        let restored=items_of(&collect(s.engine.separate_scan_item(next,again[0].item).await.unwrap()).await);
+        assert_eq!(restored.iter().map(|i|i.text.as_str()).collect::<Vec<_>>(),["카메라","설정"]);
+        let view=s.engine.ocr_correction_view(maru_engine::ocr_corrections::Target::Scan {id:next,item:restored[0].item}).unwrap();
+        assert_eq!(view.observed,"가메라","the correction menu still knows what the OCR read");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn stale_separation_cannot_delete_a_new_scan_or_its_saved_rules() {
         let cache=Arc::new(LabelCache::open_in_memory().unwrap());
         cache.put_join("game.exe",&["카메라".into(),"설정".into()],"카메라설정",1);

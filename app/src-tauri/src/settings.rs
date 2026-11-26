@@ -80,6 +80,8 @@ fn check_hotkeys(cfg: &Config) -> Res<()> {
         ("history", &k.history),
         ("dismiss", &k.dismiss),
         ("launcher", &k.launcher),
+        ("reading_again", &k.reading_again),
+        ("wheel", &k.wheel),
         ("star", &k.star),
     ];
     let mut seen: Vec<(Shortcut, &str)> = Vec::new();
@@ -248,5 +250,17 @@ mod tests {
         assert!(check_url("language model server", "localhost:11434").is_err());
         check_url("language model server", "http://192.168.18.217:11434").unwrap();
         check_url("snapshot server", "https://example.org/v1").unwrap();
+    }
+
+    #[test]
+    fn the_wheel_and_read_again_shortcuts_are_checked_like_the_others() {
+        let dup = check_hotkeys(&with(|c| c.hotkeys.wheel = "Ctrl+Alt+T".into())).unwrap_err();
+        assert!(dup.contains("wheel") && dup.contains("translate"), "{dup}");
+        let dup = check_hotkeys(&with(|c| c.hotkeys.reading_again = "Ctrl+Alt+Q".into())).unwrap_err();
+        assert!(dup.contains("reading_again") && dup.contains("wheel"), "{dup}");
+        let bad = check_hotkeys(&with(|c| c.hotkeys.reading_again = "Ctrl+Alt+Banana".into())).unwrap_err();
+        assert!(bad.contains("reading_again"), "{bad}");
+        // Empty means the shortcut is off, which is the default for reading again.
+        check_hotkeys(&with(|c| c.hotkeys.wheel = String::new())).unwrap();
     }
 }

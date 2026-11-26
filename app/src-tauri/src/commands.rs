@@ -346,7 +346,15 @@ pub async fn tts_test(state: S<'_>, text: Option<String>) -> Res<Clip> {
     if !cfg.enabled {
         return Err("Speech is switched off. Turn it on, save, and restart.".into());
     }
-    let _speech = if cfg.provider == TtsProvider::Local { state.services.speech_lease().await? } else { None };
+    let _speech = if cfg.provider == TtsProvider::Local {
+        // Speech switched on after start-up has no local voice yet: only a restart starts one.
+        state.services.speech_lease().await.map_err(|e| match state.services.tts_status() {
+            LlmStatus::Disabled => "The local voice is not running yet. Save and restart Maru to start it.".to_string(),
+            _ => e,
+        })?
+    } else {
+        None
+    };
     let tts = maru_tts::Tts::new(&cfg, &paths).map_err(err)?;
     let text = text.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "안녕하세요. 만나서 반갑습니다. 한국어를 공부하고 있어요.".into());
     let started = std::time::Instant::now();
