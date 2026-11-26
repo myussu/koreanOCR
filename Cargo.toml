@@ -14,7 +14,8 @@ members = [
 ]
 # The Tauri shell lives in app/src-tauri with its own lockfile: it needs
 # platform webview libraries that the headless crates must not require.
-exclude = ["app/src-tauri", "old"]
+# vendor/ holds patched copies of dependencies (vendor/README.md), not Maru's own crates.
+exclude = ["app/src-tauri", "old", "vendor"]
 
 [workspace.package]
 version = "0.1.0"
@@ -61,3 +62,7 @@ strip = "symbols"
 # Keep dev builds of the hot paths reasonably fast for the OCR/ONNX code.
 [profile.dev.package."*"]
 opt-level = 2
+
+# ONNX Runtime bindings with a build script that works with Cargo 1.100's build folders (vendor/README.md).
+[patch.crates-io]
+ort-sys = { path = "vendor/ort-sys" }

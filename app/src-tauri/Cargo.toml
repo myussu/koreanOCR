@@ -37,3 +37,7 @@ strip = "symbols"
 
 [profile.dev.package."*"]
 opt-level = 2
+
+# ONNX Runtime bindings with a build script that works with Cargo 1.100's build folders (vendor/README.md).
+[patch.crates-io]
+ort-sys = { path = "../../vendor/ort-sys" }
