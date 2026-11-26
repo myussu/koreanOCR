@@ -80,6 +80,7 @@ fn check_hotkeys(cfg: &Config) -> Res<()> {
         ("history", &k.history),
         ("dismiss", &k.dismiss),
         ("launcher", &k.launcher),
+        ("star", &k.star),
     ];
     let mut seen: Vec<(Shortcut, &str)> = Vec::new();
     for (action, text) in table {

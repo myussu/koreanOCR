@@ -128,6 +128,10 @@ pub(crate) struct Inner {
     pub server_rest: Mutex<Option<Instant>>,
     /// The live lines of the last few seconds, to recognise one read again (`live_merge.rs`).
     pub(crate) live_recent: Mutex<crate::live_merge::Recent>,
+    /// Saved live history (`history.db`); `None` until opened, and in tests.
+    pub(crate) history_store: Mutex<Option<crate::history_store::HistoryStore>>,
+    /// Lines starred before their translation finished (`live_star.rs`).
+    pub(crate) pending_stars: Mutex<crate::live_star::PendingStars>,
     pub live_counts: Arc<crate::live_lane::Counters>,
     pub live_queue: std::sync::OnceLock<mpsc::UnboundedSender<crate::live_lane::Job>>,
 }
@@ -182,6 +186,8 @@ impl Engine {
             server_release: Mutex::new(None),
             server_rest: Mutex::new(None),
             live_recent: Mutex::new(Default::default()),
+            history_store: Mutex::new(None),
+            pending_stars: Mutex::new(Default::default()),
             live_counts: Arc::new(crate::live_lane::Counters::default()),
             live_queue: std::sync::OnceLock::new(),
             scan_task: Mutex::new(None),

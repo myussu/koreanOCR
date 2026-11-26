@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { bandStyle, bandWidth, chooseSide, clampCenter, createBand, estimateHeight, fitFont, fontFor, gapFor, latencyText, liveHistory, roomOn } from '../live-core.js';
+import { STAR_REMINDER_MS, bandStyle, bandWidth, canStar, chooseSide, clampCenter, createBand, estimateHeight, fitFont, fontFor, gapFor, historyRows, latencyText, liveHistory, roomOn } from '../live-core.js';
 
 test('live history follows capture order without changing the normal history array', () => {
   const items = [{ id: 3, live: true }, { id: 1, live: true }, { id: 2, live: false }];
@@ -130,4 +130,36 @@ test('the history shows how fast a live line was, and nothing for other lines', 
   assert.equal(latencyText({ first_ms: 820, total_ms: 1410 }), '0.8 s to the first word · 1.4 s in all');
   assert.equal(latencyText({ first_ms: null, total_ms: null }), '');
   assert.equal(latencyText({}), '');
+});
+
+test('a star marks the line on the band, stays with it while it streams, and goes with the next line', () => {
+  const band = createBand();
+  band.line({ id: 4, text: 'I thought', done: false, linger_ms: 1500 });
+  assert.deepEqual(band.star(4, true), { show: null, hideIn: null, cancelHide: false, star: true });
+  assert.equal(band.line({ id: 4, text: 'I thought I would never see you again.', done: true }).star, true);
+  assert.equal(band.line({ id: 5, text: 'Me too.', done: false }).star, false);
+  assert.equal(band.star(4, true).star, null, 'a star for a line no longer on the band changes nothing');
+});
+
+test('starring a line that has already left the screen brings it back for a moment to show the star', () => {
+  const band = createBand();
+  band.line({ id: 7, text: 'Me too.', done: true, linger_ms: 1500 });
+  band.cleared(7);
+  const back = band.star(7, true);
+  assert.equal(back.show.text, 'Me too.');
+  assert.equal(back.hideIn, STAR_REMINDER_MS);
+  assert.equal(back.star, true);
+  assert.equal(band.star(7, false).star, false, 'pressing again takes the star off');
+  assert.equal(band.off().star, false);
+});
+
+test('the starred view lists starred lines as given; only saved live lines can carry a star', () => {
+  const all = [{ id: 1, live: false }, { id: 3, live: true, saved_id: 9 }, { id: 2, live: true, saved_id: 8 }];
+  const starred = [{ id: 0, live: true, saved_id: 1, starred: true }];
+  assert.deepEqual(historyRows('starred', all, starred), starred);
+  assert.deepEqual(historyRows('live', all, starred).map((i) => i.id), [2, 3]);
+  assert.deepEqual(historyRows('all', all, starred).map((i) => i.id), [2, 3, 1]);
+  assert.equal(canStar(all[0]), false);
+  assert.equal(canStar(all[1]), true);
+  assert.equal(canStar({ id: 4, live: true, saved_id: null }), false, 'not saved: nothing to keep the star in');
 });

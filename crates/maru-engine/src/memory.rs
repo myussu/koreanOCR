@@ -70,11 +70,17 @@ pub struct HistoryItem {
     pub total_ms: Option<u32>,
     /// Live lines: approximate screen appearance time in Unix seconds.
     pub appeared_at: Option<i64>,
+    /// Live lines: the row in `history.db`, once saved.
+    pub saved_id: Option<i64>,
+    /// Live lines: marked to study later (`live_star.rs`).
+    pub starred: bool,
+    /// Live lines: Anki cards were made from it (`mining.rs`).
+    pub mined: bool,
 }
 
 impl HistoryItem {
     pub fn new(id: u64, at: i64, source: String, translation: String, direction: Direction, app: Option<String>) -> Self {
-        Self { id, at, source, translation, direction, app, live: false, first_ms: None, total_ms: None, appeared_at: None }
+        Self { id, at, source, translation, direction, app, live: false, first_ms: None, total_ms: None, appeared_at: None, saved_id: None, starred: false, mined: false }
     }
 }
 
@@ -102,6 +108,60 @@ impl History {
     /// Newest last.
     pub fn items(&self) -> Vec<HistoryItem> {
         self.items.iter().cloned().collect()
+    }
+
+    /// A fuller reading of a live line takes the place of the reading it grew from.
+    pub fn replace(&mut self, id: u64, item: HistoryItem) {
+        match self.items.iter_mut().rev().find(|old| old.live && old.id == id) {
+            Some(old) => *old = item,
+            None => self.push(item),
+        }
+    }
+
+    pub(crate) fn has_live(&self, id: u64) -> bool {
+        self.items.iter().any(|item| item.live && item.id == id && id != 0)
+    }
+
+    /// The newest live line of this session or, after a restart, of the saved history.
+    pub(crate) fn newest_live_id(&self) -> Option<u64> {
+        self.items.iter().rev().find(|item| item.live).map(|item| item.id)
+    }
+
+    pub(crate) fn is_starred(&self, id: u64) -> bool {
+        self.items.iter().any(|item| item.live && item.id == id && item.starred)
+    }
+
+    /// Flip a live line's star; `None` if it is not in the history.
+    pub(crate) fn toggle_star(&mut self, id: u64) -> Option<bool> {
+        let item = self.items.iter_mut().rev().find(|item| item.live && item.id == id)?;
+        item.starred = !item.starred;
+        Some(item.starred)
+    }
+
+    pub(crate) fn set_mined_saved(&mut self, saved_id: i64) {
+        for item in self.items.iter_mut().filter(|item| item.saved_id == Some(saved_id)) {
+            item.mined = true;
+        }
+    }
+
+    pub(crate) fn set_star_saved(&mut self, saved_id: i64, starred: bool) {
+        for item in self.items.iter_mut().filter(|item| item.saved_id == Some(saved_id)) {
+            item.starred = starred;
+        }
+    }
+
+    pub(crate) fn saved_id_of(&self, id: u64) -> Option<i64> {
+        self.items.iter().rev().find(|item| item.live && item.id == id).and_then(|item| item.saved_id)
+    }
+
+    /// Lines saved in an earlier run, shown before anything new.
+    pub(crate) fn restore(&mut self, lines: Vec<HistoryItem>) {
+        for line in lines.into_iter().rev() {
+            if self.items.len() >= self.cap {
+                break;
+            }
+            self.items.push_front(line);
+        }
     }
 }
 

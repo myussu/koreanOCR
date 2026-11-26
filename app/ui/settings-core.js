@@ -29,6 +29,7 @@ export const SECTIONS = [
       { path: 'hotkeys.launcher', label: 'Floating controls on/off', help: 'Quick controls above a borderless game', type: 'keys' },
       { path: 'hotkeys.reading_again', label: 'Read saved area again', help: 'Reads the selected area for this game; leave empty for the floating button only', type: 'keys' },
       { path: 'hotkeys.wheel', label: 'Controls wheel', help: 'Opens at the pointer and takes focus; use the mouse or arrows, Enter and Esc in borderless games', type: 'keys' },
+      { path: 'hotkeys.star', label: 'Star the live subtitle line', help: 'Marks the line on screen to study later (History → Starred); the game keeps focus. Press again to take the star off', type: 'keys' },
     ],
   },
   {

@@ -1,6 +1,6 @@
 import { invoke, listen, mockCommands, inTauri } from './bridge.js';
 import { ankiWordCounts } from './anki.js';
-import { latencyText, liveHistory } from './live-core.js';
+import { canStar, historyRows, latencyText, liveHistory } from './live-core.js';
 import { settingsView } from './settings.js';
 import { resourcesView } from './resources.js';
 import { readingView } from './reading.js';
@@ -96,16 +96,18 @@ async function ankiReview(s) {
 }
 
 // ───────────── history ─────────────
-let historyMode = 'all'; // 'all' (newest first) or 'live' (subtitles, in the order they were said)
+let historyMode = 'all'; // 'all' (newest first), 'live' (subtitles, in the order they were said) or 'starred'
 
 async function history() {
-  const all = await invoke('history');
+  const [all, starred] = await Promise.all([invoke('history'), invoke('history_starred').catch(() => [])]);
   const live = liveHistory(all);
-  const items = historyMode === 'live' ? live : [...all].reverse();
+  const items = historyRows(historyMode, all, starred);
   const chip = (mode, label) => h('button', { class: 'chip', 'aria-pressed': String(historyMode === mode), text: label, onclick: () => { historyMode = mode; show('history'); } });
-  const bar = h('div', { class: 'chips' }, chip('all', 'Everything'), chip('live', `Live subtitles (${live.length})`));
+  const bar = h('div', { class: 'chips' }, chip('all', 'Everything'), chip('live', `Live subtitles (${live.length})`), chip('starred', `★ Starred (${starred.length})`));
   if (!items.length) {
-    const msg = historyMode === 'live' ? 'Live subtitles you have watched will appear here, in order, so you can read them after a cutscene.' : 'Lines you translate will appear here — handy for subtitles that disappear before you finish reading.';
+    const msg = historyMode === 'starred'
+      ? 'Lines you star while playing appear here to study later. Star the live subtitle on screen with its shortcut (Settings → Shortcuts) or the wheel\'s "Star this line", or click ☆ next to a live line below.'
+      : historyMode === 'live' ? 'Live subtitles you have watched will appear here, in order, so you can read them after a cutscene.' : 'Lines you translate will appear here — handy for subtitles that disappear before you finish reading.';
     return [bar, h('p', { class: 'center', text: msg })];
   }
   const row = (i) =>
@@ -133,7 +135,7 @@ async function status() {
     h('h4', { text: 'Components' }),
     h('table', {}, row('Reviews', s.anki ? 'in Anki' : 'in Maru'), row('Language model', s.llm), row('Korean analyser', s.analyser), row('Dictionary', s.dictionary ? 'installed' : 'not installed (maru dict download)'), row('OCR', s.ocr ? 'ready' : 'not available (maru setup ocr)')),
     h('h4', { text: 'Shortcuts' }),
-    h('table', {}, row('Translate selection', h('kbd', { text: k.translate })), row('Pick a region', h('kbd', { text: k.region })), row('Hover mode', h('kbd', { text: k.hover })), row('Continuous mode', h('kbd', { text: k.continuous })), row('Continuous: choose area', h('kbd', { text: k.continuous_area })), row('Label all Korean text on screen', h('kbd', { text: k.scan })), row('Translate and read aloud', h('kbd', { text: k.speak })), row('History', h('kbd', { text: k.history })), row('Dismiss panel', h('kbd', { text: k.dismiss }))),
+    h('table', {}, row('Translate selection', h('kbd', { text: k.translate })), row('Pick a region', h('kbd', { text: k.region })), row('Hover mode', h('kbd', { text: k.hover })), row('Continuous mode', h('kbd', { text: k.continuous })), row('Continuous: choose area', h('kbd', { text: k.continuous_area })), row('Label all Korean text on screen', h('kbd', { text: k.scan })), row('Translate and read aloud', h('kbd', { text: k.speak })), row('History', h('kbd', { text: k.history })), row('Star the live subtitle line', h('kbd', { text: k.star || '—' })), row('Dismiss panel', h('kbd', { text: k.dismiss }))),
     h('h4', { text: 'Notes' }),
     s.notes.map((n) => h('p', { class: 'status', text: n })),
   ];
@@ -168,6 +170,7 @@ if (!inTauri) {
   let mockPending = [];
   let mockDiscoveryId=0;
   const mockDiscoveries=new Map();
+  const demoStars=new Set([11]);
   mockCommands({
     get_settings: () => ({ values: mockValues, defaults: mockDefaults, path: 'C:\\Users\\you\\AppData\\Roaming\\maru\\Maru\\config\\config.toml', pending_restart: mockPending, lite_from_env: false, live_models:[{model:'hy_mt2',path:'D:/models/Hy-MT2-7B-Q4_K_M.gguf'},{model:'milmmt',path:'D:/models/MiLMMT-46-4B-v1.0.Q6_K.gguf'},{model:'hy_mt2_small',path:'D:/models/Hy-MT2-1.8B-Q4_K_M.gguf'},{model:'lfm',path:'D:/models/lfm2-koen-Q5_K_M.gguf'}] }),
     save_settings: ({ changes }) => {
@@ -204,7 +207,7 @@ if (!inTauri) {
     review_word: () => ({}),
     history: () => [{ id: 1, at: 1760000000, source: '저는 학교에서 공부했어요', translation: 'I studied at school.', direction: 'ko_to_en', app: 'chrome.exe', live: false, first_ms: null, total_ms: null }, { id: 2, at: 1760000030, source: '다시는 못 볼 줄 알았어요', translation: 'I thought I would never see you again.', direction: 'ko_to_en', app: 'game.exe', live: true, first_ms: 820, total_ms: 1410 }, { id: 3, at: 1760000034, source: '저도요', translation: 'Me too.', direction: 'ko_to_en', app: 'game.exe', live: true, first_ms: 610, total_ms: 790 }],
     history_open: () => {},
-    status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'ready', analyser: 'kiwi', ocr: true, dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, anki: false, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'ready', tts: 'off', tts_source: '' }),
+    status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'ready', analyser: 'kiwi', ocr: true, dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape', star: 'Ctrl+Alt+B' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, anki: false, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'ready', tts: 'off', tts_source: '' }),
   });
 }
 show(tab);

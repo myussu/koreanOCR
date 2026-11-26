@@ -296,6 +296,7 @@ pub async fn launcher_action(app: AppHandle, state: State<'_, Arc<AppState>>, ac
             crate::scan_controls::set_join_mode(&app, &state, id, enabled)?;
         },
         "speak" => flow::speak_selection(app, state.inner().clone()),
+        "star_line" => flow::star_live_line(&app, state.inner()),
         "reading" => {
             state.engine().reading_context();
             windows::open_hub(&app, "reading").map_err(|e| e.to_string())?;

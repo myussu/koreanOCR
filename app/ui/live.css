@@ -25,4 +25,11 @@ html, body {
   transition: opacity 0.09s ease-out;
 }
 #band.on { opacity: 1; }
+/* A starred line: a gold star before the translation, with a short pulse as the confirmation. */
+#band.starred::before { content: "★ "; color: #ffd36b; }
+#band.pulse { animation: star-pulse 0.6s ease-out; }
+@keyframes star-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(255, 211, 107, 0.9), 0 2px 10px rgba(0, 0, 0, 0.45); }
+  100% { box-shadow: 0 0 0 14px rgba(255, 211, 107, 0), 0 2px 10px rgba(0, 0, 0, 0.45); }
+}
 #band.leaving { transition-duration: 0.15s; }

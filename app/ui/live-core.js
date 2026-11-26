@@ -84,12 +84,17 @@ export function clampCenter(center, width, winW) {
  *   cleared(id)    the original line `id` is gone
  * Both return `{ show: payload | null, hideIn: ms | null, cancelHide: bool }`.
  */
+/** How long a starred line that has already left the screen comes back to show its star. */
+export const STAR_REMINDER_MS = 1200;
+
 export function createBand() {
   let current = 0;
   let done = false;
   let linger = 1500;
   let clearedUpTo = 0;
-  const act = (over = {}) => ({ show: null, hideIn: null, cancelHide: false, ...over });
+  let last = null;
+  let starred = 0;
+  const act = (over = {}) => ({ show: null, hideIn: null, cancelHide: false, star: null, ...over });
   const maybeHide = () => (done && clearedUpTo >= current ? act({ hideIn: linger }) : act());
   return {
     line(p) {
@@ -97,8 +102,16 @@ export function createBand() {
       current = p.id;
       done = !!p.done;
       linger = p.linger_ms ?? linger;
+      last = p;
       const hide = maybeHide();
-      return act({ show: p, cancelHide: hide.hideIn == null, hideIn: hide.hideIn });
+      return act({ show: p, cancelHide: hide.hideIn == null, hideIn: hide.hideIn, star: starred === p.id });
+    },
+    /** The line `id` was starred (or not): mark the band, and bring a line that has already gone back for a moment. */
+    star(id, on) {
+      if (id !== current || !last) return act();
+      starred = on ? id : 0;
+      const gone = done && clearedUpTo >= current;
+      return gone ? act({ show: last, cancelHide: true, hideIn: STAR_REMINDER_MS, star: on }) : act({ star: on });
     },
     cleared(id) {
       clearedUpTo = Math.max(clearedUpTo, id);
@@ -108,7 +121,9 @@ export function createBand() {
       current = 0;
       done = false;
       clearedUpTo = 0;
-      return act({ cancelHide: true });
+      last = null;
+      starred = 0;
+      return act({ cancelHide: true, star: false });
     },
   };
 }
@@ -122,3 +137,13 @@ export function latencyText(item) {
 
 /** Capture ids keep live history in dialogue order even when answers finish out of order. */
 export const liveHistory = (items) => items.filter((i) => i.live).sort((a, b) => a.id - b.id);
+
+/** The rows of a History view: everything newest first, live lines in the order they were said, or every starred line
+ *  (oldest first, including those that have left the recent history). */
+export function historyRows(mode, all, starred = []) {
+  if (mode === 'starred') return starred;
+  return mode === 'live' ? liveHistory(all) : [...all].reverse();
+}
+
+/** Only a live line saved on this PC can carry a star. */
+export const canStar = (item) => !!item.live && item.saved_id != null;

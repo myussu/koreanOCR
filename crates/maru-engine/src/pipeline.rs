@@ -571,13 +571,13 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     remember_live_turn(&inner, id, &text, &translation);
     lock(&inner.live_recent).remember(id, &app_exe, &text, &translation, Instant::now());
     lock(&inner.memory).push(&app_exe, &text, &translation, Instant::now());
-    lock(&inner.history).push(HistoryItem {
+    crate::history_store::record(&inner, HistoryItem {
         live: true,
         first_ms: Some(first_ms),
         total_ms: Some(total_ms),
         appeared_at: Some(now_secs().saturating_sub(i64::from(total_ms / 1000))),
         ..HistoryItem::new(id, now_secs(), text, translation, Direction::KoToEn, capture.app.as_ref().map(|a| a.exe.clone()))
-    });
+    }, replaces);
     em.timing(Stage::Total, appeared);
     em.done();
 }

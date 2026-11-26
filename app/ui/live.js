@@ -9,6 +9,8 @@ const state = createBand();
 let hideTimer = 0;
 /** The side chosen for the line being shown: it stays put while the translation streams in, so the band does not jump. */
 let chosen = { id: 0, side: 'above' };
+/** The line on the band, to place it again when a star widens it. */
+let shown = null;
 
 function place(p) {
   const dpr = window.devicePixelRatio || 1;
@@ -47,11 +49,20 @@ function place(p) {
 }
 
 function run(result) {
+  if (result.star != null) {
+    band.classList.toggle('starred', result.star);
+    // Restart the pulse so a second star on the same line still shows.
+    band.classList.remove('pulse');
+    if (result.star) { void band.offsetWidth; band.classList.add('pulse'); }
+    // The star makes the band wider: centre it on the original again.
+    if (!result.show && shown) place(shown);
+  }
   if (result.cancelHide) {
     clearTimeout(hideTimer);
     band.classList.remove('leaving');
   }
   if (result.show) {
+    shown = result.show;
     place(result.show);
     band.classList.add('on');
   }
@@ -68,6 +79,7 @@ function run(result) {
 
 listen('maru-live', (p) => run(state.line(p)));
 listen('maru-live-clear', (id) => run(state.cleared(Number(id) || 0)));
+listen('maru-live-star', (p) => run(state.star(Number(p.id) || 0, !!p.starred)));
 listen('maru-live-off', () => {
   run(state.off());
   band.classList.remove('on', 'leaving');
@@ -95,4 +107,6 @@ if (!inTauri && new URLSearchParams(location.search).has('demo')) {
   document.body.append(original);
   const text = name === 'long' ? 'I thought I would never see you again, not after everything that happened between us in the village, and yet here you are standing in front of me.' : 'I thought I would never see you again.';
   emitMock('maru-live', { id: 1, text, done: true, cover, line_h: 34, source_chars: 13, prefer_above: spot.prefer_above, linger_ms: 99999 });
+  // `?demo=star` shows the band of a starred line.
+  if (name === 'star') emitMock('maru-live-star', { id: 1, starred: true });
 }

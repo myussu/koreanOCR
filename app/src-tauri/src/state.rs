@@ -63,6 +63,8 @@ pub struct AppState {
     pub live_region: Mutex<Option<Rect>>,
     /// The id of the newest live line: the band shows only that one (older lines still reach the history).
     pub live_latest: std::sync::atomic::AtomicU64,
+    /// The id of the live line the band last drew: the one a star is meant for (junk readings are never drawn).
+    pub live_shown: std::sync::atomic::AtomicU64,
     /// A failed live translation has already been reported this session.
     pub live_error_shown: AtomicBool,
     pub scan: Mutex<ScanState>,

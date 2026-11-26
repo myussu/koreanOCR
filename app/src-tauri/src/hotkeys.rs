@@ -20,6 +20,7 @@ enum Action {
     Launcher,
     ReadingAgain,
     Wheel,
+    Star,
 }
 
 /// One action may have several keys: `"Ctrl+Alt+T | F6"` (a comma followed by a space also works;
@@ -57,6 +58,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
         (keys.launcher, Action::Launcher),
         (keys.reading_again, Action::ReadingAgain),
         (keys.wheel, Action::Wheel),
+        (keys.star, Action::Star),
     ];
     let mut problems = Vec::new();
     for (text, action) in table.into_iter().flat_map(|(text, action)| alternatives(&text).into_iter().map(move |t| (t, action))) {
@@ -92,6 +94,7 @@ pub fn register(app: &AppHandle, state: &Arc<AppState>) -> Vec<String> {
                 Action::Launcher => crate::launcher::toggle(&app),
                 Action::ReadingAgain => crate::reading::hotkey(app, state),
                 Action::Wheel => crate::wheel::hotkey(app, state),
+                Action::Star => flow::star_live_line(&app, &state),
             }});
         });
         if let Err(e) = result {

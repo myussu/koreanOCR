@@ -1675,6 +1675,100 @@ async fn a_subtitle_misread_while_it_stays_on_screen_costs_one_request_and_one_e
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_live_history_is_saved_and_shown_again_after_a_restart() {
+    let path = std::env::temp_dir().join(format!("maru-live-history-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    {
+        let h = harness().await;
+        h.engine.open_history(&path).unwrap();
+        collect(h.engine.translate_live(live_line("저는 학교에서")).1).await;
+        collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+        collect(h.engine.translate(Capture::typed("다른 문장이에요")).1).await;
+    }
+    let h = harness().await;
+    h.engine.open_history(&path).unwrap();
+    let history = h.engine.history();
+    assert_eq!(history.len(), 1, "live lines only, and the fuller reading took over the saved row: {history:?}");
+    assert!(history[0].live && history[0].source == SENTENCE && history[0].translation == "I studied at school.");
+    let _ = std::fs::remove_file(path);
+}
+
+fn starred_sources(h: &Harness) -> Vec<String> {
+    h.engine.history().into_iter().filter(|i| i.starred).map(|i| i.source).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_line_on_screen_is_starred_and_starring_it_again_takes_the_star_off() {
+    let h = harness().await;
+    let (id, rx) = h.engine.translate_live(live_line(SENTENCE));
+    collect(rx).await;
+    let star = h.engine.star_live_line(id).unwrap();
+    assert!(star.starred && star.id == id, "the band gets the line it shows: {star:?}");
+    assert_eq!(starred_sources(&h), [SENTENCE]);
+    assert!(!h.engine.star_live_line(id).unwrap().starred);
+    assert!(starred_sources(&h).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_starred_while_it_is_still_translating_is_starred_when_it_arrives() {
+    let h = harness_with(|path, body| { let mut r = model(path, body); r.delay_ms = 150; r }, |_| {}).await;
+    let (id, rx) = h.engine.translate_live(live_line(SENTENCE));
+    assert!(h.engine.star_live_line(id).unwrap().starred);
+    collect(rx).await;
+    assert_eq!(starred_sources(&h), [SENTENCE]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_star_given_to_a_re_reading_or_a_partial_reading_lands_on_the_line_itself() {
+    let h = harness().await;
+    collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    let (repeat, rx) = h.engine.translate_live(live_line("저는 학교에서공부했어요"));
+    collect(rx).await;
+    assert!(h.engine.star_live_line(repeat).unwrap().starred);
+    assert_eq!(starred_sources(&h), [SENTENCE]);
+
+    let h = harness().await;
+    let (partial, rx) = h.engine.translate_live(live_line("이걸 타면 위로"));
+    collect(rx).await;
+    h.engine.star_live_line(partial).unwrap();
+    collect(h.engine.translate_live(live_line("이걸 타면 위로 갈 수 있어요.")).1).await;
+    assert_eq!(starred_sources(&h), ["이걸 타면 위로 갈 수 있어요."], "the fuller reading keeps the star");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn without_a_line_on_screen_the_newest_live_line_is_starred_and_with_none_it_says_so() {
+    let h = harness().await;
+    assert!(h.engine.star_live_line(0).unwrap_err().to_string().contains("No live subtitle line"));
+    collect(h.engine.translate_live(live_line("저는 학생이에요")).1).await;
+    collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    h.engine.star_live_line(0).unwrap();
+    assert_eq!(starred_sources(&h), [SENTENCE]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn starred_lines_are_kept_after_a_restart_and_can_be_unstarred_from_the_history_page() {
+    let path = std::env::temp_dir().join(format!("maru-stars-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    {
+        let h = harness().await;
+        h.engine.open_history(&path).unwrap();
+        let (id, rx) = h.engine.translate_live(live_line(SENTENCE));
+        collect(rx).await;
+        collect(h.engine.translate_live(live_line("저는 학생이에요")).1).await;
+        h.engine.star_live_line(id).unwrap();
+    }
+    let h = harness().await;
+    h.engine.open_history(&path).unwrap();
+    let starred = h.engine.starred_lines().unwrap();
+    assert_eq!(starred.iter().map(|i| i.source.as_str()).collect::<Vec<_>>(), [SENTENCE]);
+    assert_eq!(starred_sources(&h), [SENTENCE], "the restored history shows the star too");
+    h.engine.set_line_star(starred[0].saved_id.unwrap(), false).unwrap();
+    assert!(h.engine.starred_lines().unwrap().is_empty());
+    assert!(starred_sources(&h).is_empty());
+    let _ = std::fs::remove_file(path);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn earlier_live_lines_reach_the_model_as_chat_turns() {
     let h = harness().await;
     collect(h.engine.translate_live(live_line(SENTENCE)).1).await;

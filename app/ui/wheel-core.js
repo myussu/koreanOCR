@@ -16,7 +16,7 @@ const PAGES = [
     ['continuous_area', 'Subtitle area', '▣', 'Choose the area used by live subtitles.'],
     ['scan_join_mode', 'Join words', '⇄', 'Select screen labels to join into a sentence.'],
     ['scan_refresh', 'Refresh labels', '↻', 'Read and label the screen again.'],
-    ['translate', 'Translate selection', 'A', 'Translate selected text in the current application.'],
+    ['star_line', 'Star this line', '★', 'Mark the live subtitle on screen to study it later in History → Starred.'],
     ['hover', 'Hover lookup', '◎', 'Toggle dictionary lookup under the pointer.'],
     ['speak', 'Read aloud', '♪', 'Translate the current selection and read it aloud.'],
   ],

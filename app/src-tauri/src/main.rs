@@ -68,6 +68,7 @@ pub fn tray_menu(app: &tauri::AppHandle, state: &AppState) -> tauri::Result<Menu
             &item("hover", format!("Toggle hover mode\t{}", keys.hover))?,
             &item("continuous", format!("Toggle live subtitles\t{}", keys.continuous))?,
             &item("continuous_area", format!("Live subtitles: choose area…\t{}", keys.continuous_area))?,
+            &item("star", format!("Star the live subtitle line\t{}", keys.star))?,
             &item("scan", format!("Label all Korean text on screen\t{}", keys.scan))?,
             &item("speak", format!("Translate and read aloud\t{}", keys.speak))?,
             &PredefinedMenuItem::separator(app)?,
@@ -102,6 +103,7 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             "hover" => flow::toggle_hover(&app, &state),
             "continuous" => flow::toggle_continuous(&app, &state),
             "continuous_area" => flow::choose_continuous_area(&app, &state),
+            "star" => flow::star_live_line(&app, &state),
             "scan" => flow::scan_screen(app, state),
             "speak" => flow::speak_selection(app, state),
             "review" => {
@@ -146,7 +148,7 @@ fn main() {
                 tracing::info!("{note}");
             }
             let live_region = Mutex::new(services.engine.config().continuous.region);
-            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region, live_latest: Default::default(), live_error_shown: Default::default(), scan: Mutex::default(), live: std::sync::RwLock::new(booted.clone()), booted });
+            let state = Arc::new(AppState { services: Arc::new(services), panel: Mutex::default(), continuous: Mutex::new(None), live_region, live_latest: Default::default(), live_shown: Default::default(), live_error_shown: Default::default(), scan: Mutex::default(), live: std::sync::RwLock::new(booted.clone()), booted });
             app.manage(input_session::InputState::default());
             app.manage(picker_session::PickerSessionState::default());
             app.manage(reading_feedback::FeedbackState::default());
@@ -233,6 +235,8 @@ fn main() {
             commands::due_words,
             commands::recent_words,
             commands::history,
+            commands::history_star,
+            commands::history_starred,
             commands::status,
             commands::resize_panel,
             commands::dismiss_panel,

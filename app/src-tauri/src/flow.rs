@@ -304,6 +304,7 @@ fn pump_live(app: AppHandle, state: Arc<AppState>, id: u64, mut rx: EventRx, spo
                 return;
             }
             windows::show_live(&app);
+            state.live_shown.store(id, std::sync::atomic::Ordering::Relaxed);
             let band = LiveBand { id, text: text.to_string(), done, cover: spot.cover, line_h: spot.line_h, source_chars: spot.source_chars, prefer_above: spot.prefer_above, linger_ms: state.cfg().continuous.linger_ms };
             let _ = app.emit_to(windows::LIVE, "maru-live", band);
         };
@@ -378,6 +379,25 @@ fn start_continuous(app: AppHandle, state: Arc<AppState>, region: Rect) {
             }
         }
     });
+}
+
+/// Star the live line on screen (the band's last line) without taking focus from the game; the band confirms.
+pub fn star_live_line(app: &AppHandle, state: &Arc<AppState>) {
+    let shown = state.live_shown.load(std::sync::atomic::Ordering::Relaxed);
+    let star = state.engine().star_live_line(shown);
+    tracing::info!(shown, result = ?star, "star the live line");
+    match star {
+        Ok(star) if state.continuous.lock().unwrap_or_else(|p| p.into_inner()).is_some() => {
+            windows::show_live(app);
+            let _ = app.emit_to(windows::LIVE, "maru-live-star", &star);
+        }
+        Ok(star) => notice(app, state, None, "info", if star.starred {
+            "Starred the last live subtitle line. Find it in History → Starred."
+        } else {
+            "Took the star off the last live subtitle line."
+        }),
+        Err(e) => notice(app, state, None, "info", e.to_string()),
+    }
 }
 
 pub fn toggle_continuous(app: &AppHandle, state: &Arc<AppState>) {

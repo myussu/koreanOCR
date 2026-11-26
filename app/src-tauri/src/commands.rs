@@ -93,6 +93,17 @@ pub fn recent_words(state: S, limit: u32) -> Res<Vec<WordStatus>> {
 }
 
 #[tauri::command]
+pub fn history_star(state: S, saved_id: i64, starred: bool) -> Res<()> {
+    state.engine().set_line_star(saved_id, starred).map_err(err)
+}
+
+/// Every starred live line, including those older than the recent history.
+#[tauri::command]
+pub fn history_starred(state: S) -> Res<Vec<HistoryItem>> {
+    state.engine().starred_lines().map_err(err)
+}
+
+#[tauri::command]
 pub fn history(state: S) -> Vec<HistoryItem> {
     state.engine().history()
 }

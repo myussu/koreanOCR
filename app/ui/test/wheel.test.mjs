@@ -13,7 +13,7 @@ test('saved reading actions occupy a single wheel page with an always accessible
 });
 test('a wheel offers every floating action without changing its existing command ID',()=>{
   const ids=WHEEL_PAGES.flatMap((_,page)=>wheelActions(page,status()).map(a=>a.id));
-  for(const id of ['region','translate','scan','scan_join_mode','scan_refresh','continuous','continuous_area','hover','speak','history','settings','resources','status','review','prepare_live','release_models','reading'])assert(ids.includes(id));
+  for(const id of ['region','star_line','scan','scan_join_mode','scan_refresh','continuous','continuous_area','hover','speak','history','settings','resources','status','review','prepare_live','release_models','reading'])assert(ids.includes(id));
   assert.equal(new Set(ids.filter(id=>id!=='next_page')).size,21);
 });
 test('reading toggles display their actual state and hold becomes resume',()=>{
