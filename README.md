@@ -210,8 +210,10 @@ UI bar or a dash (a lone `ㅣ` or `ㅡ`, symbols, or an unsure single syllable) 
 
 **Live subtitles and CPU:** PP-OCR reads the subtitle area on the CPU by default, which in a game with a moving backdrop
 can keep several cores busy. **Settings → Reading the screen → Advanced → Run PP-OCR on → GPU (DirectML)** moves it to
-any DirectX 12 graphics card (measured on an RTX 5070 Ti: 26–32 ms per line instead of about 100 ms, about 80% less CPU);
-if the GPU cannot run it, Maru uses the CPU. To stay on the CPU but leave cores to the game, set **CPU threads for PP-OCR**
+any DirectX 12 graphics card (measured on an RTX 5070 Ti: 26–32 ms per line instead of about 100 ms, about 80% less CPU).
+It needs a build with DirectML: `cargo run --release --features directml` in `app/src-tauri` (not the default, because
+that build step fails with Rust 1.100 and later; see `crates/maru-engine/Cargo.toml`). If the build or the GPU cannot
+run it, Maru uses the CPU. To stay on the CPU but leave cores to the game, set **CPU threads for PP-OCR**
 (`[ocr] threads`, for example 4: about 145 ms per line instead of 105 ms, never more than four cores at once).
 
 For live speed comparisons, **Settings → Live subtitles** has experimental options (save and restart Maru):

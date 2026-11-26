@@ -26,6 +26,10 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
+[features]
+# PP-OCR on any DirectX 12 GPU (`[ocr] device = "directml:0"`); see crates/maru-engine/Cargo.toml for why it is opt-in.
+directml = ["maru-engine/directml"]
+
 [build-dependencies]
 tauri-build = "2"
 

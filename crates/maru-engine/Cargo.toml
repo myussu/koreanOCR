@@ -40,8 +40,11 @@ reqwest.workspace = true
 
 # ONNX Runtime: bundled on Windows (the supported platform), located at run time elsewhere.
 [target.'cfg(windows)'.dependencies]
-# DirectML lets `[ocr] device = "directml:0"` run PP-OCR on any DirectX 12 GPU; the CPU stays the default.
-maru-ocr = { workspace = true, features = ["ort-download", "directml"] }
+# DirectML (`[ocr] device = "directml:0"`, PP-OCR on any DirectX 12 GPU) is the `directml` feature above and is not
+# on by default: with it the ONNX Runtime bindings (ort-sys 2.0.0-rc.13) copy DirectML.dll during the build, and that
+# step fails under the build-folder layout of Rust 1.100 and later. Build with `--features directml` on an older
+# toolchain, or once the bindings are fixed. Without it the setting falls back to the CPU.
+maru-ocr = { workspace = true, features = ["ort-download"] }
 
 [target.'cfg(not(windows))'.dependencies]
 maru-ocr = { workspace = true, features = ["ort-dynamic"] }

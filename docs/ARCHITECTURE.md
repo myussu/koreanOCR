@@ -616,8 +616,11 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
 `maru-ocr::OcrEngine` has PP-OCR (`paddle.rs`), Windows OCR (platform crate) and, in the engine, a vision reader
 (`vlm_ocr.rs`, `vision.rs`: PaddleOCR-VL through its own `llama-server`) combined with PP-OCR by `hybrid_ocr.rs`
 (PP-OCR gives lines and positions, the reader gives better letters; matched by text). `respace.rs` restores dropped spaces.
-Windows builds include ONNX Runtime's DirectML provider (`maru-engine` enables `maru-ocr/directml`): `[ocr] device =
-"directml:0"` runs PP-OCR on any DirectX 12 GPU. It uses Windows' own DirectML when the bundled `DirectML.dll` is absent.
+A Windows build with the `directml` feature (`maru-app`, `maru-cli` and `maru-engine` each forward it to
+`maru-ocr/directml`) includes ONNX Runtime's DirectML provider: `[ocr] device = "directml:0"` runs PP-OCR on any DirectX
+12 GPU. It uses Windows' own DirectML when the bundled `DirectML.dll` is absent. The feature is off by default because
+ort-sys 2.0.0-rc.13 copies `DirectML.dll` at build time assuming the old `target/` layout and fails with Rust 1.100+
+(the Windows CI job caught it); without the feature the setting falls back to the CPU like any device that cannot load.
 `bootstrap::load_paddle` retries on the CPU when the configured device cannot load. `[ocr] threads` (0 = all cores) caps
 ONNX Runtime's intra-op threads (`paddle::session_config`). Measured and checked by ignored tests in `maru-ocr`
 (`real_models.rs`: timing per device/threads) and `remote_model_tests.rs` (engine OCR on DirectML and the CPU fallback).
