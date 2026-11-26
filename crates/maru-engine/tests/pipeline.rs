@@ -1466,7 +1466,7 @@ async fn a_mined_word_card_shows_this_line_and_the_chosen_meaning_and_the_line_b
     // A newer sentence for the word must not take the place of the line being mined.
     let later = maru_srs::now_secs() + 100;
     h.vocab.record_lookup(&maru_srs::LookupInfo { key: "학교".into(), surface: "학교".into(), context: Some(maru_srs::Context { sentence: "학교에 가요".into(), ..Default::default() }), ..Default::default() }, later).unwrap();
-    let line = MineLine { sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: Some("game.exe".into()), deck: "Korean::Games".into(), reverse: maru_core::config::ReverseMode::Subdeck };
+    let line = MineLine { sentence_deck: None, sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: Some("game.exe".into()), deck: "Korean::Games".into(), reverse: maru_core::config::ReverseMode::Subdeck };
     let choice = MineChoice { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), level: Some("TOPIK 1".into()), meaning: "school (where I studied)".into(), meaning_es: String::new() };
     let permit = h.engine.begin_mine_word(&line, &choice).await.unwrap();
     assert!(matches!(h.engine.finish_mine_word(permit, &line, &choice, None, None).await.unwrap(), AnkiAdded::Added { .. }));
@@ -1490,7 +1490,7 @@ async fn a_mined_word_card_shows_this_line_and_the_chosen_meaning_and_the_line_b
 async fn a_word_without_a_meaning_is_refused_before_anything_reaches_anki() {
     use maru_engine::mining::{MineChoice, MineLine};
     let h = mining_harness(spawn_mock(ankiconnect).await);
-    let line = MineLine { sentence: SENTENCE.into(), translation: String::new(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
+    let line = MineLine { sentence_deck: None, sentence: SENTENCE.into(), translation: String::new(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
     let choice = MineChoice { key: "공부하다".into(), surface: "공부했어요".into(), pos: String::new(), level: None, meaning: "  ".into(), meaning_es: String::new() };
     let err = h.engine.begin_mine_word(&line, &choice).await.err().expect("refused").to_string();
     assert!(err.contains("needs a meaning"), "{err}");
@@ -1594,6 +1594,7 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
     cfg.learning.anki.enabled = true;
     cfg.learning.anki.note_type = "Basic".into(); // an old config: it is replaced by our own note type
     cfg.learning.anki.url = anki.url.clone();
+    cfg.learning.anki.suggest_app_decks = true; // decks per program are an option now; off by default
     let h = build(cfg, None, None);
     h.vocab.record_lookup(&maru_srs::LookupInfo { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), meaning: Some("school".into()), level: Some("TOPIK 1".into()), context: None }, 100).unwrap();
 
@@ -1601,7 +1602,7 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
     assert!(before.connected && before.existing.is_none());
     assert_eq!(before.suggestions.first().map(|s| s.deck.as_str()), Some("Korean::Hades"), "named after the program the first time");
     assert!(before.suggestions.iter().any(|s| s.deck == "Korean" && s.exists));
-    assert!(before.tags.contains(&"app::hades".to_string()) && before.tags.contains(&"topik-1".to_string()), "{:?}", before.tags);
+    assert!(before.tags.contains(&"maru::hades".to_string()) && before.tags.contains(&"topik-1".to_string()), "{:?}", before.tags);
 
     let opts = AnkiAddOptions { meaning_es: None, context: None, key: "학교".into(), deck: " Korean :: Games ".into(), tags: before.tags.clone(), reverse: before.reverse, app: Some("hades.exe".into()), word_audio: None, sentence_audio: None };
     let added = h.engine.anki_add(opts).await.unwrap();
@@ -2162,7 +2163,7 @@ async fn a_sense_number_the_word_does_not_have_or_no_model_at_all_leaves_the_fir
 async fn a_card_made_from_the_sheet_carries_the_spanish_meaning_and_the_sentence_card_lists_both() {
     use maru_engine::mining::{MineChoice, MineLine};
     let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
-    let line = MineLine { sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
+    let line = MineLine { sentence_deck: None, sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
     let choice = MineChoice { key: "저".into(), surface: "저는".into(), pos: "pronoun".into(), level: None, meaning: "I; me".into(), meaning_es: " yo ".into() };
     let permit = h.engine.begin_mine_word(&line, &choice).await.unwrap();
     h.engine.finish_mine_word(permit, &line, &choice, None, None).await.unwrap();
@@ -2424,4 +2425,127 @@ async fn the_test_button_reports_a_working_connection_one_out_of_quota_and_one_t
     let status = h.engine.test_task(Task::CardMeanings).await;
     assert_eq!(status.state, State::NotLoaded);
     assert!(local.requests.lock().unwrap().is_empty());
+}
+
+// ───────────── Make cards: two decks, the program as a tag, the queue, Spanish from the panel ─────────────
+
+/// AnkiConnect with new cards already waiting: 12 in the word deck, 5 in the sentence deck.
+fn anki_with_queues(path: &str, body: &str) -> MockResponse {
+    let req: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    if req["action"] == "findCards" {
+        // The client escapes the colons of a deck name for Anki's search.
+        let query = req["params"]["query"].as_str().unwrap_or_default().replace('\\', "");
+        let waiting = if query.contains("is:new") && query.contains("deck:Korean::Words") { 12 } else if query.contains("is:new") && query.contains("deck:Korean::Sentences") { 5 } else { 0 };
+        let cards: Vec<u64> = (0..waiting).collect();
+        return MockResponse { status: 200, chunks: vec![serde_json::json!({ "result": cards, "error": null }).to_string().into_bytes()], delay_ms: 0 };
+    }
+    ankiconnect(path, body)
+}
+
+async fn two_deck_harness(handler: impl Fn(&str, &str) -> MockResponse + Send + Sync + 'static) -> Harness {
+    let server = spawn_mock(handler).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    cfg.learning.anki.sync_after_add = false;
+    cfg.learning.anki.deck = "Korean::Words".into();
+    cfg.learning.anki.sentence_deck = "Korean::Sentences".into();
+    cfg.learning.anki.reverse = maru_core::config::ReverseMode::Off;
+    with_learners_dictionary(build(cfg, None, Some(server)))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sheet_names_a_deck_for_words_and_one_for_sentences_and_counts_the_new_cards_waiting_in_each() {
+    let h = two_deck_harness(anki_with_queues).await;
+    let sheet = h.engine.mine_sheet("학교에서 공부했어요", "I studied at school.", Some("eldenring.exe")).await.unwrap();
+    assert_eq!((sheet.word_deck.as_str(), sheet.sentence_deck.as_str()), ("Korean::Words", "Korean::Sentences"));
+    let queue = sheet.queue.expect("Anki answered, so the queue is known");
+    assert_eq!((queue.words.deck.as_str(), queue.words.waiting, queue.words.per_day), ("Korean::Words", 12, 3));
+    assert_eq!((queue.sentences.deck.as_str(), queue.sentences.waiting, queue.sentences.per_day), ("Korean::Sentences", 5, 1));
+    assert_eq!(maru_engine::mining::comes_up(queue.words.waiting, 2, queue.words.per_day), Some((4, 4)), "two words behind twelve at three a day");
+    assert_eq!(maru_engine::mining::comes_up(queue.sentences.waiting, 1, queue.sentences.per_day), Some((5, 5)));
+
+    // The program is not a deck any more: the configured deck comes first and nothing is named after the game.
+    assert_eq!(sheet.suggestions.first().map(|s| s.deck.as_str()), Some("Korean::Words"));
+    assert!(sheet.suggestions.iter().all(|s| !s.deck.contains("Eldenring")), "{:?}", sheet.suggestions);
+
+    // Only reads: the count is a search, and no deck, note or card was created or changed for it.
+    let actions: Vec<String> = h.requests().iter().filter_map(|b| serde_json::from_str::<serde_json::Value>(b).ok()).filter_map(|v| v["action"].as_str().map(str::to_owned)).collect();
+    assert!(actions.iter().all(|a| ["version", "deckNames", "findNotes", "findCards", "notesInfo", "cardsInfo", "modelNames", "modelFieldNames", "modelStyling"].contains(&a.as_str())), "{actions:?}");
+    let searches: Vec<String> = h.requests().iter().filter(|b| b.contains("is:new")).cloned().collect();
+    assert!(searches.iter().all(|b| b.contains("-is:suspended")), "suspended cards do not wait: {searches:?}");
+
+    // With an empty sentence deck, sentences go where words go.
+    let server = spawn_mock(anki_with_queues).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    cfg.learning.anki.deck = "Korean::Words".into();
+    let sheet = build(cfg, None, Some(server)).engine.mine_sheet("학교에서 공부했어요", "", None).await.unwrap();
+    assert_eq!(sheet.sentence_deck, "Korean::Words");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn word_cards_and_the_sentence_card_go_to_their_own_decks_and_the_program_is_a_tag() {
+    use maru_engine::mining::{MineChoice, MineLine, MinedSentence};
+    let h = two_deck_harness(ankiconnect).await;
+    let line = MineLine { sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: Some("eldenring.exe".into()), deck: "Korean::Words".into(), reverse: maru_core::config::ReverseMode::Off, sentence_deck: Some("Korean::Sentences".into()) };
+    let word = MineChoice { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), level: None, meaning: "school".into(), meaning_es: "escuela".into() };
+    let permit = h.engine.begin_mine_word(&line, &word).await.unwrap();
+    h.engine.finish_mine_word(permit, &line, &word, None, None).await.unwrap();
+    assert_eq!(h.engine.mine_sentence(&line, std::slice::from_ref(&word), None).await.unwrap(), MinedSentence::Added { deck: "Korean::Sentences".into() });
+
+    let notes = added_notes(&h);
+    assert_eq!(notes.len(), 2);
+    let (word_note, sentence_note) = (&notes[0], &notes[1]);
+    assert_eq!(sentence_note["deckName"], "Korean::Sentences");
+    for note in [word_note, sentence_note] {
+        let tags: Vec<&str> = note["tags"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
+        assert!(tags.contains(&"maru::eldenring"), "the program is a tag: {tags:?}");
+        assert!(!tags.iter().any(|t| t.starts_with("app::")), "the older tag is not written any more: {tags:?}");
+        assert!(!note["deckName"].as_str().unwrap_or_default().contains("Eldenring"), "and never a subdeck");
+    }
+    // A line without its own sentence deck keeps the words' deck, as before.
+    let same = MineLine { sentence: "학교에 갑니다".into(), sentence_deck: None, ..line.clone() };
+    assert_eq!(h.engine.mine_sentence(&same, &[], None).await.unwrap(), MinedSentence::Added { deck: "Korean::Words".into() });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn by_default_a_program_is_not_offered_as_a_deck_and_its_tag_is_maru_its_name() {
+    let anki = spawn_mock(ankiconnect).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = anki.url.clone();
+    let h = build(cfg, None, None);
+    h.vocab.record_lookup(&maru_srs::LookupInfo { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), meaning: Some("school".into()), level: Some("TOPIK 1".into()), context: None }, 100).unwrap();
+    let overview = h.engine.anki_overview("학교", Some("hades.exe")).await.unwrap();
+    assert_eq!(overview.suggestions.first().map(|s| (s.deck.as_str(), s.reason.as_str())), Some(("Korean", "your deck for word cards")));
+    assert!(overview.suggestions.iter().all(|s| !s.deck.contains("Hades")), "{:?}", overview.suggestions);
+    assert!(overview.tags.contains(&"maru::hades".to_string()) && !overview.tags.iter().any(|t| t.starts_with("app::")), "{:?}", overview.tags);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_word_with_several_senses_added_from_the_panel_gets_the_spanish_of_the_sense_that_fits_its_sentence() {
+    use maru_engine::anki_flow::AnkiAddOptions;
+    // 저 has two senses; asked with the sentence it was seen in, the connection names the second.
+    let cards = spawn_mock(sense_server("0|2\n")).await;
+    let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("local", &cards.url)], all: vec![route_to("local", &cards.url)], ..Default::default() });
+    let context = maru_srs::Context { sentence: "저 사람은 학생이에요".into(), translation: Some("That person is a student.".into()), app: None, screenshot: None };
+    h.vocab.record_lookup(&maru_srs::LookupInfo { key: "저".into(), surface: "저".into(), pos: "pronoun".into(), meaning: Some("that".into()), level: None, context: Some(context) }, 100).unwrap();
+    let opts = AnkiAddOptions { meaning_es: None, context: None, key: "저".into(), deck: "Korean".into(), tags: vec![], reverse: maru_core::config::ReverseMode::Off, app: None, word_audio: None, sentence_audio: None };
+    h.engine.anki_add(opts.clone()).await.unwrap();
+    let note = added_notes(&h).pop().unwrap();
+    assert_eq!(note["fields"]["MeaningEs"], "ese; aquel", "the sense chosen for the sentence, not the first one");
+    let asked = cards.requests.lock().unwrap().iter().map(|(_, b)| b.clone()).collect::<Vec<_>>();
+    assert_eq!(asked.len(), 1, "one short request");
+    assert!(asked[0].contains("저 사람은 학생이에요") && asked[0].contains("1) I; me") && asked[0].contains("2) that"), "{}", asked[0]);
+
+    // Nobody can choose (the connection is off): the Spanish stays empty rather than guessing the first sense.
+    let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("NAS", NOWHERE)], ..Default::default() });
+    let context = maru_srs::Context { sentence: "저 사람은 학생이에요".into(), translation: None, app: None, screenshot: None };
+    h.vocab.record_lookup(&maru_srs::LookupInfo { key: "저".into(), surface: "저".into(), pos: "pronoun".into(), meaning: Some("that".into()), level: None, context: Some(context) }, 100).unwrap();
+    h.engine.anki_add(opts).await.unwrap();
+    assert_eq!(added_notes(&h).pop().unwrap()["fields"]["MeaningEs"], "");
 }

@@ -191,13 +191,37 @@ impl Engine {
         self.inner.nikl.get().map(|_| CREDIT)
     }
 
-    /// The Spanish meaning of a word that has exactly one dictionary sense (so no model is needed to pick it).
-    pub(crate) fn only_sense_es(&self, key: &str, pos_label: &str) -> Option<String> {
+    /// The Spanish meaning of a word added from the panel. One dictionary sense: that one. Several senses and a
+    /// sentence it was seen in: the card-meanings connection (then this PC's model) names the sense that fits, as
+    /// on the cards sheet. `None` when the dictionary lacks the word or nobody could choose: the field stays empty
+    /// rather than guessing.
+    pub(crate) async fn sense_es_in(&self, key: &str, surface: &str, pos_label: &str, sentence: Option<&str>) -> Option<String> {
         let senses = self.inner.nikl.get()?.senses(key, pos_of(pos_label)).ok()?;
-        match senses.as_slice() {
-            [only] if !only.es.trim().is_empty() => Some(only.es.clone()),
-            _ => None,
+        let es_of = |s: &maru_dict::NiklSense| Some(s.es.clone()).filter(|es| !es.trim().is_empty());
+        if let [only] = senses.as_slice() {
+            return es_of(only);
         }
+        let sentence = sentence.map(str::trim).filter(|s| !s.is_empty())?;
+        let routes = self.inner.routes();
+        if senses.is_empty() || routes.card_meanings.is_empty() {
+            return None;
+        }
+        let word = SenseWord {
+            index: 0,
+            surface: if surface.trim().is_empty() { key.to_string() } else { surface.to_string() },
+            lemma: key.to_string(),
+            senses: senses.iter().take(MAX_SENSES).map(|s| SenseOption { en: s.en.clone(), definition: s.en_definition.clone() }).collect(),
+        };
+        let words = [word];
+        let request = SenseRequest { sentence, words: &words };
+        let request = &request;
+        let outcome = crate::routes::ask_in_order(&self.inner, routes.card_meanings.clone(), |client| async move {
+            let mut chosen = None;
+            client.choose_senses(request, &mut |a| if let SenseAnswer::Sense { sense, .. } = a { chosen = Some(sense) }).await?;
+            Ok(chosen)
+        })
+        .await;
+        outcome.value.and_then(|n| senses.get(n.checked_sub(1)?)).and_then(es_of)
     }
 
     /// The words to learn in a line with their dictionary senses, as the cards sheet finds them (no model).

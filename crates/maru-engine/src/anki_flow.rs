@@ -42,8 +42,9 @@ pub fn app_display_name(exe: &str, profile: Option<&AppProfile>) -> String {
     }
 }
 
-/// Decks to offer, best first: what you chose last time for this program, the deck its profile names,
-/// a deck named after the program, decks used lately, and the default.
+/// Decks to offer, best first. With `per_app` (`learning.anki.suggest_app_decks`): what you chose last time for
+/// this program, the deck its profile names, a deck named after the program, decks used lately, and the default.
+/// Without it the program is only a tag: the default deck comes first, then a profile's deck and decks used lately.
 pub fn suggest_decks(
     base: &str,
     app: Option<&str>,
@@ -51,6 +52,7 @@ pub fn suggest_decks(
     remembered_for_app: Option<&str>,
     recent: &[String],
     existing: &[String],
+    per_app: bool,
 ) -> Vec<DeckSuggestion> {
     let mut out: Vec<DeckSuggestion> = Vec::new();
     let mut offer = |deck: &str, reason: String| {
@@ -62,13 +64,16 @@ pub fn suggest_decks(
         out.push(DeckSuggestion { deck, reason, exists });
     };
     let name = app.map(|a| app_display_name(a, profile)).filter(|n| !n.is_empty());
-    if let (Some(deck), Some(name)) = (remembered_for_app, &name) {
+    if !per_app {
+        offer(base, "your deck for word cards".into());
+    }
+    if let (true, Some(deck), Some(name)) = (per_app, remembered_for_app, &name) {
         offer(deck, format!("what you chose last time in {name}"));
     }
     if let Some(deck) = profile.and_then(|p| p.anki_deck.as_deref()) {
         offer(deck, format!("the deck set for {}", name.as_deref().unwrap_or("this program")));
     }
-    if let Some(name) = &name {
+    if let (true, Some(name)) = (per_app, &name) {
         offer(&format!("{}::{name}", clean_deck(base)), format!("named after {name}"));
     }
     for deck in recent.iter().take(4) {
@@ -97,6 +102,11 @@ pub fn year_month(secs: i64) -> String {
     format!("{year}-{month:02}")
 }
 
+/// The program a card came from, as a tag: `maru::elden-ring`. The program is a tag, not a subdeck.
+pub fn app_tag(name: &str) -> String {
+    format!("maru::{}", slug(name))
+}
+
 /// The tags a word gets: the configured ones, the program's, and (if wanted) what the word is.
 pub fn tags_for(cfg: &AnkiConfig, word: &WordRecord, app: Option<&str>, profile: Option<&AppProfile>, now: i64) -> Vec<String> {
     let mut tags: Vec<String> = cfg.tags.clone();
@@ -111,7 +121,7 @@ pub fn tags_for(cfg: &AnkiConfig, word: &WordRecord, app: Option<&str>, profile:
             tags.push(format!("pos::{}", slug(&word.pos)));
         }
         if let Some(name) = app.map(|a| app_display_name(a, profile)).filter(|n| !n.is_empty()) {
-            tags.push(format!("app::{}", slug(&name)));
+            tags.push(app_tag(&name));
         }
         tags.push(format!("added::{}", year_month(now)));
     }
@@ -213,7 +223,7 @@ impl Engine {
         let base = |decks: &[String], error: Option<String>, existing: Option<ExistingInfo>| AnkiOverview {
             connected: error.is_none(),
             error,
-            suggestions: suggest_decks(&cfg.deck, app, profile, remembered.as_deref(), &recent, decks),
+            suggestions: suggest_decks(&cfg.deck, app, profile, remembered.as_deref(), &recent, decks, cfg.suggest_app_decks),
             decks: decks.to_vec(),
             tags: tags.clone(),
             existing,
@@ -384,7 +394,7 @@ mod tests {
         let existing = vec!["Korean".to_string(), "Korean::Games".to_string()];
         let recent = vec!["Korean::YouTube".to_string(), "Korean::Games".to_string()];
         let p = profile("Elden Ring", Some("Korean::Games::Elden Ring"), &[]);
-        let s = suggest_decks("Korean", Some("eldenring.exe"), Some(&p), Some("Korean::Games"), &recent, &existing);
+        let s = suggest_decks("Korean", Some("eldenring.exe"), Some(&p), Some("Korean::Games"), &recent, &existing, true);
         let names: Vec<&str> = s.iter().map(|x| x.deck.as_str()).collect();
         assert_eq!(names, ["Korean::Games", "Korean::Games::Elden Ring", "Korean::Elden Ring", "Korean::YouTube", "Korean"]);
         assert!(s[0].exists && !s[1].exists, "existing decks are marked, new ones will be created");
@@ -394,9 +404,9 @@ mod tests {
 
     #[test]
     fn with_no_program_it_is_recent_decks_and_the_default() {
-        let s = suggest_decks("Korean", None, None, None, &["korean::book".to_string(), "Korean::Book".to_string()], &[]);
+        let s = suggest_decks("Korean", None, None, None, &["korean::book".to_string(), "Korean::Book".to_string()], &[], true);
         assert_eq!(s.iter().map(|x| x.deck.as_str()).collect::<Vec<_>>(), ["korean::book", "Korean"], "case-insensitive duplicates are dropped");
-        let s = suggest_decks(" Korean:: ", Some("a.exe"), None, None, &[], &[]);
+        let s = suggest_decks(" Korean:: ", Some("a.exe"), None, None, &[], &[], true);
         assert_eq!(s[0].deck, "Korean::A", "stray colons and spaces do not leak into a deck name");
     }
 
@@ -413,7 +423,7 @@ mod tests {
         let cfg = AnkiConfig::default();
         let p = profile("Elden Ring", None, &["game", "from rpg"]);
         let tags = tags_for(&cfg, &word(), Some("eldenring.exe"), Some(&p), 1_760_000_000);
-        assert_eq!(tags, ["maru", "game", "from_rpg", "topik-1", "pos::verb", "app::elden-ring", "added::2025-10"]);
+        assert_eq!(tags, ["maru", "game", "from_rpg", "topik-1", "pos::verb", "maru::elden-ring", "added::2025-10"]);
         let plain = tags_for(&AnkiConfig { auto_tags: false, ..cfg }, &word(), Some("x.exe"), None, 0);
         assert_eq!(plain, ["maru"], "automatic tags can be switched off");
     }

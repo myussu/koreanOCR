@@ -208,7 +208,7 @@ vectors), `anki.rs` (AnkiConnect). Engine side: `anki_flow.rs` (deck suggestions
 `Engine::{save_word, set_known, review_word, due_words…}`. A word is queued for review after the second lookup
 (`auto_save_after_lookups`); words held long enough **fade** from the panel (`known_stability_days`, or Anki's interval
 read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
-* **Commands:** `anki_overview`, `anki_add`, `anki_add_example`, `anki_sync`, `anki_check`, `anki_due`, `save_word`, `set_known`, `review_word`, `due_words`, `recent_words`, `word_contexts`, `mine_sheet`, `mine_add`, `anki_fill_sounds`; History: `history_star`, `history_starred`.
+* **Commands:** `anki_overview`, `anki_add`, `anki_add_example`, `anki_sync`, `anki_check`, `anki_due`, `save_word`, `set_known`, `review_word`, `due_words`, `recent_words`, `word_contexts`, `mine_sheet`, `mine_add`, `mine_queue`, `mine_sentence_translation`, `anki_fill_sounds`; History: `history_star`, `history_starred`.
 * **UI:** `anki.js` (pure rules for the Add-to-Anki popover), `panel.js`, `hub.js` (Review tab), Settings → Anki.
 * **Config:** `[learning]`, `[learning.anki]`, per-program decks/tags in `[[profile]]`.
 * **Tests:** FSRS vectors, `anki.rs` against a fake AnkiConnect, `anki_flow.rs`, `anki.test.mjs`.
@@ -247,6 +247,24 @@ read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
   comparison tools: `Engine::card_words` / `maru dict senses` (a line's words and senses), `maru bench --cards` (each
   connection decides them), `tools/rerank_senses.py` (a CPU reranker instead of a model) and
   `tools/build_card_review.py` (the blind review page and its separate key; `tools/test_card_review.py`).
+* **Two decks, the program as a tag, the queue, and asking again** (run 2). Word cards go to `learning.anki.deck` and the
+  sentence card to `learning.anki.sentence_deck` (empty = the same): `MineSheet::{word_deck, sentence_deck}`,
+  `MineLine::sentence_deck` (absent in older requests = the words' deck), `mine_add`'s `sentence_deck`. The program a card
+  came from is the tag `maru::<program>` (`anki_flow::app_tag`; it was `app::<program>`; cards made before keep theirs)
+  and no longer a suggested deck: `suggest_decks(…, per_app)` puts the configured deck first unless
+  `learning.anki.suggest_app_decks` is on. **Queue:** `AnkiClient::new_cards(deck)` counts, with one search
+  (`"deck:…" is:new -is:suspended`), the new cards waiting in a deck and its subdecks; `Engine::card_queue` returns that
+  for both decks with Maru's own per-day numbers (`new_words_per_day` 3, `new_sentences_per_day` 1: AnkiConnect cannot see
+  a deck's limit overrides, so Anki's limits are neither read nor derived), and `mining::comes_up` / `mine-core.js::comesUp`
+  say in how many days the cards being added would come up (`queueLines`; `mine_queue` recounts when a deck is typed).
+  **Who answered:** the sheet shows `answeredText` and a "Retry with …" button per connection (`retryChoices`, `askFor` →
+  `mine_sheet(…, ask)`; `redraft` keeps ticks, decks and typed meanings), and "Translate again with …" for the sentence
+  (`mine_sentence_translation`). **Spanish from the panel:** `finish_anki_add` calls `Engine::sense_es_in`: one dictionary
+  sense gives its Spanish; several senses and the sentence the word was seen in go to the card-meanings connection (one
+  short `choose_senses` request) and the chosen sense's Spanish is used; nobody answering leaves the field empty.
+  Tests: `tests/pipeline.rs` (`the_sheet_names_a_deck_for_words…`, `word_cards_and_the_sentence_card_go_to_their_own_decks…`,
+  `by_default_a_program_is_not_offered_as_a_deck…`, `a_word_with_several_senses_added_from_the_panel…`), `mining.rs`
+  (`comes_up`), `mine.test.mjs`; real Anki: `maru-engine/tests/real_anki.rs::two_decks_and_the_queue` (M-43).
 * **Sound added later** (`maru-srs/src/anki_sounds.rs`, `Engine::{anki_silent_notes, anki_add_sounds}`, shell
   `mining::anki_fill_sounds`): an add whose speech is off or fails still adds the card and says so (`SOUND_LATER`).
   `silent_notes` searches Anki for Maru notes with an empty `WordAudio`, or an empty `SentenceAudio` beside a filled

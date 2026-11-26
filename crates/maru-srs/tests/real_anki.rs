@@ -16,7 +16,9 @@ use maru_srs::anki_sentence::{SentenceAdded, SentenceRequest, SentenceWord};
 use maru_srs::{AddRequest, Added, AnkiClient, Context, Media, WordRecord, now_secs};
 use serde_json::{Value, json};
 
-const DECK: &str = "Maru test (safe to delete)";
+/// Everything is written under this deck, which the guard confines changes to and the clean-up deletes whole.
+const ROOT: &str = "MaruTest";
+const DECK: &str = "MaruTest::client";
 
 async fn raw(url: &str, action: &str, params: Value) -> Value {
     let reply: Value = reqwest::Client::new()
@@ -94,7 +96,7 @@ async fn word_cards_sentence_cards_and_sounds_added_later_work_in_a_real_anki() 
         panic!("set MARU_REAL_ANKI_PROFILE to the Anki profile this test may write to (it must be the one open in Anki)");
     };
     let anki_url = std::env::var("MARU_ANKI_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
-    let guard = guarded_anki::GuardedAnki::start(&anki_url, &profile, DECK).await;
+    let guard = guarded_anki::GuardedAnki::start(&anki_url, &profile, ROOT).await;
     let url = guard.url.clone();
     let stamp = now_secs();
     let files = [format!("maru_test_{stamp}_w.wav"), format!("maru_test_{stamp}_s.wav"), format!("maru_test_{stamp}_later.wav")];
@@ -103,7 +105,7 @@ async fn word_cards_sentence_cards_and_sounds_added_later_work_in_a_real_anki() 
     // Leave nothing behind, whatever happened above.
     let reply: Value = reqwest::Client::new()
         .post(&url)
-        .json(&json!({ "action": "findNotes", "version": 6, "params": { "query": format!("\"deck:{DECK}\"") } }))
+        .json(&json!({ "action": "findNotes", "version": 6, "params": { "query": format!("\"deck:{ROOT}\"") } }))
         .send()
         .await
         .expect("AnkiConnect answers")
@@ -115,7 +117,7 @@ async fn word_cards_sentence_cards_and_sounds_added_later_work_in_a_real_anki() 
         tidy(&url, "deleteNotes", json!({ "notes": leftovers })).await;
     }
     // Deleting the deck takes its Reverse subdeck with it.
-    tidy(&url, "deleteDecks", json!({ "decks": [DECK], "cardsToo": true })).await;
+    tidy(&url, "deleteDecks", json!({ "decks": [ROOT], "cardsToo": true })).await;
     for f in guard.stored_media() {
         tidy(&url, "deleteMediaFile", json!({ "filename": f })).await;
     }

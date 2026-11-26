@@ -5,7 +5,9 @@
 export function mineDraft(sheet) {
   return {
     translation: sheet.translation ?? '',
-    deck: sheet.suggestions?.[0]?.deck ?? '',
+    // Words and the sentence each have their deck (Settings → Making cards); a sheet from before that has one.
+    deck: sheet.word_deck || (sheet.suggestions?.[0]?.deck ?? ''),
+    sentenceDeck: sheet.sentence_deck || sheet.word_deck || (sheet.suggestions?.[0]?.deck ?? ''),
     reverse: sheet.reverse !== 'off',
     audio: !!sheet.audio,
     sentenceCard: !sheet.sentence_in_anki,
@@ -21,7 +23,8 @@ export const ankiIsOff = (sheet) => /switched off/i.test(sheet.anki_error ?? '')
 /** Why the add button is off, or null when it can be pressed. */
 export function mineBlocker(draft, sheet) {
   if (sheet.anki_error) return /^anki/i.test(sheet.anki_error) ? sheet.anki_error : `Anki: ${sheet.anki_error}`;
-  if (!draft.deck.trim()) return 'Choose a deck.';
+  if (picked(draft).length && !draft.deck.trim()) return 'Choose a deck for the words.';
+  if (draft.sentenceCard && !(draft.sentenceDeck ?? draft.deck).trim()) return 'Choose a deck for the sentence.';
   if (!picked(draft).length && !draft.sentenceCard) return 'Tick a word or the sentence card.';
   const bare = picked(draft).find((w) => !w.meaning.trim());
   if (bare) return `Give “${bare.surface}” a meaning, or untick it.`;
@@ -44,7 +47,8 @@ export function mineRequest(draft, item, sheet) {
     sentence: sheet.sentence,
     translation: draft.translation.trim(),
     app: sheet.app ?? null,
-    deck: draft.deck.trim(),
+    deck: draft.deck.trim() || (draft.sentenceDeck ?? '').trim(),
+    sentence_deck: (draft.sentenceDeck ?? draft.deck).trim(),
     reverse: draft.reverse,
     audio: draft.audio,
     sentence_card: draft.sentenceCard,
@@ -61,6 +65,82 @@ export function meaningHint(word) {
     case 'model': return 'not in the dictionary: the model’s words';
     default: return word.in_context ? 'as used in this line' : 'from the dictionary';
   }
+}
+
+const PLACE = { this_pc: 'this PC', network: 'another computer', hosted: 'a hosted service' };
+const who = (connection) => (connection === 'local' ? "This PC's model" : connection);
+
+/** Who gave the meanings, in one line under the words. */
+export function answeredText(sheet) {
+  const a = sheet.answered;
+  if (a) return `Meanings chosen by ${who(a.connection)} (${a.model}), on ${PLACE[a.place] ?? 'a server'}.`;
+  const asked = (sheet.words ?? []).some((w) => w.source && w.source !== 'one_sense');
+  if (sheet.attempts?.length || asked) return 'No model answered: the dictionary’s first sense is shown where a word has several.';
+  return (sheet.words ?? []).length ? 'No model was needed: each word has one dictionary sense.' : '';
+}
+
+/**
+ * The connections a line can be asked again with. This PC's model, while it would have to load beside live
+ * subtitles, is offered for when they stop instead of now.
+ */
+export function retryChoices(sheet) {
+  return (sheet.retry ?? []).map((r) => ({
+    connection: r.connection,
+    afterLive: !!r.after_live,
+    current: sheet.answered?.connection === r.connection,
+    label: r.after_live ? `Ask ${who(r.connection)} when live subtitles stop` : `Retry with ${r.connection === 'local' ? 'this PC' : r.connection}`,
+    detail: `${r.model} · ${PLACE[r.place] ?? ''}`,
+  }));
+}
+
+/** The `ask` argument of `mine_sheet` for one of those choices. */
+export const askFor = (choice) => ({ connection: choice.connection, after_live: choice.afterLive });
+
+/**
+ * The draft for a sheet that was asked again: the new meanings, with your ticks, decks, translation and options
+ * kept. A meaning you typed yourself is kept too (it differs from what the earlier sheet proposed).
+ */
+export function redraft(oldDraft, oldSheet, newSheet) {
+  const next = mineDraft(newSheet);
+  const before = new Map(oldDraft.words.map((w, i) => [w.key, { draft: w, sheet: oldSheet.words[i] }]));
+  for (const w of next.words) {
+    const old = before.get(w.key);
+    if (!old) continue;
+    w.picked = old.draft.picked;
+    if (old.draft.meaning !== (old.sheet.meaning ?? '')) w.meaning = old.draft.meaning;
+    if (old.draft.meaningEs !== (old.sheet.meaning_es ?? '')) w.meaningEs = old.draft.meaningEs;
+  }
+  return { ...next, translation: oldDraft.translation, deck: oldDraft.deck, sentenceDeck: oldDraft.sentenceDeck, reverse: oldDraft.reverse, audio: oldDraft.audio, sentenceCard: oldDraft.sentenceCard };
+}
+
+const day = (n) => (n === 0 ? 'today' : n === 1 ? 'tomorrow' : `in ${n} days`);
+/** "today", "in 4 days", "in 4 to 5 days", "from today, the last in 3 days". */
+function inDays(first, last) {
+  if (first === last) return day(first);
+  return first >= 2 ? `in ${first} to ${last} days` : `from ${day(first)}, the last ${day(last)}`;
+}
+
+/** Mirrors `mining::comes_up`: the days until the first and the last of `adding` cards behind `waiting` others. */
+export function comesUp(waiting, adding, perDay) {
+  const n = Math.max(1, perDay || 1);
+  return adding > 0 ? [Math.floor(waiting / n), Math.floor((waiting + adding - 1) / n)] : null;
+}
+
+/**
+ * What to say before adding: how many new cards already wait in each deck and when these would come up, at the
+ * per-day numbers set in Maru. A deck typed over since the count was made is left out until it is counted again.
+ */
+export function queueLines(queue, draft) {
+  if (!queue) return [];
+  const sameDeck = (a, b) => String(a ?? '').trim().toLowerCase() === String(b ?? '').trim().toLowerCase();
+  const line = (q, deck, adding, what) => {
+    if (!adding || !sameDeck(q.deck, deck)) return null;
+    const [first, last] = comesUp(q.waiting, adding, q.per_day);
+    const ahead = q.waiting === 0 ? `No new cards wait in ${q.deck}` : `${q.waiting} new card${q.waiting === 1 ? '' : 's'} already wait${q.waiting === 1 ? 's' : ''} in ${q.deck}`;
+    return `${ahead}. At ${q.per_day} a day, ${adding === 1 ? `this ${what}` : `these ${adding} ${what}s`} would come up ${inDays(first, last)}.`;
+  };
+  const words = draft.words.filter((w) => w.picked).length * (draft.reverse ? 2 : 1);
+  return [line(queue.words, draft.deck, words, draft.reverse ? 'card' : 'word'), line(queue.sentences, draft.sentenceDeck ?? draft.deck, draft.sentenceCard ? 1 : 0, 'sentence')].filter(Boolean);
 }
 
 /** A dictionary sense as an option: "ship; boat · barco". */
