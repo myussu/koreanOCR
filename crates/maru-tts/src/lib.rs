@@ -143,11 +143,12 @@ mod tests {
                 let Ok((mut s, _)) = listener.accept() else { return };
                 let mut buf = vec![0u8; 65536];
                 let _ = s.read(&mut buf);
+                // Counted before the answer goes out: the caller may look at the count as soon as it has the audio.
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let wav = wav::encode_pcm16(&vec![0i16; (secs * 24_000.0) as usize], 24_000);
                 let head = format!("HTTP/1.1 200 OK\r\ncontent-type: audio/wav\r\ncontent-length: {}\r\nconnection: close\r\n\r\n", wav.len());
                 let _ = s.write_all(head.as_bytes());
                 let _ = s.write_all(&wav);
-                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             }
         });
         (url, served)
