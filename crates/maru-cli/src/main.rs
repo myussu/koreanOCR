@@ -86,6 +86,10 @@ enum Command {
         /// With --connection: also write the table and every line's result into this folder.
         #[arg(long, value_name = "DIR", requires = "connection")]
         out: Option<PathBuf>,
+        /// With --live --connection: send each line by itself, with no earlier lines as context (how the sentence
+        /// of a card is translated), for comparing whole-sentence translations.
+        #[arg(long, requires = "connection")]
+        alone: bool,
         /// Instead of timing translations: let each --connection decide the card meanings of the lines in this file
         /// (made by `maru dict senses`) and write every decision into --out, for a blind review. `dictionary` as a
         /// connection is the dictionary's first sense with no model.
@@ -536,7 +540,10 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 Ok(0)
             }
         },
-        Command::Bench { file, runs, live, endpoint, model, connection, out, cards } => {
+        Command::Bench { file, runs, live, endpoint, model, connection, out, cards, alone } => {
+            if alone {
+                cfg.continuous.context_lines = 0;
+            }
             if let (Some(tasks), Some(out)) = (&cards, &out) {
                 let targets: Vec<connections::Target> = connection.iter().map(|c| connections::Target::parse(c)).collect();
                 connections::bench_cards(&cfg, &paths, &targets, tasks, out).await?;

@@ -329,7 +329,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
                 em.send(Event::Note { id, text: "Using the live translation model. Word breakdown and dictionary meanings are available offline; richer model analysis is available with a snapshot server or after live subtitles are turned off.".into() });
                 let result = llm.translate_selected_live(inner.cfg.continuous.translation.model, &LiveRequest { text: &text, ctx: &ctx, turns: &[] }, &mut |c| forward(&em, &collected, Side::Source, &first_token, llm_started, c)).await;
                 lock(&collected).translation_complete = result.is_ok();
-                if let Err(e) = result { em.error(Stage::Llm, e.to_string()); }
+                if let Err(e) = result { em.error(Stage::Llm, maru_llm::problem::plain(&e)); }
             } else {
                 let translate_fut = async {
                     let r = llm
@@ -339,7 +339,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
                         .await;
                     lock(&collected).translation_complete = r.is_ok();
                     if let Err(e) = r {
-                        em.error(Stage::Llm, e.to_string());
+                        em.error(Stage::Llm, maru_llm::problem::plain(&e));
                     }
                 };
                 tokio::join!(translate_fut, run_glosses(&llm, &em, &collected, Side::Source, &text, &gloss_list, &ctx));
@@ -380,7 +380,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
                 drop(lock(&primary_tx).take());
                 lock(&collected).translation_complete = r.is_ok();
                 if let Err(e) = r {
-                    em.error(Stage::Llm, e.to_string());
+                    em.error(Stage::Llm, maru_llm::problem::plain(&e));
                 }
             };
             // As soon as the requested register is written, break the Korean down and
@@ -403,7 +403,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
         let first = AtomicBool::new(false);
         let result = client.translate_selected_live(inner.cfg.continuous.translation.model, &LiveRequest { text: &text, ctx: &ctx, turns: &[] }, &mut |c| forward(&em, &collected, Side::Source, &first, started, c)).await;
         lock(&collected).translation_complete = result.is_ok();
-        if let Err(e) = result { em.error(Stage::Llm, e.to_string()); }
+        if let Err(e) = result { em.error(Stage::Llm, maru_llm::problem::plain(&e)); }
     }
     let result = std::mem::take(&mut *lock(&collected));
     if !result.is_shown() {
@@ -549,7 +549,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         };
         lock(&collected).translation_complete = result.is_ok();
         if let Err(e) = result {
-            em.error(Stage::Llm, e.to_string());
+            em.error(Stage::Llm, maru_llm::problem::plain(&e));
         }
         let result = std::mem::take(&mut *lock(&collected));
         let main = result.translations.first().map(|(_, t)| t.clone()).unwrap_or_default();
@@ -706,7 +706,7 @@ pub(crate) async fn deep_dive(inner: Arc<Inner>, id: u64, req: DeepDiveRequest, 
         )
         .await;
     if let Err(err) = result {
-        em.error(Stage::Llm, err.to_string());
+        em.error(Stage::Llm, maru_llm::problem::plain(&err));
     }
     em.timing(Stage::Total, started);
     em.done();

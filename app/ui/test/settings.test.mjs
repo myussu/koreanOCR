@@ -1,36 +1,75 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ANKI, isVisible, SPEECH, SECTIONS, ALL_FIELDS, appliesLive, labelFor, valueAt, toEditor, fromEditor, withEdit, shown, isDefault, withReset, splitKeys, joinKeys, keyName, comboFromEvent, keyRisk } from '../settings-core.js';
+import { SECTIONS, CATEGORIES, FEATURES, ALL_FIELDS, controlKind, isVisible, matchesSetting, appliesLive, labelFor, sectionOf, valueAt, toEditor, fromEditor, withEdit, shown, isDefault, withReset, splitKeys, joinKeys, keyName, comboFromEvent, keyRisk } from '../settings-core.js';
 
 const current = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
 const defaults = { ui: { font_size_px: 18, theme: 'auto' }, learning: { desired_retention: 0.9 }, llm: { model_path: null, parallel: 2 }, hotkeys: { scan: 'Ctrl+Alt+S' } };
+const field = (path) => ALL_FIELDS.find((f) => f.path === path);
 
-test('live OCR and request experiments need a restart and do not edit the general OCR reader', () => {
-  const fields = SECTIONS.find((s) => s.id === 'live').fields;
-  for (const path of ['continuous.cpu_ocr', 'continuous.max_in_flight', 'continuous.filter_ocr_jitter']) {
-    assert.ok(fields.some((f) => f.path === path));
-    assert.equal(appliesLive(path), false);
-  }
-  const edited = withEdit({}, { continuous: { cpu_ocr: false } }, 'continuous.cpu_ocr', true);
-  assert.deepEqual(edited, { 'continuous.cpu_ocr': true });
-  assert.deepEqual(withEdit({}, { continuous: { filter_ocr_jitter: false } }, 'continuous.filter_ocr_jitter', true), { 'continuous.filter_ocr_jitter': true });
+test('the page is organised by flow: an overview, the seven sections asked for, in that order', () => {
+  assert.deepEqual(CATEGORIES.map((c) => c.title), ['Overview', 'Live subtitles', 'Captures', 'Making cards', 'Voice', 'Connections', 'Shortcuts', 'Advanced']);
+  assert.ok(SECTIONS.every((s) => s.fields.length && s.intro));
 });
 
-test('every field has a unique path, a label and a known type', () => {
+test('every setting has a unique path, a plain label, one sentence of help and the features that use it', () => {
   const paths = ALL_FIELDS.map((f) => f.path);
   assert.equal(new Set(paths).size, paths.length);
+  const features = Object.values(FEATURES);
   for (const f of ALL_FIELDS) {
-    assert.ok(f.label && ['toggle', 'select', 'number', 'range', 'percent', 'text', 'password', 'tags', 'keys'].includes(f.type), f.path);
-    if (f.type === 'select') assert.ok(f.options.length >= 2, f.path);
-    if (f.type === 'range' || f.type === 'number' || f.type === 'percent') assert.ok(f.min < f.max && f.step > 0, f.path);
+    assert.ok(f.label && f.help, `${f.path} has a label and help`);
+    assert.ok(f.help.length <= 190 && !/\. [A-Z]/.test(f.help.replace(/e\.g\. |i\.e\. /g, '')), `${f.path}: one sentence of help, not a paragraph: ${f.help}`);
+    assert.ok(f.uses?.length && f.uses.every((u) => features.includes(u)), `${f.path} says which features use it`);
+    assert.ok(['toggle', 'choice', 'route', 'route_optional', 'number', 'percent', 'text', 'password', 'tags', 'keys'].includes(f.type), f.path);
+    if (f.type === 'choice') assert.ok(f.options.length >= 2, f.path);
+    if (f.type === 'number' || f.type === 'percent') assert.ok(f.min < f.max && f.step > 0, f.path);
   }
-  assert.ok(SECTIONS.every((s) => s.fields.length));
 });
 
-test('live settings are the shortcuts and the panel, as in the backend', () => {
-  assert.ok(appliesLive('hotkeys.scan') && appliesLive('ui.theme'));
-  assert.ok(!appliesLive('llm.hf_repo') && !appliesLive('lite') && !appliesLive('learning.gloss_mode'));
-  assert.equal(labelFor('llm.ctx_size'), 'Context per request');
+test('internal names are gone from what the page says', () => {
+  const said = [...SECTIONS.map((s) => `${s.title} ${s.intro}`), ...ALL_FIELDS.map((f) => `${f.label} ${f.help} ${(f.options ?? []).map((o) => `${o.label} ${o.detail ?? ''}`).join(' ')}`)].join('\n');
+  for (const jargon of ['Snapshot quality server', 'real-game trial', 'Gemma / main model', 'main model', 'snapshot server', 'Experimental:', 'endpoint']) {
+    assert.ok(!said.toLowerCase().includes(jargon.toLowerCase()), `"${jargon}" is not shown to the person`);
+  }
+});
+
+test('there are three kinds of control, and a choice is never a drop-down', () => {
+  assert.equal(controlKind(field('learning.gloss_mode')), 'choice');
+  assert.equal(controlKind(field('tasks.live.connection')), 'choice');
+  assert.equal(controlKind(field('tasks.capture.while_live')), 'choice');
+  assert.equal(controlKind(field('ocr.vision_reader')), 'switch');
+  for (const path of ['learning.anki.deck', 'continuous.linger_ms', 'learning.anki.tags', 'hotkeys.scan', 'tts.api_key', 'learning.desired_retention']) assert.equal(controlKind(field(path)), 'typed', path);
+  assert.ok(ALL_FIELDS.every((f) => f.type !== 'select' && f.type !== 'range'));
+  assert.deepEqual([...new Set(ALL_FIELDS.map(controlKind))].sort(), ['choice', 'switch', 'typed']);
+});
+
+test('search finds a setting by its name, by what it does, and by the feature that uses it', () => {
+  const hits = (q) => ALL_FIELDS.filter((f) => matchesSetting(f, q)).map((f) => f.path);
+  assert.ok(hits('screen scan').includes('tasks.capture.connection') && hits('screen scan').includes('hotkeys.scan'), 'by feature name');
+  assert.ok(hits('make cards').includes('tasks.card_meanings.connection') && hits('make cards').includes('learning.anki.deck'));
+  assert.ok(hits('hover').includes('capture.ocr_radius_px'));
+  assert.ok(hits('clipboard').includes('capture.use_clipboard_fallback'), 'by what it does');
+  assert.ok(hits('voice').includes('learning.anki.audio'), 'by its section and what it uses');
+  assert.deepEqual(hits('zzzz'), []);
+  assert.equal(hits('').length, ALL_FIELDS.length);
+});
+
+test('each task picks its connection in the section of that flow, and connections are edited in one place', () => {
+  assert.equal(sectionOf('tasks.live.connection'), 'live');
+  assert.equal(sectionOf('tasks.capture.connection'), 'captures');
+  assert.equal(sectionOf('tasks.capture.while_live'), 'captures');
+  assert.equal(sectionOf('tasks.card_meanings.connection'), 'cards');
+  assert.equal(sectionOf('tasks.card_sentence.connection'), 'cards');
+  assert.equal(SECTIONS.find((s) => s.id === 'connections').custom, 'connections');
+  // An address, model name or key of a server is not a field anywhere: only the connection editor has them.
+  for (const path of ['llm.endpoint', 'llm.model_name', 'llm.api_key', 'llm.provider', 'continuous.translation.snapshot_endpoint', 'continuous.translation.snapshot_api_key', 'continuous.translation.model']) assert.equal(field(path), undefined, path);
+});
+
+test('what applies without a restart matches the backend: shortcuts, the panel, connections and the card tasks', () => {
+  assert.ok(appliesLive('hotkeys.scan') && appliesLive('ui.theme') && appliesLive('llm.servers'));
+  assert.ok(appliesLive('tasks.card_meanings.connection') && appliesLive('tasks.card_sentence.connection'));
+  assert.ok(!appliesLive('tasks.live.connection') && !appliesLive('tasks.capture.connection'), 'these hold models and servers');
+  assert.ok(!appliesLive('llm.hf_repo') && !appliesLive('lite') && !appliesLive('learning.gloss_mode') && !appliesLive('continuous.cpu_ocr'));
+  assert.equal(labelFor('llm.ctx_size'), 'Room per request on this PC');
   assert.equal(labelFor('nope.x'), 'nope.x');
 });
 
@@ -102,41 +141,36 @@ test('warns about keys that would be taken from every program', () => {
   assert.match(keyRisk('T'), /everywhere else/);
 });
 
-test('speech settings: server fields only show for a server, local ones for the local voice', () => {
-  const key = SPEECH.fields.find((f) => f.path === 'tts.api_key');
-  const device = SPEECH.fields.find((f) => f.path === 'tts.device');
-  const cur = { tts: { provider: 'local' } };
-  const def = { tts: { provider: 'local' } };
+test('a setting that only matters for one choice of another shows only then', () => {
+  const key = field('tts.api_key'), device = field('tts.device');
+  const cur = { tts: { provider: 'local' } }, def = { tts: { provider: 'local' } };
   assert.ok(!isVisible(key, {}, cur, def) && isVisible(device, {}, cur, def));
   const draft = { 'tts.provider': 'endpoint' };
   assert.ok(isVisible(key, draft, cur, def) && !isVisible(device, draft, cur, def));
-  assert.ok(isVisible(SPEECH.fields[0], {}, cur, def), 'fields without a condition always show');
-  assert.ok(SECTIONS.includes(SPEECH) && SECTIONS.indexOf(SPEECH) < SECTIONS.findIndex((s) => s.id === 'model'));
+  assert.ok(isVisible(field('tts.enabled'), {}, cur, def), 'fields without a condition always show');
 });
 
-test('an API key is nullable text and never echoed into a label', () => {
-  const key = ALL_FIELDS.find((f) => f.path === 'tts.api_key');
+test('the live section shows the model on this PC only for this PC, and the backup only for a server', () => {
+  const model = field('tasks.live.model'), backup = field('continuous.translation.backup_model'), file = field('continuous.translation.lfm_path'), device = field('continuous.translation.device');
+  const local = { tasks: { live: { connection: 'local', model: '' } } };
+  assert.ok(isVisible(model, {}, local, local) && !isVisible(backup, {}, local, local));
+  assert.ok(!isVisible(file, {}, local, local) && !isVisible(device, {}, local, local), 'no file or processor choice for the full model');
+  const small = { 'tasks.live.model': 'lfm' };
+  assert.ok(isVisible(file, small, local, local) && isVisible(device, small, local, local));
+  assert.ok(!isVisible(field('continuous.translation.milmmt_path'), small, local, local), 'only the chosen model asks for its file');
+  const server = { 'tasks.live.connection': 'NAS' };
+  assert.ok(!isVisible(model, server, local, local) && isVisible(backup, server, local, local));
+  assert.ok(!isVisible(file, { ...server, 'tasks.live.model': 'lfm' }, local, local), 'a stale model name does not show a file for a server');
+  assert.equal(model.options[0].value, '', "this PC's full model is the empty model name");
+});
+
+test('an API key is a secret, an empty one removes it, and tags are a comma list', () => {
+  const key = field('tts.api_key');
   assert.equal(key.type, 'password');
-  assert.equal(fromEditor({ ...key, type: 'text' }, '  '), null);
-});
-
-test('the Anki settings: tags are a comma list, the key is a secret, and nothing is listed twice', () => {
-  const tags = ALL_FIELDS.find((f) => f.path === 'learning.anki.tags');
+  assert.equal(fromEditor(key, '  '), null);
+  const tags = field('learning.anki.tags');
   assert.equal(toEditor(tags, ['maru', 'game']), 'maru, game');
   assert.deepEqual(fromEditor(tags, ' maru ,, game , '), ['maru', 'game']);
   assert.deepEqual(fromEditor(tags, ''), []);
-  const key = ALL_FIELDS.find((f) => f.path === 'learning.anki.api_key');
-  assert.equal(key.type, 'password');
-  assert.equal(fromEditor(key, '  '), null, 'an empty key removes it');
-  assert.ok(SECTIONS.includes(ANKI));
-  const paths = ALL_FIELDS.map((f) => f.path).filter((p) => p.startsWith('learning.anki.'));
-  assert.equal(new Set(paths).size, paths.length);
-  assert.ok(paths.includes('learning.anki.reverse') && paths.includes('learning.anki.sync_after_add'));
-});
-
-test('the model name a server such as Ollama expects can be set from the settings page', () => {
-  const field = ALL_FIELDS.find((f) => f.path === 'llm.model_name');
-  assert.ok(field, 'the field exists');
-  assert.equal(field.type, 'text');
-  assert.ok(!appliesLive('llm.model_name'), 'it is read when Maru starts');
+  assert.equal(fromEditor(field('learning.anki.api_key'), '  '), null, 'an empty key removes it');
 });

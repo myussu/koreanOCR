@@ -298,7 +298,7 @@ async fn remote_request_errors_preserve_offline_entries_and_a_later_deep_dive_ca
     assert!(events
         .iter()
         .any(|e| matches!(e, Event::DeepEntries { .. })));
-    assert!(events.iter().any(|e| matches!(e, Event::Error { message, .. } if message.contains("503") && !message.contains("setup llm"))), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, Event::Error { message, .. } if message.contains("not answering") && !message.contains("503") && !message.contains("setup llm"))), "the server's failure in plain words, without its status code: {events:?}");
     failed.store(false, Ordering::Release);
     let events = collect(services.engine.deep_dive(request()).1).await;
     assert!(

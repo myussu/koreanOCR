@@ -537,6 +537,27 @@ read-again keys, for syntax and duplicates, and refuses a language-model or snap
 schema of fields by dotted config path) and drawn by `settings.js`. **Adding a setting means touching `config.rs`,
 `config.example.toml`, `settings-core.js` and, if it validates, `settings.rs`** (§8).
 
+**The page is organised by flow** (run 2). `settings-core.js` is the schema: sections Live subtitles, Captures, Making cards,
+Voice, Connections, Shortcuts, with every field's one-sentence `help`, the features that use it (`uses`, also what the search
+matches) and whether it is `advanced` (shown on the Advanced page under its section's name). Three kinds of control
+(`controlKind`): `choice` cards (also `route` / `route_optional`, whose cards are the connections), a `switch`, and typed
+fields; there are no drop-downs or sliders. `settings-flow-core.js` holds the decisions that are not about one field: where a
+connection runs (`placeOf`, mirroring `routes::place_of`), the cards of a task (`routeChoices`), the status dot
+(`stateDot`), the overview's four steps with what each uses now (`flowSteps`, from the `status` and `task_status`
+commands), and the list of connections (`connectionProblem`, `saveConnection` — a rename follows into the tasks —,
+`removeConnection` — refused while a task uses it —, `usedBy`). `settings.js` draws: the overview, a section with its
+"in use now" line and Test button per task (`task_test`), the connection editor (the only place an address, model or key is
+typed; it reuses `settings-discovery.js` and the `connection_check` command, which answers with a state and one plain
+sentence from `maru-llm::connection::CheckFailure::plain`), one restart banner (`pendingSummary`) instead of a mark per row.
+`get_settings` shows the effective task table; `save_settings` writes the table first when a task is edited in a file that
+has none. A link can open a section, a search or a connection's editor (`hub.html?settings=cards#settings`, `&q=`,
+`&connection=NAS`), which is how the pages are photographed with the demo data in `hub.js`. Tests: `settings.test.mjs`
+(the sections, labels without internal names, one sentence of help, uses, the three controls, search by feature),
+`settings-flow.test.mjs`, `settings-live.test.mjs`, `settings-connection.test.mjs`. The model's own error text is no longer
+shown in the panel either: `maru_llm::problem::plain` (used by `pipeline.rs`) says what kind of refusal it was.
+The paragraphs below describe pieces that page still uses (discovery, the bounded connection check) and the earlier layout
+of saved connections, whose storage (`[llm].servers`) is unchanged.
+
 The settings page adds categories, search, model cards, and a guard against losing unsaved edits on navigation/restart.
 Both external-server sections include a draft connection check: `server_check.rs` calls the engine-exported
 `maru-llm::connection::test_connection`. It sends fixed Korean text to the streaming chat API with the entered
@@ -877,6 +898,11 @@ live_running}`, `LlmClient::has_key`, `maru_llm::problem`.
 * **Resource commands:** `resource_status` returns cached readings with optional values/timestamps, enable/recording state,
   log path, queue counts and diagnostics; `resource_enable(enabled)` pauses/resumes, `resource_record(enabled)` starts/stops
   recording. These commands do not change persistent config. `resources` is an additive hub tab / launcher action ID.
+* **Tasks and connections (run 2):** `task_status` → `[{task, connection, model, place, state, message, fallbacks}]`;
+  `task_test(task)` → one of those after asking; `connection_check(name, endpoint, modelName, reasoningEffort?, provider?,
+  apiKey?)` → `{state, message, endpoint}` with `state` one of `working`, `no_key`, `quota`, `unreachable`, `failed`,
+  `input`; `mine_sentence_translation(sentence, app, ask?)`; `mine_sheet(…, ask?)` with `ask = {connection?, after_live?}`.
+  `status` adds `learner_dictionary`. All additive.
 * **Connection check:** `test_model_connection(endpoint, modelName, reasoningEffort)` returns `{endpoint, reply, took_ms}`
   or a plain-language error for a fixed-text external request. Results remain transient in Settings; no persistence is added.
   It accepts additive optional `provider` and `apiKey` arguments; legacy callers remain unauthenticated OpenAI-compatible.

@@ -45,7 +45,9 @@ fn pending_restart(state: &AppState, now: &Config) -> Vec<String> {
 #[tauri::command]
 pub fn get_settings(state: S) -> Res<SettingsView> {
     let path = state.services.paths.config_file.clone();
-    let now = Config::load(&path).map_err(|e| e.to_string())?;
+    let mut now = Config::load(&path).map_err(|e| e.to_string())?;
+    // A file that has no task table yet (no file at all, say) is shown as the routing it amounts to.
+    now.tasks = maru_core::tasks::effective(&now);
     Ok(SettingsView {
         values: settings::snapshot(&now),
         defaults: settings::snapshot(&Config::default()),
@@ -116,7 +118,14 @@ fn check_url(what: &str, url: &str) -> Res<()> {
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: S, changes: Map<String, Value>) -> Res<SaveResult> {
     let path = state.services.paths.config_file.clone();
-    let patched = settings::patch(&read_text(&state)?, &changes).map_err(|e| e.to_string())?;
+    let mut text = read_text(&state)?;
+    // Choosing a connection for a task only counts once the file has its task table: write it first if it has none.
+    if changes.keys().any(|p| p.starts_with("tasks."))
+        && let Some(with_table) = maru_core::tasks::migrate(&text).map_err(|e| e.to_string())?
+    {
+        text = with_table;
+    }
+    let patched = settings::patch(&text, &changes).map_err(|e| e.to_string())?;
     let new = patched.config.clone();
     check_hotkeys(&new)?;
     // A bare IP or hostname is only a starting point for Detect server; saved as is, every request would fail.

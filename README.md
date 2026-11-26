@@ -79,7 +79,7 @@ It asks: whether to use that recommendation (if not, which build and which model
 
 `maru setup wizard --dry-run` shows what it found and what it would do, without changing anything. `--yes` takes every recommendation without asking, `--backend cuda|vulkan|cpu` replaces the recommended llama.cpp build, and `--force` downloads llama.cpp again even if a `llama-server` already works (needed to switch a PC from one build to another; quit Maru first). Each step is also its own command (`maru setup llm`, `kiwi`, `ocr`, `ocr-vl`, `tts`, and `maru dict download`) if you prefer to run them yourself.
 
-The model on another PC is not part of the wizard; set it up afterwards in **Settings → Translation model** (below).
+The model on another PC is not part of the wizard; add it afterwards in **Settings → Connections** and choose it for a task (see "Settings: one model per task" below).
 
 Optional: `maru setup tts` (a local Korean voice, see **Speech** below) and the AnkiConnect add-on if you use Anki.
 
@@ -112,14 +112,14 @@ llama-server.exe -hf unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL --no-mmproj --ho
 ```
 Let it through the firewall on private networks (`New-NetFirewallRule -DisplayName llama-server -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private`)
 and check it from your PC with `curl http://<that-pc>:8080/health`. The server has no login: keep it on your home network and never forward the port.
-Then on your PC, either set it for good in **Settings → Translation model** (or `[llm] endpoint = "http://<that-pc>:8080"`), or try it for one command only:
+Then on your PC, either add it for good in **Settings → Connections** and choose it under Live subtitles or Captures, or try it for one command only:
 `maru bench --live --endpoint http://<that-pc>:8080` times the live-subtitle lane against it (`maru bench --live` alone times the local model; quit the
 overlay first, it holds the local model's port). The reading model and the speech server still start on your PC unless you turn them off
 (`[ocr] vision_reader = false`, `[tts] enabled = false` or `provider = "endpoint"`). To compare local and remote on a real cutscene, follow M-11 in
 [docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md).
 
 **Ollama** (for example on a TrueNAS SCALE box) works as that server too, with a few differences from llama-server: it chooses the model by name, and a "thinking" model must be told not to think (Maru sends `reasoning_effort = "none"` to such servers; `[llm] reasoning_effort` changes or empties it), so set
-**Settings → Translation model → Model name that server expects** (`[llm] model_name`) to exactly what `ollama list` shows, and give `maru bench` the same with
+the connection's **Model** (Settings → Connections) to exactly what `ollama list` shows, and give `maru bench` the same with
 `--model`; and it unloads an idle model after five minutes by default, so the first subtitle after a pause waits for the model to load. Set
 **Keep the model loaded on that server** (`[llm] server_keep_minutes`) so Maru loads it when you start playing and unloads it when you stop, or set
 `OLLAMA_KEEP_ALIVE` (for example `-1`) on the server if nothing else needs that GPU.
@@ -368,6 +368,44 @@ and reject incomplete, malformed or token-capped streams. The wrapper accepts `-
 `lmt` with `-CandidateSampling greedy`. Downloads still require approval; these diagnostics do not select an app model.
 
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
+
+## Settings: one model per task
+
+Settings opens on a map of what a line goes through: **Read the screen → Translate → Words and meanings → Cards**. Each
+step says what it uses right now, where that runs (this PC, another computer on your network, a hosted service) and
+shows a dot: green worked the last time it was asked, red needs something from you (no key, no quota left,
+unreachable), hollow has not been asked yet or is off. Clicking a line opens the section it belongs to.
+
+The sections follow the same flow: **Live subtitles**, **Captures** (snapshot, hover and screen scan), **Making cards**,
+**Voice**, **Connections**, **Shortcuts** and **Advanced** (the settings that rarely change, grouped by section, and what
+is installed). Every setting has one sentence of help and a "Used by" line naming the features that read it; the search
+box finds settings by name, by what they do or by feature ("scan", "make cards", "hover"). There are three kinds of
+control, and they look different: cards when you pick one of several, a switch for on or off, an underlined box when
+you type.
+
+**Each task picks its own model.** Live subtitles, captures, the meanings of card words and the sentence of a card each
+name a connection: **This PC** (the model in `[llm] hf_repo` / `model_path`) or one you saved. At the top of its
+section a task shows what the running app uses for it, with a **Test** button (one short question; this PC's model is
+not loaded by it while live subtitles run). Card meanings ask their connection first, then this PC's model, then use
+the dictionary, and the cards sheet says which of them answered. `maru config tasks` prints the same table.
+
+**Connections are edited in one place.** Settings → Connections lists this PC's model and every server you added, with
+what uses each. **Add a connection** asks for a name, the kind of server (your own or Anthropic, Azure OpenAI, Google
+Gemini), its address, the model and, if it needs one, an API key (kept in `config.toml` on this PC). **Find the server**
+looks for a bare IP or name on ports 11434, 1234 and 8080 and lists its models; **Test** asks it one fixed question and
+answers in plain words ("Gemini has no quota left."). A connection cannot be removed while a task uses it, and renaming
+it follows into the tasks that named it.
+
+Changes are collected and written with **Save**. Shortcuts, the panel's look, the list of connections and the two card
+tasks take effect at once; what holds a model or a server (the live and capture connections, the voice, this PC's
+model) waits for a restart, and one banner at the top lists what is waiting.
+
+The first time this version starts, it writes the task table into your `config.toml` from what the file already did
+(the copy of the file as it was is kept beside it as `config.toml.before-tasks-<date>.bak`); the only change of
+behaviour is that card meanings ask this PC's model. Some sections further down this page still describe the earlier
+Settings layout (a "Translation model" section, a "Saved connection" selector, a "Snapshot quality server"): the
+behaviour they describe is unchanged, and their settings are now the connection of Live subtitles, the connection of
+Captures and "While live subtitles are on, use".
 
 ## Saved reading areas
 

@@ -301,10 +301,12 @@ pub fn summarize(connection: &str, model: &str, results: &[LiveResult], tokens: 
 }
 
 /// The comparison as a Markdown table, one row per connection.
-pub fn table(summaries: &[LiveSummary], sentences: usize, runs: usize) -> String {
+/// `context` says whether each line was sent with the lines before it.
+pub fn table(summaries: &[LiveSummary], sentences: usize, runs: usize, context: bool) -> String {
     let ms = |v: Option<u32>| v.map_or("–".to_string(), |v| v.to_string());
     let mut out = String::new();
-    let _ = writeln!(out, "Live subtitles: {sentences} lines × {runs} passes per connection, each line sent with the lines before it as context, one at a time. Times in ms; failed lines are counted, not timed.\n");
+    let how = if context { "each line sent with the lines before it as context" } else { "each line sent by itself" };
+    let _ = writeln!(out, "Live subtitles: {sentences} lines × {runs} passes per connection, {how}, one at a time. Times in ms; failed lines are counted, not timed.\n");
     let _ = writeln!(out, "| Connection | Model | First word p50 | First word p95 | Whole line p50 | Whole line p95 | Slowest | Failed | Cut off | Tokens in / out |");
     let _ = writeln!(out, "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
     for s in summaries {
@@ -366,7 +368,7 @@ pub async fn bench_live(cfg: &Config, paths: &Paths, targets: &[Target], sentenc
         let used = opened.client.tokens_used();
         summaries.push(summarize(&opened.connection, &opened.model, &results, (used.input - before.input, used.output - before.output)));
     }
-    let table = table(&summaries, sentences.len(), runs);
+    let table = table(&summaries, sentences.len(), runs, context_lines > 0);
     println!("{table}");
     if let Some(dir) = out {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -516,7 +518,7 @@ mod tests {
         assert_eq!((s.lines, s.failures, s.cut_off), (23, 2, 1));
         assert_eq!((s.first_p50_ms, s.total_p50_ms, s.total_p95_ms, s.total_max_ms), (Some(100), Some(1000), Some(1900), Some(2000)));
         assert_eq!(s.errors, [("HTTP 429: slow down".to_string(), 2)]);
-        let text = table(&[s, summarize("NAS", "gemma", &[failed("unreachable")], (0, 0))], 23, 1);
+        let text = table(&[s, summarize("NAS", "gemma", &[failed("unreachable")], (0, 0))], 23, 1, true);
         assert!(text.contains("| Gemini | flash | 100 | 190 | 1000 | 1900 | 2000 | 2 of 23 | 1 | 1200 / 340 |"), "{text}");
         assert!(text.contains("| NAS | gemma | – | – | – | – | – | 1 of 1 | 0 | not reported |"), "{text}");
         assert!(text.contains("NAS · gemma: 1× unreachable"));

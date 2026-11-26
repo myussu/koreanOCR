@@ -121,6 +121,8 @@ pub struct Status {
     pub analyser: &'static str,
     pub ocr: bool,
     pub dictionary: bool,
+    /// The learner's dictionary (한국어기초사전) is installed: card meanings in English and Spanish.
+    pub learner_dictionary: bool,
     pub hotkeys: maru_core::config::Hotkeys,
     pub vocab: Option<VocabCounts>,
     /// Hover mode is on.
@@ -170,6 +172,7 @@ pub fn status(state: S) -> Status {
         analyser: e.analyzer_name(),
         ocr: e.has_ocr(),
         dictionary: e.has_dictionary(),
+        learner_dictionary: e.learner_dictionary_credit().is_some(),
         hotkeys: state.cfg().hotkeys,
         vocab: e.vocab_stats().ok().map(|s| VocabCounts { total: s.total, saved: s.saved, known: s.known, due_now: s.due_now }),
         scan_visible,

@@ -1,38 +1,23 @@
-// Optional live models are staged as ordinary settings edits, never applied on a card click.
+// The models this PC can run for live subtitles. Choosing one is an ordinary settings edit, saved with Save.
 export const LIVE_MODELS = [
-  { id:'main', name:'Gemma / main model', note:'Your existing setup. Full analysis; greatest GPU demand.', tag:'Current default' },
-  { id:'hy_mt2', name:'HY-MT2 7B', note:'Q4_K_M · quality candidate for Korean dialogue.', tag:'Quality candidate', path:'continuous.translation.hy_mt2_path' },
-  { id:'milmmt', name:'MiLMMT 4B', note:'Q6_K · lower memory use with fast translation.', tag:'Lighter candidate', path:'continuous.translation.milmmt_path' },
-  { id:'hy_mt2_small', name:'HY-MT2 1.8B', note:'Q4_K_M · smaller footprint; more scene-term errors.', tag:'Low memory', path:'continuous.translation.hy_mt2_small_path' },
-  { id:'lfm', name:'LFM2 KoEn 1.2B', note:'Q5_K_M · smallest option; larger quality tradeoff.', tag:'Lowest memory', path:'continuous.translation.lfm_path' },
+  { id: 'main', name: "This PC's full model", note: 'Translates and explains words; uses the most video memory.' },
+  { id: 'hy_mt2', name: 'HY-MT2 7B', note: 'Translation only · the most careful of the small ones.', path: 'continuous.translation.hy_mt2_path', file: 'Hy-MT2-7B-Q4_K_M.gguf' },
+  { id: 'milmmt', name: 'MiLMMT 4B', note: 'Translation only · quick, less video memory.', path: 'continuous.translation.milmmt_path', file: 'MiLMMT-46-4B-v1.0.Q6_K.gguf' },
+  { id: 'hy_mt2_small', name: 'HY-MT2 1.8B', note: 'Translation only · little video memory, more mistakes with game terms.', path: 'continuous.translation.hy_mt2_small_path', file: 'Hy-MT2-1.8B-Q4_K_M.gguf' },
+  { id: 'lfm', name: 'LFM2 KoEn 1.2B', note: 'Translation only · the smallest, with the most mistakes.', path: 'continuous.translation.lfm_path', file: 'lfm2-1.2b-koen-mt-v8-rl-10k-merged-Q5_K_M.gguf' },
 ];
+
+/**
+ * The edits for choosing a live model on this PC: the choice itself and, for a translation-only model whose
+ * file is not set yet, the file Maru found for it (`files`: `[{model, path}]`). A path you typed is kept.
+ */
 export function modelEdits(id, values, files) {
-  const model=LIVE_MODELS.find(m=>m.id===id);
-  if(!model) return {};
-  const edits={'continuous.translation.model':id};
-  if(model.path&&!values[model.path]) {
-    const path=files?.find(f=>f.model===id)?.path;
-    if(path)edits[model.path]=path;
+  const model = LIVE_MODELS.find((m) => m.id === id);
+  if (!model) return {};
+  const edits = { 'tasks.live.connection': 'local', 'tasks.live.model': id === 'main' ? '' : id };
+  if (model.path && !values[model.path]) {
+    const path = files?.find((f) => f.model === id)?.path;
+    if (path) edits[model.path] = path;
   }
   return edits;
 }
-export function matchesSetting(field, query) {
-  const q=query.trim().toLowerCase();
-  return !q || `${field.label} ${field.help??''} ${field.path}`.toLowerCase().includes(q);
-}
-import {serverAuthFields} from './settings-servers-core.js';
-export const LIVE_FIELDS = [
-  {path:'continuous.translation.model',label:'Live translation model',type:'select',options:LIVE_MODELS.map(m=>({value:m.id,label:m.name}))},
-  {path:'continuous.translation.hy_mt2_path',label:'HY-MT2 GGUF file',type:'text',nullable:true,placeholder:'D:/models/Hy-MT2-7B-Q4_K_M.gguf',when:{path:'continuous.translation.model',value:'hy_mt2'}},
-  {path:'continuous.translation.milmmt_path',label:'MiLMMT GGUF file',type:'text',nullable:true,placeholder:'D:/models/MiLMMT-46-4B-v1.0.Q6_K.gguf',when:{path:'continuous.translation.model',value:'milmmt'}},
-  {path:'continuous.translation.hy_mt2_small_path',label:'HY-MT2 1.8B GGUF file',type:'text',nullable:true,placeholder:'D:/models/Hy-MT2-1.8B-Q4_K_M.gguf',when:{path:'continuous.translation.model',value:'hy_mt2_small'}},
-  {path:'continuous.translation.lfm_path',label:'LFM2 KoEn GGUF file',type:'text',nullable:true,placeholder:'D:/models/lfm2-1.2b-koen-mt-v8-rl-10k-merged-Q5_K_M.gguf',when:{path:'continuous.translation.model',value:'lfm'}},
-  {path:'continuous.translation.backup_model',label:'Backup translator if the server fails',help:'When live lines go to a server (Gemma / main model on Ollama or a cloud API): a line the server fails or is slow to start is translated by this local model instead, and the next lines skip the server for about 20 seconds. It loads when live subtitles start (HY-MT2 1.8B: about 1.5 GB of video memory). Its GGUF file must be set (pick its card once).',type:'select',nullable:true,options:[{value:null,label:'Off: wait for the server'},...LIVE_MODELS.filter(m=>m.id!=='main').map(m=>({value:m.id,label:m.name}))]},
-  {path:'continuous.translation.backup_after_ms',label:'Wait for the server before using the backup',type:'number',min:300,max:20000,step:100,unit:'ms',advanced:true},
-  {path:'continuous.translation.device',label:'Run live translation on',type:'select',options:[{value:'gpu',label:'GPU — fastest'},{value:'cpu',label:'CPU — leaves more GPU for the game'}]},
-  {path:'continuous.translation.cpu_threads',label:'Translation CPU threads',type:'number',min:1,max:32,step:1,when:{path:'continuous.translation.device',value:'cpu'}},
-  {path:'continuous.translation.dialogue_context',label:'Experimental dialogue context',help:'Earlier answers sometimes improved pronouns but also introduced meaning errors in our tests. Off uses the native single-line prompt. The lightweight models have less room for long context.',type:'toggle'},
-  {path:'continuous.translation.snapshot_endpoint',label:'Snapshot quality server',help:'Optional. While live is on, snapshot text and context are sent to this address for translation and analysis. If unavailable, use the local live translator and offline meanings. Blank keeps snapshots local. An IP or hostname works with Detect server below.',type:'text',nullable:true,placeholder:'192.168.18.217 or http://192.168.18.217:11434'},
-  {path:'continuous.translation.snapshot_model_name',label:'Snapshot server model name',help:'Exact name expected by the server, such as the Gemma name from ollama list.',type:'text',placeholder:'maru'},
-  ...serverAuthFields('live'),
-];
