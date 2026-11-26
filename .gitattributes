@@ -1,0 +1,17 @@
+# Text is stored with LF in the repository on every machine, whatever its core.autocrlf says, so
+# Windows git, WSL git and CI compare the same content. Without this, files edited on Windows
+# (CRLF on disk) looked entirely changed to a git that does not convert line endings.
+* text=auto
+
+# These need a particular ending on disk to run.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sh  text eol=lf
+
+# Never converted or diffed as text.
+*.png  binary
+*.ico  binary
+*.wav  binary
+*.onnx binary
+*.gguf binary
+*.db   binary
