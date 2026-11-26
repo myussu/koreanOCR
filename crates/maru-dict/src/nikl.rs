@@ -189,6 +189,19 @@ impl Nikl {
         self.conn().query_row("SELECT value FROM nikl_meta WHERE key = ?1", [key], |r| r.get(0)).optional().ok().flatten()
     }
 
+    /// Every sense in the dictionary with its headword, entry by entry (`f(entry id, headword, sense)`), for counting.
+    pub fn each_sense(&self, mut f: impl FnMut(i64, &str, &NiklSense)) -> Result<()> {
+        let conn = self.conn();
+        let mut stmt = conn.prepare("SELECT e.id, e.lemma, s.en, s.es, s.en_def, s.es_def, e.pos, e.level, e.homonym FROM nikl_entries e JOIN nikl_senses s ON s.entry = e.id ORDER BY e.id, s.n")?;
+        let mut rows = stmt.query([])?;
+        while let Some(r) = rows.next()? {
+            let lemma: String = r.get(1)?;
+            let sense = NiklSense { en: r.get(2)?, es: r.get(3)?, en_definition: r.get(4)?, es_definition: r.get(5)?, pos: r.get(6)?, level: r.get(7)?, homonym: r.get(8)? };
+            f(r.get(0)?, &lemma, &sense);
+        }
+        Ok(())
+    }
+
     /// Every sense of the words written `lemma`, in the dictionary's order. When some of them have the analyser's
     /// part of speech, only those are returned (배 as a noun leaves out nothing; 가다 as a verb leaves out the auxiliary).
     pub fn senses(&self, lemma: &str, pos: Pos) -> Result<Vec<NiklSense>> {

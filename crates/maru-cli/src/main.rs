@@ -86,6 +86,9 @@ enum Command {
         /// With --connection: also write the table and every line's result into this folder.
         #[arg(long, value_name = "DIR", requires = "connection")]
         out: Option<PathBuf>,
+        /// With --cards: also let each model correct a word's dictionary form (`learning.anki.correct_forms`).
+        #[arg(long, requires = "cards")]
+        forms: bool,
         /// With --live --connection: send each line by itself, with no earlier lines as context (how the sentence
         /// of a card is translated), for comparing whole-sentence translations.
         #[arg(long, requires = "connection")]
@@ -259,6 +262,9 @@ enum DictCommand {
     Nikl { file: PathBuf },
     /// How much of some lines' words the learner's dictionary covers (a text file, one Korean line per line).
     Coverage { file: PathBuf },
+    /// How many of the learner's dictionary's English equivalents are only the headword in Latin letters ("su",
+    /// "nyeoseok"), and what a card shows instead.
+    Romanized,
     /// The words to learn in each line with their dictionary senses, as the cards sheet finds them: the tasks file
     /// for `maru bench --cards`.
     Senses {
@@ -540,13 +546,13 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 Ok(0)
             }
         },
-        Command::Bench { file, runs, live, endpoint, model, connection, out, cards, alone } => {
+        Command::Bench { file, runs, live, endpoint, model, connection, out, cards, alone, forms } => {
             if alone {
                 cfg.continuous.context_lines = 0;
             }
             if let (Some(tasks), Some(out)) = (&cards, &out) {
                 let targets: Vec<connections::Target> = connection.iter().map(|c| connections::Target::parse(c)).collect();
-                connections::bench_cards(&cfg, &paths, &targets, tasks, out).await?;
+                connections::bench_cards(&cfg, &paths, &targets, tasks, out, forms).await?;
                 return Ok(0);
             }
             if !connection.is_empty() && !live {
@@ -751,6 +757,20 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             println!("Lines whose cards need no model request at all: {} of {} ({:.0}%).", c.lines_without_model, c.lines, share(c.lines_without_model, c.lines));
             Ok(0)
         }
+        Command::Dict(DictCommand::Romanized) => {
+            if !paths.nikl_db().exists() {
+                bail!("the learner's dictionary is not installed (maru dict nikl <file>)");
+            }
+            let c = maru_engine::romanized::count(&maru_dict::Nikl::open(&paths.nikl_db())?)?;
+            println!("{} entries, {} senses.", c.entries, c.senses);
+            println!("English equivalent with the headword in Latin letters: {} senses in {} entries.", c.affected_senses, c.affected_entries);
+            println!("  real English words beside it, kept:            {}", c.kept_other_words);
+            println!("  replaced by the gloss in the definition:        {}", c.from_definition);
+            println!("  kept as a word both languages borrowed:         {}", c.borrowed);
+            println!("  left without English (a model words the card):  {}", c.nothing);
+            println!("Entries left with no English at all: {}.", c.entries_without_english);
+            Ok(0)
+        }
         Command::Dict(DictCommand::Senses { file, out }) => {
             let text = std::fs::read_to_string(&file).with_context(|| format!("opening {}", file.display()))?;
             let lines: Vec<String> = text.lines().map(str::to_owned).collect();
@@ -778,7 +798,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         _ => println!("Learner's dictionary (한국어기초사전): not installed (maru dict nikl <file>)"),
                     }
                 }
-                DictCommand::Nikl { .. } | DictCommand::Coverage { .. } | DictCommand::Senses { .. } => unreachable!("handled above"),
+                DictCommand::Nikl { .. } | DictCommand::Coverage { .. } | DictCommand::Senses { .. } | DictCommand::Romanized => unreachable!("handled above"),
             }
             Ok(0)
         }

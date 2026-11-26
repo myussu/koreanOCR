@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use maru_core::{Eojeol, Pos};
 use maru_dict::{Nikl, NiklStats};
-use maru_llm::senses::{MAX_SENSES, SenseAnswer, SenseOption, SenseRequest, SenseWord};
+use maru_llm::senses::{MAX_SENSES, MORE_SENSES, SenseAnswer, SenseOption, SenseRequest, SenseWord};
 use serde::{Deserialize, Serialize};
 
 use crate::engine::{Engine, EngineError, Inner, Result};
@@ -86,12 +86,24 @@ pub fn questions(words: &[CardWord]) -> Vec<SenseWord> {
 /// naming a listed sense is taken; a missing or impossible answer leaves the first sense, to be checked; a word
 /// the dictionary lacks and the model did not answer for is left out.
 pub fn decide(words: &[CardWord], answers: &[SenseAnswer]) -> Vec<Decided> {
+    resolve(words, answers, &[])
+}
+
+/// As [`decide`], with the answers of a second request (`later`) that showed the senses after the first
+/// [`MAX_SENSES`] to the words for which the first answer was "none of these": a sense named there counts from
+/// the ninth. A second "none of these" keeps the model's own words from the first answer.
+pub fn resolve(words: &[CardWord], answers: &[SenseAnswer], later: &[SenseAnswer]) -> Vec<Decided> {
     words
         .iter()
         .filter_map(|w| {
             let of = |s: &CardSense, source| Decided { index: w.index, en: s.en.clone(), es: s.es.clone(), source };
             if let [only] = w.senses.as_slice() {
                 return Some(of(only, MeaningSource::OneSense));
+            }
+            if let Some(SenseAnswer::Sense { sense, .. }) = later.iter().find(|a| a.index() == w.index)
+                && let Some(found) = sense.checked_sub(1).and_then(|n| w.senses.get(MAX_SENSES + n)).filter(|_| *sense <= MORE_SENSES)
+            {
+                return Some(of(found, MeaningSource::Chosen));
             }
             match answers.iter().find(|a| a.index() == w.index) {
                 Some(SenseAnswer::Sense { sense, .. }) if (1..=w.senses.len().min(MAX_SENSES)).contains(sense) => Some(of(&w.senses[sense - 1], MeaningSource::Chosen)),
@@ -102,18 +114,83 @@ pub fn decide(words: &[CardWord], answers: &[SenseAnswer]) -> Vec<Decided> {
         .collect()
 }
 
-fn card_word(nikl: &Nikl, e: &Eojeol) -> CardWord {
-    let senses = nikl.senses(e.vocab_key(), e.pos).unwrap_or_else(|err| {
-        tracing::warn!("learner's dictionary lookup of {}: {err}", e.vocab_key());
+/// The words to ask about again: those with more senses than the first request showed, for which the model said
+/// none of the shown ones fits. Each comes with its next senses, numbered from 1.
+pub fn second_questions(words: &[CardWord], answers: &[SenseAnswer]) -> Vec<SenseWord> {
+    words
+        .iter()
+        .filter(|w| w.senses.len() > MAX_SENSES && matches!(answers.iter().find(|a| a.index() == w.index), Some(SenseAnswer::Free { .. })))
+        .map(|w| SenseWord {
+            index: w.index,
+            surface: w.surface.clone(),
+            lemma: w.lemma.clone(),
+            senses: w.senses.iter().skip(MAX_SENSES).take(MORE_SENSES).map(|s| SenseOption { en: s.en.clone(), definition: s.definition.clone() }).collect(),
+        })
+        .collect()
+}
+
+/// What one model decided for the words of a line.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct Chosen {
+    pub decided: Vec<Decided>,
+    /// Words whose dictionary form the model says is another one: `(word index, form)`.
+    pub corrected: Vec<(usize, String)>,
+    /// Requests made: 0 when no word needed a model, 2 when a word with many senses was asked about again.
+    pub requests: usize,
+    /// Words that got a sense beyond the first eight in the second request.
+    pub later: Vec<usize>,
+}
+
+/// Ask one model about a line's words as the cards sheet does: one request for the words with several senses or
+/// none; then, for a word with more than eight senses for which it answered "none of these fits", a second
+/// request with that word's next senses. `Ok(None)`: it answered nothing usable.
+/// With `forms` the model may also correct a word's dictionary form (`Chosen::corrected`).
+pub async fn choose(client: &maru_llm::LlmClient, sentence: &str, words: &[CardWord], forms: bool) -> maru_llm::Result<Option<Chosen>> {
+    let asked = questions(words);
+    if asked.is_empty() {
+        return Ok(Some(Chosen { decided: decide(words, &[]), corrected: Vec::new(), requests: 0, later: Vec::new() }));
+    }
+    let (mut answers, mut corrected) = (Vec::new(), Vec::new());
+    client.choose_senses_showing(&SenseRequest { sentence, words: &asked }, MAX_SENSES, forms, &mut |a| answers.push(a), &mut |index, form| corrected.push((index, form))).await?;
+    if answers.is_empty() {
+        return Ok(None);
+    }
+    let mut requests = 1;
+    let mut later = Vec::new();
+    // A word whose form the model corrected is another word: its remaining senses are not worth a second look.
+    let again: Vec<SenseWord> = second_questions(words, &answers).into_iter().filter(|w| !corrected.iter().any(|(i, _)| *i == w.index)).collect();
+    if !again.is_empty() {
+        requests += 1;
+        // The line is already answered: a failed second look only means the model's own words stay.
+        if let Err(e) = client.choose_senses_showing(&SenseRequest { sentence, words: &again }, MORE_SENSES, false, &mut |a| later.push(a), &mut |_, _| {}).await {
+            tracing::warn!("the second look at words with many senses failed: {e}");
+            later.clear();
+        }
+    }
+    let decided = resolve(words, &answers, &later);
+    let took_later = later.iter().filter(|a| matches!(a, SenseAnswer::Sense { .. })).map(SenseAnswer::index).filter(|i| decided.iter().any(|d| d.index == *i && d.source == MeaningSource::Chosen)).collect();
+    Ok(Some(Chosen { decided, corrected, requests, later: took_later }))
+}
+
+/// The senses a card can show for `key`: the dictionary's, with a bare romanization of the headword never taken
+/// for a meaning (`romanized.rs`). A sense left without any English is dropped; a word left without senses is
+/// then worded by a model, like a word the dictionary lacks.
+pub(crate) fn card_senses(nikl: &Nikl, key: &str, pos: Pos) -> Vec<CardSense> {
+    let senses = nikl.senses(key, pos).unwrap_or_else(|err| {
+        tracing::warn!("learner's dictionary lookup of {key}: {err}");
         Vec::new()
     });
-    CardWord {
-        index: e.index,
-        surface: e.surface.clone(),
-        lemma: e.vocab_key().to_string(),
-        pos: e.pos.label().to_string(),
-        senses: senses.iter().map(|s| CardSense { en: s.en.clone(), es: s.es.clone(), definition: s.en_definition.clone() }).collect(),
-    }
+    senses
+        .iter()
+        .filter_map(|s| {
+            let (en, _) = crate::romanized::usable_english(key, s);
+            (!en.trim().is_empty()).then(|| CardSense { en, es: crate::romanized::usable_spanish(key, s), definition: s.en_definition.clone() })
+        })
+        .collect()
+}
+
+fn card_word(nikl: &Nikl, e: &Eojeol) -> CardWord {
+    CardWord { index: e.index, surface: e.surface.clone(), lemma: e.vocab_key().to_string(), pos: e.pos.label().to_string(), senses: card_senses(nikl, e.vocab_key(), e.pos) }
 }
 
 /// The meaning of one word of the line.
@@ -126,6 +203,8 @@ pub(crate) struct LineSense {
     pub source: MeaningSource,
     /// Every sense the dictionary has for it, in its order.
     pub options: Vec<SenseChoice>,
+    /// The dictionary form the model says the word really has in this line, when it is not the analyser's.
+    pub corrected: Option<String>,
 }
 
 pub(crate) struct LineSenses {
@@ -196,8 +275,8 @@ impl Engine {
     /// on the cards sheet. `None` when the dictionary lacks the word or nobody could choose: the field stays empty
     /// rather than guessing.
     pub(crate) async fn sense_es_in(&self, key: &str, surface: &str, pos_label: &str, sentence: Option<&str>) -> Option<String> {
-        let senses = self.inner.nikl.get()?.senses(key, pos_of(pos_label)).ok()?;
-        let es_of = |s: &maru_dict::NiklSense| Some(s.es.clone()).filter(|es| !es.trim().is_empty());
+        let senses = card_senses(self.inner.nikl.get()?, key, pos_of(pos_label));
+        let es_of = |s: &CardSense| Some(s.es.clone()).filter(|es| !es.trim().is_empty());
         if let [only] = senses.as_slice() {
             return es_of(only);
         }
@@ -210,7 +289,7 @@ impl Engine {
             index: 0,
             surface: if surface.trim().is_empty() { key.to_string() } else { surface.to_string() },
             lemma: key.to_string(),
-            senses: senses.iter().take(MAX_SENSES).map(|s| SenseOption { en: s.en.clone(), definition: s.en_definition.clone() }).collect(),
+            senses: senses.iter().take(MAX_SENSES).map(|s| SenseOption { en: s.en.clone(), definition: s.definition.clone() }).collect(),
         };
         let words = [word];
         let request = SenseRequest { sentence, words: &words };
@@ -252,7 +331,7 @@ impl Engine {
                 if !seen.insert(e.vocab_key().to_string()) {
                     continue;
                 }
-                let senses = nikl.senses(e.vocab_key(), e.pos).map(|s| s.len()).unwrap_or(0);
+                let senses = card_senses(nikl, e.vocab_key(), e.pos).len();
                 let new = distinct.insert(e.vocab_key().to_string());
                 out.words += 1;
                 out.distinct += usize::from(new);
@@ -298,44 +377,40 @@ async fn sheet_model(inner: &Inner) -> std::result::Result<maru_llm::LlmClient, 
 /// Words the dictionary lacks and no model answered for are left out: the caller falls back to what it had before.
 pub(crate) async fn line_senses(inner: &Inner, nikl: &Nikl, sentence: &str, eojeols: &[Eojeol], ask: &crate::routes::CardAsk) -> LineSenses {
     let cards: Vec<CardWord> = eojeols.iter().map(|e| card_word(nikl, e)).collect();
-    let asked = questions(&cards);
-    let mut answers: Vec<SenseAnswer> = Vec::new();
+    let mut chosen: Option<Chosen> = None;
+    let forms = inner.cfg.learning.anki.correct_forms;
     let mut failure = None;
     let (mut answered, mut attempts) = (None, Vec::new());
-    if !asked.is_empty() {
+    if !questions(&cards).is_empty() {
         let routes = inner.routes();
+        let cards = &cards;
         if routes.card_meanings.is_empty() && ask.connection.is_none() {
             match sheet_model(inner).await {
                 Err(why) => failure = Some(why),
-                Ok(llm) => {
-                    let result = llm.choose_senses(&SenseRequest { sentence, words: &asked }, &mut |a| answers.push(a)).await;
-                    failure = result.err().map(|e| e.to_string());
-                }
+                Ok(llm) => match choose(&llm, sentence, cards, forms).await {
+                    Ok(found) => chosen = found,
+                    Err(e) => failure = Some(e.to_string()),
+                },
             }
         } else {
-            let request = SenseRequest { sentence, words: &asked };
-            let request = &request;
             let order = crate::routes::candidates(&routes, &routes.card_meanings, ask);
-            let outcome = crate::routes::ask_in_order(inner, order, |client| async move {
-                let mut got = Vec::new();
-                client.choose_senses(request, &mut |a| got.push(a)).await?;
-                Ok((!got.is_empty()).then_some(got))
-            })
-            .await;
+            let outcome = crate::routes::ask_in_order(inner, order, |client| async move { choose(&client, sentence, cards, forms).await }).await;
             failure = outcome.note("The dictionary was used.");
-            answers = outcome.value.unwrap_or_default();
+            chosen = outcome.value;
             answered = outcome.answered;
             attempts = outcome.attempts;
         }
     }
-    let decided = decide(&cards, &answers);
+    let corrected = chosen.as_ref().map(|c| c.corrected.clone()).unwrap_or_default();
+    let decided = chosen.map(|c| c.decided).unwrap_or_else(|| decide(&cards, &[]));
     // A first sense nobody chose, or a word left without any meaning, has to be looked at.
     let unchecked = decided.iter().any(|d| d.source == MeaningSource::FirstSense) || decided.len() < cards.len();
     let words = decided
         .into_iter()
         .map(|d| {
             let options = cards.iter().find(|c| c.index == d.index).map(|c| c.senses.iter().map(|s| SenseChoice { en: s.en.clone(), es: s.es.clone() }).collect()).unwrap_or_default();
-            LineSense { index: d.index, en: d.en, es: d.es, source: d.source, options }
+            let corrected = corrected.iter().find(|(i, _)| *i == d.index).map(|(_, form)| form.clone());
+            LineSense { index: d.index, en: d.en, es: d.es, source: d.source, options, corrected }
         })
         .collect();
     let routed = answered.is_some() || !attempts.is_empty();
@@ -391,5 +466,34 @@ mod tests {
             assert_eq!(got.iter().map(|d| (d.index, d.source)).collect::<Vec<_>>(), [(0, MeaningSource::FirstSense), (1, MeaningSource::OneSense)], "{answers:?}: the missing word is left out");
             assert_eq!(got[0].en, "belly");
         }
+    }
+
+    fn long_word(index: usize, lemma: &str, n: usize) -> CardWord {
+        CardWord { index, surface: lemma.into(), lemma: lemma.into(), pos: "verb".into(), senses: (1..=n).map(|k| CardSense { en: format!("sense {k}"), es: format!("acepción {k}"), definition: String::new() }).collect() }
+    }
+
+    #[test]
+    fn a_word_with_more_senses_than_were_shown_is_asked_about_again_only_when_none_of_them_fits() {
+        let words = [long_word(0, "하다", 20), word(1, "배", &[("belly", "barriga"), ("ship", "barco")]), long_word(2, "가다", 30)];
+        let none_fits = [SenseAnswer::Free { index: 0, en: "to do".into(), es: "hacer".into() }, SenseAnswer::Sense { index: 1, sense: 2 }, SenseAnswer::Sense { index: 2, sense: 4 }];
+        let again = second_questions(&words, &none_fits);
+        assert_eq!(again.iter().map(|w| w.index).collect::<Vec<_>>(), [0], "a word that got one of the shown senses is not asked about again");
+        assert_eq!((again[0].senses.len(), again[0].senses[0].en.as_str()), (12, "sense 9"), "the next senses, from the ninth");
+        assert_eq!(second_questions(&[long_word(0, "가다", 30)], &[SenseAnswer::Free { index: 0, en: "x".into(), es: String::new() }])[0].senses.len(), MORE_SENSES, "a very long list is cut again");
+        // A word the dictionary lacks answered in its own words is not a long word.
+        assert!(second_questions(&[word(0, "억수로", &[])], &[SenseAnswer::Free { index: 0, en: "very".into(), es: "muy".into() }]).is_empty());
+    }
+
+    #[test]
+    fn the_second_answer_counts_from_the_ninth_sense_and_a_second_none_keeps_the_models_own_words() {
+        let words = [long_word(0, "하다", 20)];
+        let first = [SenseAnswer::Free { index: 0, en: "to do".into(), es: "hacer".into() }];
+        let got = resolve(&words, &first, &[SenseAnswer::Sense { index: 0, sense: 3 }]);
+        assert_eq!((got[0].en.as_str(), got[0].es.as_str(), got[0].source), ("sense 11", "acepción 11", MeaningSource::Chosen));
+        for later in [vec![], vec![SenseAnswer::Free { index: 0, en: "to make".into(), es: "hacer".into() }], vec![SenseAnswer::Sense { index: 0, sense: 13 }], vec![SenseAnswer::Sense { index: 0, sense: 0 }]] {
+            let got = resolve(&words, &first, &later);
+            assert_eq!((got[0].en.as_str(), got[0].source), ("to do", MeaningSource::Model), "{later:?}");
+        }
+        assert_eq!(resolve(&words, &first, &[]), decide(&words, &first), "without a second request nothing changes");
     }
 }

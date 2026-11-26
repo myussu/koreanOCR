@@ -425,6 +425,14 @@ in each deck and says when yours would come up ("12 new cards already wait in �
 in 4 days."), using the per-day numbers you set in Maru (3 words and 1 sentence by default). Anki's own daily limits
 are not read or changed: AnkiConnect cannot see a deck's overrides.
 
+The dictionary's English is cleaned before it reaches a card: about one sense in twenty of the 한국어기초사전 has no English
+word at all, only the Korean word in Latin letters ("nyeoseok", "su"). Those are never shown as a meaning; the short
+gloss in the definition is used when there is one, and otherwise the model words the card. A word with more than eight
+senses is asked about twice when the model says none of the first eight fits. If the word splitter (Kiwi) gets a word's
+dictionary form wrong, as it does with dialect and misread text, the model can propose the right one when **Let the
+model correct a word's dictionary form** is on (Settings → Advanced; off by default, it only worked well with Claude
+Sonnet in tests): the sheet then shows both forms and a button to use the model's.
+
 A word added from the panel (**Add to Anki**) now gets its Spanish meaning also when the dictionary has several senses
 for it: the sense that fits the sentence you saw it in is chosen by the card-meanings connection.
 

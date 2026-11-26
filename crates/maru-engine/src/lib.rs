@@ -38,6 +38,7 @@ pub mod resource_monitor;
 pub mod server_discovery;
 mod scan;
 mod scan_joining;
+pub mod romanized;
 pub mod routes;
 pub mod senses;
 mod server_hold;

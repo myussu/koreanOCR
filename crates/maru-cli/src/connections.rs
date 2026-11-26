@@ -42,6 +42,12 @@ struct CardRecord<'a> {
     tokens_in: u64,
     tokens_out: u64,
     words: Vec<Decided>,
+    /// Requests made for the line: 2 when a word with many senses was asked about again.
+    requests: usize,
+    /// Words that got a sense beyond the first eight, by index.
+    later: Vec<usize>,
+    /// Words whose dictionary form the model corrected: `(index, form)`.
+    corrected: Vec<(usize, String)>,
 }
 
 /// `name`, or `name=model` to ask that connection for another model.
@@ -398,7 +404,7 @@ pub fn write_tasks(engine: &maru_engine::Engine, lines: &[String], out: &Path) -
 /// `maru bench --cards tasks.jsonl --connection A --connection dictionary …`: each candidate decides every
 /// line's word meanings the way the cards sheet does (one request per line for the words that need it), and
 /// every decision is written down for a blind review. Nothing is scored here.
-pub async fn bench_cards(cfg: &Config, paths: &Paths, targets: &[Target], tasks: &Path, out: &Path) -> Result<()> {
+pub async fn bench_cards(cfg: &Config, paths: &Paths, targets: &[Target], tasks: &Path, out: &Path, forms: bool) -> Result<()> {
     let text = std::fs::read_to_string(tasks).with_context(|| format!("opening {}", tasks.display()))?;
     let tasks: Vec<CardTask> = text.lines().filter(|l| !l.trim().is_empty()).map(serde_json::from_str).collect::<std::result::Result<_, _>>().context("the tasks file is made by `maru dict senses`")?;
     if tasks.is_empty() {
@@ -424,26 +430,33 @@ pub async fn bench_cards(cfg: &Config, paths: &Paths, targets: &[Target], tasks:
         let (mut times, mut requests, mut failed, mut tokens) = (Vec::new(), 0usize, 0usize, (0u64, 0u64));
         for (n, task) in tasks.iter().enumerate() {
             let asked = questions(&task.words);
-            let mut answers: Vec<SenseAnswer> = Vec::new();
             let (mut ms, mut error, mut used) = (0, None, (0, 0));
+            let mut chosen = None;
             if let (Some(client), false) = (&client, asked.is_empty()) {
-                requests += 1;
                 let before = client.tokens_used();
                 let started = Instant::now();
-                let result = client.choose_senses(&SenseRequest { sentence: &task.line, words: &asked }, &mut |a| answers.push(a)).await;
+                // The same two steps as the cards sheet: one request, and a second look at a word with many senses.
+                let result = maru_engine::senses::choose(client, &task.line, &task.words, forms).await;
                 ms = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
                 let after = client.tokens_used();
                 used = (after.input - before.input, after.output - before.output);
                 match result {
-                    Ok(()) => times.push(ms),
+                    Ok(found) => {
+                        times.push(ms);
+                        requests += found.as_ref().map_or(1, |c| c.requests);
+                        chosen = found;
+                    }
                     Err(e) => {
+                        requests += 1;
                         failed += 1;
                         error = Some(e.to_string().chars().take(300).collect());
                     }
                 }
             }
             tokens = (tokens.0 + used.0, tokens.1 + used.1);
-            let record = CardRecord { candidate: &label, line: n + 1, asked: client.is_some() && !asked.is_empty(), ms, error, tokens_in: used.0, tokens_out: used.1, words: decide(&task.words, &answers) };
+            let (line_requests, later, corrected) = chosen.as_ref().map(|c| (c.requests, c.later.clone(), c.corrected.clone())).unwrap_or_default();
+            let words = chosen.map(|c| c.decided).unwrap_or_else(|| decide(&task.words, &[]));
+            let record = CardRecord { candidate: &label, line: n + 1, asked: client.is_some() && !asked.is_empty(), ms, error, tokens_in: used.0, tokens_out: used.1, words, requests: line_requests, later, corrected };
             let _ = writeln!(records, "{}", serde_json::to_string(&record)?);
         }
         times.sort_unstable();

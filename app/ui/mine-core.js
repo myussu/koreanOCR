@@ -143,6 +143,20 @@ export function queueLines(queue, draft) {
   return [line(queue.words, draft.deck, words, draft.reverse ? 'card' : 'word'), line(queue.sentences, draft.sentenceDeck ?? draft.deck, draft.sentenceCard ? 1 : 0, 'sentence')].filter(Boolean);
 }
 
+/**
+ * A word whose dictionary form the model reads differently from the word splitter: what the sheet says, and the
+ * form its button would switch the card to. The card keeps the splitter's form until you press it.
+ */
+export function formChoice(word, draftWord) {
+  if (!word.corrected || word.corrected === word.key) return null;
+  const usingModel = draftWord.key === word.corrected;
+  return {
+    text: usingModel ? `The card will ask ${word.corrected} (the model's reading); the word splitter read ${word.key}.` : `The word splitter read ${word.key}; the model reads ${word.corrected} in this line.`,
+    button: usingModel ? `Use ${word.key}` : `Use ${word.corrected}`,
+    next: usingModel ? word.key : word.corrected,
+  };
+}
+
 /** A dictionary sense as an option: "ship; boat · barco". */
 export const senseLabel = (sense) => [sense.en, sense.es].filter(Boolean).join(' · ');
 

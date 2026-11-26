@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { addLabel, ankiIsOff, answeredText, applySense, askFor, comesUp, deckOptions, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, queueLines, redraft, retryChoices, senseIndex, senseLabel } from '../mine-core.js';
+import { addLabel, ankiIsOff, answeredText, applySense, askFor, comesUp, deckOptions, formChoice, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, queueLines, redraft, retryChoices, senseIndex, senseLabel } from '../mine-core.js';
 
 const sheet = (over = {}) => ({
   sentence: '다시는 못 볼 줄 알았어요',
@@ -177,4 +177,17 @@ test('asking again keeps your ticks, decks and what you typed, and takes the new
   assert.deepEqual([next.words[0].meaning, next.words[0].meaningEs], ['never again', 'nunca más'], 'the new choice replaces an untouched meaning');
   assert.deepEqual([next.words[1].meaning, next.words[1].meaningEs, next.words[1].picked], ['to meet', 'mirar', true], 'a typed meaning and a tick are kept');
   assert.deepEqual([next.translation, next.deck, next.sentenceDeck, next.sentenceCard], ['my own words', 'Korean::Other', 'Korean::Sentences', false]);
+});
+
+test('a dictionary form the model corrects is shown beside the splitter’s, and the card changes only when you say so', () => {
+  const word = { key: '꾸다', surface: '주꾸마', corrected: '주다', meaning: 'to give', pick: true };
+  const d = mineDraft(sheet({ words: [word] }));
+  assert.equal(d.words[0].key, '꾸다', 'the card keeps the word splitter’s form at first');
+  const choice = formChoice(word, d.words[0]);
+  assert.deepEqual(choice, { text: 'The word splitter read 꾸다; the model reads 주다 in this line.', button: 'Use 주다', next: '주다' });
+  d.words[0].key = choice.next;
+  assert.equal(mineRequest(d, {}, sheet({ words: [word] })).words[0].key, '주다', 'the card then asks the corrected word');
+  assert.deepEqual(formChoice(word, d.words[0]), { text: "The card will ask 주다 (the model's reading); the word splitter read 꾸다.", button: 'Use 꾸다', next: '꾸다' });
+  assert.equal(formChoice({ key: '학교' }, { key: '학교' }), null);
+  assert.equal(formChoice({ key: '학교', corrected: '학교' }, { key: '학교' }), null);
 });
