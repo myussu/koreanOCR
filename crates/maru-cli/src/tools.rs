@@ -361,84 +361,182 @@ pub fn overlap(truth: &str, got: &str) -> (f64, f64) {
 #[derive(Debug, Clone)]
 pub struct EngineScore {
     pub name: String,
-    pub cer: f64,
-    pub found: f64,
-    pub extra: f64,
-    pub p50_ms: u32,
+    pub scale: f32,
+    pub results: Vec<crate::evalreport::CaseResult>,
 }
 
-/// `name.png` + `name.txt` (the true text) pairs found in `dir`, sorted by name.
-pub fn load_cases(dir: &Path) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>> {
-    let mut cases = Vec::new();
-    for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
-        let path = entry?.path();
-        let is_image = path.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "bmp"));
-        let truth = path.with_extension("txt");
-        if is_image && truth.exists() {
-            cases.push((path, truth));
+/// Every picture in `dir` and the folders below it (a test set is one folder per game), sorted by path.
+pub fn load_images(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) -> Result<()> {
+        for entry in std::fs::read_dir(dir).with_context(|| format!("reading {}", dir.display()))? {
+            let path = entry?.path();
+            if path.is_dir() {
+                walk(&path, out)?;
+            } else if path.extension().and_then(|e| e.to_str()).is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "bmp")) {
+                out.push(path);
+            }
         }
+        Ok(())
     }
-    cases.sort();
+    let mut images = Vec::new();
+    walk(dir, &mut images)?;
+    images.sort();
+    Ok(images)
+}
+
+/// `name.png` + `name.txt` (the true text) pairs found in `dir` and the folders below it, sorted by name.
+/// A picture marked `name.unreadable` (see `tools/label_review.html`) is left out.
+pub fn load_cases(dir: &Path) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>> {
+    let cases: Vec<_> = load_images(dir)?
+        .into_iter()
+        .filter(|p| !p.with_extension("unreadable").exists())
+        .filter_map(|p| {
+            let truth = p.with_extension("txt");
+            truth.exists().then_some((p, truth))
+        })
+        .collect();
     if cases.is_empty() {
         bail!("no `name.png` + `name.txt` pairs found in {}", dir.display());
     }
     Ok(cases)
 }
 
-/// Score one engine on every case and print the per-image lines.
+/// Read every picture that has no label yet and keep what `engine` read beside it as `name.<tag>.txt`, so
+/// `tools/label_review.html` can show a second opinion (and sort the pictures where the readers disagree to the front).
+/// Pictures that are already labelled or marked unreadable are skipped. Returns how many were written.
+pub fn write_drafts(tag: &str, engine: &dyn maru_ocr::OcrEngine, images: &[std::path::PathBuf], scale: f32) -> Result<usize> {
+    let todo: Vec<_> = images.iter().filter(|p| !p.with_extension("txt").exists() && !p.with_extension("unreadable").exists()).collect();
+    let mut written = 0;
+    for (i, path) in todo.iter().enumerate() {
+        let img = image::open(path)?.to_rgb8();
+        let out = engine.recognize_scaled(&img, scale).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+        let text = out.lines.iter().map(|l| l.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+        std::fs::write(path.with_extension(format!("{tag}.txt")), format!("{text}\n"))?;
+        written += 1;
+        if (i + 1) % 25 == 0 {
+            println!("  {}/{}", i + 1, todo.len());
+        }
+    }
+    Ok(written)
+}
+
+/// The labelled pictures of a test set with what is known about each, restricted to one half when asked.
+pub fn load_case_infos(dir: &Path, split: Option<crate::evalreport::Split>) -> Result<Vec<crate::evalreport::CaseInfo>> {
+    let mut infos = Vec::new();
+    for (img, truth) in load_cases(dir)? {
+        let info = crate::evalreport::case_info(dir, &img, &truth).with_context(|| format!("reading {}", truth.display()))?;
+        if split.is_none_or(|s| s == info.split) {
+            infos.push(info);
+        }
+    }
+    if infos.is_empty() {
+        bail!("no pictures are in that half of the test set");
+    }
+    Ok(infos)
+}
+
+/// Score one engine on every case and print the pictures it got wrong, then the summary.
 ///
 /// One untimed warm-up run comes first: the first call of any engine pays for model and
 /// runtime start-up, which says nothing about how it feels in use.
-pub fn eval_engine(name: &str, engine: &dyn maru_ocr::OcrEngine, cases: &[(std::path::PathBuf, std::path::PathBuf)]) -> Result<EngineScore> {
-    let (mut total_cer, mut total_found, mut total_extra, mut times) = (0.0, 0.0, 0.0, Vec::new());
+///
+/// `scale` is the enlargement live subtitles ask PP-OCR for (`[continuous] ocr_scale`; 1 = none), so a folder of
+/// subtitle strips can be scored the way live mode reads them.
+pub fn eval_engine(name: &str, engine: &dyn maru_ocr::OcrEngine, cases: &[crate::evalreport::CaseInfo], scale: f32) -> Result<EngineScore> {
     println!("{name}:");
-    let first = image::open(&cases[0].0)?.to_rgb8();
-    engine.recognize(&first).map_err(|e| anyhow::anyhow!("{e}"))?;
-    for (img_path, truth_path) in cases {
-        let img = image::open(img_path)?.to_rgb8();
-        let truth = std::fs::read_to_string(truth_path)?;
+    let first = image::open(&cases[0].img)?.to_rgb8();
+    engine.recognize_scaled(&first, scale).map_err(|e| anyhow::anyhow!("{e}"))?;
+    let mut results = Vec::new();
+    for case in cases {
+        let img = image::open(&case.img)?.to_rgb8();
         let t = Instant::now();
-        let out = engine.recognize(&img).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let out = engine.recognize_scaled(&img, scale).map_err(|e| anyhow::anyhow!("{e}"))?;
         let ms = t.elapsed().as_millis() as u32;
         let got = out.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join(" ");
-        let c = cer(&truth, &got);
-        let (found, extra) = overlap(&truth, &got);
-        total_cer += c;
-        total_found += found;
-        total_extra += extra;
-        times.push(ms);
-        let file = img_path.file_name().and_then(|n| n.to_str()).unwrap_or("?");
-        println!("  {file:<28} CER {:>5.1}%  found {:>5.1}%  extra {:>5.1}%  {ms:>5} ms", c * 100.0, found * 100.0, extra * 100.0);
-        if c > 0.0 {
-            println!("      expected: {}\n      got:      {got}", truth.trim());
+        let r = crate::evalreport::score_case(case, &got, ms);
+        if r.cer > 0.0 {
+            println!("  {:<40} letter error {:>5.1}%  {ms:>5} ms\n      expected: {}\n      got:      {}", r.rel, r.cer * 100.0, r.truth, r.got);
         }
+        results.push(r);
     }
-    let n = cases.len() as f64;
-    println!("  mean CER {:.1}%   found {:.1}%   extra {:.1}%\n{}\n", 100.0 * total_cer / n, 100.0 * total_found / n, 100.0 * total_extra / n, summarize("latency", times.clone()));
-    times.sort_unstable();
-    Ok(EngineScore {
-        name: name.to_string(),
-        cer: total_cer / n,
-        found: total_found / n,
-        extra: total_extra / n,
-        p50_ms: times.get(times.len() / 2).copied().unwrap_or(0),
-    })
+    println!();
+    crate::evalreport::print_summary(&results);
+    let times: Vec<u32> = results.iter().map(|r| r.ms).collect();
+    println!("{}\n", summarize("latency", times));
+    Ok(EngineScore { name: name.to_string(), scale, results })
 }
 
-/// Side-by-side comparison, best (lowest CER) first.
+/// Side-by-side comparison, best (lowest letter error) first.
 pub fn print_scores(scores: &[EngineScore]) {
-    let mut sorted = scores.to_vec();
-    sorted.sort_by(|a, b| a.cer.total_cmp(&b.cer));
-    println!("Summary (lower CER and extra, higher found, is better):");
-    println!("  {:<34} {:>8} {:>8} {:>8} {:>9}", "engine", "CER", "found", "extra", "median");
-    for s in sorted {
-        println!("  {:<34} {:>7.1}% {:>7.1}% {:>7.1}% {:>6} ms", s.name, s.cer * 100.0, s.found * 100.0, s.extra * 100.0, s.p50_ms);
+    let mut rows: Vec<(String, crate::evalreport::Summary)> = scores
+        .iter()
+        .map(|s| {
+            let all: Vec<&crate::evalreport::CaseResult> = s.results.iter().collect();
+            (s.name.clone(), crate::evalreport::summarize(&all))
+        })
+        .collect();
+    rows.sort_by(|a, b| a.1.cer.total_cmp(&b.1.cer));
+    println!("Summary (lower letter error and extra, higher exact and found, is better; spaces and punctuation are ignored):");
+    println!("  {:<34} {:>8} {:>8} {:>8} {:>8} {:>9}", "engine", "letters", "exact", "found", "extra", "median");
+    for (name, s) in rows {
+        println!("  {:<34} {:>7.1}% {:>7.1}% {:>7.1}% {:>7.1}% {:>6} ms", name, s.cer * 100.0, s.exact * 100.0, s.found * 100.0, s.extra * 100.0, s.p50_ms);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct Stub(&'static str);
+    impl maru_ocr::OcrEngine for Stub {
+        fn name(&self) -> &'static str {
+            "stub"
+        }
+        fn recognize(&self, _: &image::RgbImage) -> maru_ocr::Result<maru_ocr::OcrOutput> {
+            let line = maru_ocr::OcrLine { text: self.0.into(), rect: maru_core::Rect::new(0.0, 0.0, 10.0, 10.0), confidence: 0.9, words: vec![] };
+            Ok(maru_ocr::OcrOutput { lines: vec![line] })
+        }
+    }
+
+    fn test_set(name: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("maru-set-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        for game in ["yuzu", "other"] {
+            std::fs::create_dir_all(root.join(game)).unwrap();
+        }
+        for (game, id) in [("yuzu", "1-001"), ("yuzu", "1-002"), ("yuzu", "1-003"), ("other", "2-001")] {
+            image::RgbImage::new(8, 8).save(root.join(game).join(format!("{id}.png"))).unwrap();
+        }
+        root
+    }
+
+    #[test]
+    fn a_test_set_is_read_from_the_folders_below_it_and_unreadable_pictures_are_left_out() {
+        let root = test_set("cases");
+        std::fs::write(root.join("yuzu/1-001.txt"), "가나\n").unwrap();
+        std::fs::write(root.join("yuzu/1-002.txt"), "다라\n").unwrap();
+        std::fs::write(root.join("yuzu/1-002.unreadable"), "").unwrap();
+        std::fs::write(root.join("other/2-001.txt"), "마바\n").unwrap();
+        std::fs::write(root.join("yuzu/1-001.paddle-vl.txt"), "가나\n").unwrap(); // a draft is not a label
+        let names: Vec<String> = load_cases(&root).unwrap().iter().map(|(p, _)| p.strip_prefix(&root).unwrap().to_string_lossy().replace('\\', "/")).collect();
+        assert_eq!(names, ["other/2-001.png", "yuzu/1-001.png"]);
+        assert!(load_cases(&root.join("yuzu/none")).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn drafts_are_written_beside_pictures_that_have_no_label_yet() {
+        let root = test_set("drafts");
+        std::fs::write(root.join("yuzu/1-001.txt"), "가나\n").unwrap(); // labelled: skipped
+        std::fs::write(root.join("yuzu/1-002.unreadable"), "").unwrap(); // unusable: skipped
+        let images = load_images(&root).unwrap();
+        assert_eq!(images.len(), 4);
+        assert_eq!(write_drafts("stub", &Stub("안녕 하세요"), &images, 1.0).unwrap(), 2);
+        assert_eq!(std::fs::read_to_string(root.join("yuzu/1-003.stub.txt")).unwrap(), "안녕 하세요\n");
+        assert!(root.join("other/2-001.stub.txt").exists());
+        assert!(!root.join("yuzu/1-001.stub.txt").exists() && !root.join("yuzu/1-002.stub.txt").exists());
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn cer_ignores_whitespace_and_counts_character_edits() {

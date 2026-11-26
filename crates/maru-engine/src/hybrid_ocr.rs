@@ -37,22 +37,30 @@ impl OcrEngine for HybridOcr {
     }
 
     fn recognize(&self, image: &RgbImage) -> Result<OcrOutput> {
-        self.read(image, false)
+        self.read(image, false, 1.0)
     }
 
     /// While the reader loads, the detector's own reading answers (live subtitles must not stall for seconds).
     fn recognize_now(&self, image: &RgbImage) -> Result<OcrOutput> {
-        self.read(image, true)
+        self.read(image, true, 1.0)
+    }
+
+    /// Only the detector enlarges the picture: the reading model gets the image as it is (a larger one costs it more time).
+    fn recognize_scaled(&self, image: &RgbImage, min_scale: f32) -> Result<OcrOutput> {
+        self.read(image, false, min_scale)
+    }
+
+    fn recognize_now_scaled(&self, image: &RgbImage, min_scale: f32) -> Result<OcrOutput> {
+        self.read(image, true, min_scale)
     }
 }
 
 impl HybridOcr {
-    fn read(&self, image: &RgbImage, now: bool) -> Result<OcrOutput> {
-        let recognize = |engine: &Arc<dyn OcrEngine>| if now { engine.recognize_now(image) } else { engine.recognize(image) };
+    fn read(&self, image: &RgbImage, now: bool, min_scale: f32) -> Result<OcrOutput> {
         // Different hardware (CPU and GPU), so running them together costs the slower one only.
         let (detected, read) = std::thread::scope(|scope| {
-            let detector = scope.spawn(|| recognize(&self.detector));
-            let read = recognize(&self.reader);
+            let detector = scope.spawn(|| if now { self.detector.recognize_now_scaled(image, min_scale) } else { self.detector.recognize_scaled(image, min_scale) });
+            let read = if now { self.reader.recognize_now(image) } else { self.reader.recognize(image) };
             let detected = detector.join().unwrap_or_else(|_| Err(OcrError::Run("the detector thread panicked".into())));
             (detected, read)
         });
@@ -141,6 +149,34 @@ mod tests {
         o.lines.iter().map(|l| l.text.as_str()).collect()
     }
 
+    /// Remembers the enlargement it was asked for (in tenths), and what size of image it was given.
+    struct Notes(std::sync::Arc<std::sync::atomic::AtomicU32>);
+    impl OcrEngine for Notes {
+        fn name(&self) -> &'static str {
+            "notes"
+        }
+        fn recognize(&self, _: &RgbImage) -> Result<OcrOutput> {
+            self.0.store(10, std::sync::atomic::Ordering::SeqCst);
+            Ok(OcrOutput::default())
+        }
+        fn recognize_scaled(&self, _: &RgbImage, min_scale: f32) -> Result<OcrOutput> {
+            self.0.store((min_scale * 10.0) as u32, std::sync::atomic::Ordering::SeqCst);
+            Ok(OcrOutput::default())
+        }
+    }
+
+    #[test]
+    fn only_the_detector_is_asked_to_enlarge_the_picture() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        let (detector, reader) = (std::sync::Arc::new(AtomicU32::new(0)), std::sync::Arc::new(AtomicU32::new(0)));
+        let hybrid = HybridOcr::new(Arc::new(Notes(detector.clone())), Arc::new(Notes(reader.clone())));
+        hybrid.recognize_scaled(&RgbImage::new(1, 1), 2.0).unwrap();
+        assert_eq!(detector.load(Ordering::SeqCst), 20, "the detector enlarges");
+        assert_eq!(reader.load(Ordering::SeqCst), 10, "the reading model is not asked to");
+        hybrid.recognize(&RgbImage::new(1, 1)).unwrap();
+        assert_eq!(detector.load(Ordering::SeqCst), 10, "a plain read asks for no enlargement");
+    }
+
     #[test]
     fn the_readers_wording_replaces_the_detectors_and_the_boxes_stay() {
         let detector = OcrOutput { lines: vec![line("전금도", 10.0), line("충분히 '잘하고 있어요", 40.0), line("'", 70.0), line("승차권", 100.0)] };
@@ -187,6 +223,29 @@ mod tests {
         let reader = Arc::new(Loading);
         let out = HybridOcr::new(detector, reader).recognize_now(&RgbImage::new(8, 8)).unwrap();
         assert_eq!(texts(&out), ["안녕하세요 여러분"]);
+    }
+
+    #[test]
+    fn a_live_read_enlarges_for_the_detector_and_still_does_not_wait_for_the_reader() {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        struct Loading;
+        impl OcrEngine for Loading {
+            fn name(&self) -> &'static str {
+                "loading"
+            }
+            fn recognize(&self, _: &RgbImage) -> Result<OcrOutput> {
+                panic!("a live read must not wait for the reader");
+            }
+            fn recognize_now(&self, _: &RgbImage) -> Result<OcrOutput> {
+                Err(OcrError::NotReady("the reader is loading".into()))
+            }
+        }
+        let asked = std::sync::Arc::new(AtomicU32::new(0));
+        let hybrid = HybridOcr::new(Arc::new(Notes(asked.clone())), Arc::new(Loading));
+        hybrid.recognize_now_scaled(&RgbImage::new(1, 1), 2.0).unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 20, "the detector got the enlargement");
+        hybrid.recognize_now(&RgbImage::new(1, 1)).unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), 10, "and none when none is asked for");
     }
 
     #[test]
