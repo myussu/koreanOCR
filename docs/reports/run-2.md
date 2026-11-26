@@ -243,6 +243,13 @@ Precios por millón de tokens: Claude Sonnet 5.5 2/10, Claude Haiku 5.5 0,10/0,5
    era el mío). Anki no estaba abierto, así que no interferí con él, y lo abrí después en «User 2». No se escribió nada en
    Anki mientras duró el error.
 
+10. **Un nombre tuyo en el repositorio público, desde la corrida 1**: una prueba de la línea de comandos
+    (`crates/maru-cli/src/connections.rs`, commit `e70c50d`) usaba como ejemplo el nombre de tu conexión de Azure tal
+    como la tienes guardada. Lo cambié por un nombre neutro en el árbol actual, pero **sigue en el historial ya
+    publicado** de `stabilize/run-1` y de esta rama: quitarlo exige reescribir historia, que no me corresponde. No es
+    una clave ni una dirección (la dirección de la prueba es `example.openai.azure.com`), solo el nombre. Decide tú si
+    importa (punto 12 de abajo).
+
 ## Sin verificar
 
 * **La app no se arrancó** con tu configuración real: ni la migración real (solo el ensayo), ni Settings, ni Make cards.
@@ -282,6 +289,10 @@ Precios por millón de tokens: Claude Sonnet 5.5 2/10, Claude Haiku 5.5 0,10/0,5
    extensión y prueba un video con subtítulos coreanos del autor. Dime qué mensaje da la extensión.
 10. **Anki**: quedó abierto en «User 2»; vuelve a tu perfil cuando quieras.
 11. **El precio real de tu despliegue de Azure**, que sigue supuesto en la tabla de costos.
+12. **El nombre de tu conexión de Azure en el historial público** (defecto 10): si te importa, hay que reescribir las
+    dos ramas antes de fusionarlas (`git filter-repo --replace-text`, y `push --force` de ambas) o fusionar con
+    «squash», que deja fuera los commits intermedios en `main` pero no borra las ramas ya subidas. Si no te importa, no
+    hay nada que hacer.
 
 ## Git
 
