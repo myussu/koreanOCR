@@ -24,6 +24,11 @@ impl LiveContext {
             .collect()
     }
 
+    /// A partial reading that a fuller one replaced is not a turn of its own.
+    pub(crate) fn forget(&mut self, id: u64) {
+        self.turns.retain(|turn| turn.id != id);
+    }
+
     pub(crate) fn remember(&mut self, id: u64, source: &str, translation: &str, cap: usize) {
         if cap == 0 || translation.trim().is_empty() {
             return;

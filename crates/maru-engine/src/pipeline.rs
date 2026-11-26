@@ -448,12 +448,39 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     let em = Emitter { tx, id };
     let LiveLine { capture, appeared, ready_ms, ocr_ms } = line;
     let (text, _) = prepare_text(&capture.text, inner.cfg.capture.max_chars);
+    let text = crate::live_noise::trim_stray_marks(&text);
     if detect_direction(&text) != Some(Direction::KoToEn) {
+        tracing::debug!(text, "live line skipped: not Korean");
         timing.finish("skipped");
         em.done(); // an English line on a Korean game's screen: nothing to translate
         return;
     }
+    if !crate::live_noise::worth_translating(&text, capture.confidence, inner.cfg.ocr.min_confidence) {
+        tracing::debug!(text, confidence = capture.confidence, "live line skipped as OCR noise");
+        timing.finish("noise");
+        em.done();
+        return;
+    }
     let app_exe = capture.app.as_ref().map(|a| a.exe.clone()).unwrap_or_default();
+    // OCR read the same line again, or only part of it: show its translation, translate nothing, list nothing.
+    let mut replaces = None;
+    // Bind first: a guard in the `match` head would live through the arms, which lock `live_recent` again.
+    let seen = lock(&inner.live_recent).seen(&app_exe, &text, Instant::now());
+    match seen {
+        crate::live_merge::Seen::Again { id: original, translation } | crate::live_merge::Seen::Part { id: original, translation } => {
+            lock(&inner.live_recent).read_again(id, original, &text, Instant::now());
+            let mut capture = capture;
+            capture.text = text.clone();
+            em.send(Event::Started { id, direction: Direction::KoToEn, capture, cached: true });
+            em.send(Event::Translation { id, variant: Variant::Primary, delta: translation.clone() });
+            em.send(Event::TranslationDone { id, variant: Variant::Primary, text: translation });
+            timing.finish("repeat");
+            em.done();
+            return;
+        }
+        crate::live_merge::Seen::Grew { replaces: earlier } => replaces = Some(earlier),
+        crate::live_merge::Seen::New => {}
+    }
     let profile = inner.cfg.profile_for(&app_exe).cloned();
     // Lines already queued when the watcher stops still reach history, using the restored model.
     let model = if inner.live_active.load(Ordering::Acquire) { inner.cfg.continuous.translation.model } else { maru_core::live_model::LiveModel::Main };
@@ -467,11 +494,11 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     em.send(Event::Started { id, direction: Direction::KoToEn, capture: capture.clone(), cached: cached.is_some() });
 
     let is_cached = cached.is_some();
-    let (first_ms, translation) = if let Some(hit) = cached {
+    let (first_ms, translation, used_backup) = if let Some(hit) = cached {
         let main = hit.translations.first().map(|(_, t)| t.clone()).unwrap_or_default();
         em.send(Event::Translation { id, variant: Variant::Primary, delta: main.clone() });
         em.send(Event::TranslationDone { id, variant: Variant::Primary, text: main.clone() });
-        (since_ms(appeared), main)
+        (since_ms(appeared), main, false)
     } else {
         let chosen = if model == maru_core::live_model::LiveModel::Main { await_llm(&inner, &em).await } else { inner.live_llm.clone() };
         let Some(llm) = chosen else {
@@ -488,15 +515,30 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         let first = AtomicU32::new(0);
         let llm_started = Instant::now();
         timing.request(turns.len());
-        let result = llm
-            .translate_selected_live(model, &LiveRequest { text: &text, ctx: &ctx, turns: &turns }, &mut |c| {
+        let backup = if model == maru_core::live_model::LiveModel::Main { crate::live_backup::backup(&inner) } else { None };
+        let mut used_backup = false;
+        let result = {
+            let mut sink = |c: LlmChunk| {
                 if matches!(c, LlmChunk::Text { .. }) && !first_token.load(Ordering::Relaxed) {
                     timing.first();
                     first.store(since_ms(appeared), Ordering::Relaxed);
                 }
                 forward(&em, &collected, Side::Source, &first_token, llm_started, c)
-            })
-            .await;
+            };
+            let req = LiveRequest { text: &text, ctx: &ctx, turns: &turns };
+            match &backup {
+                None => llm.translate_selected_live(model, &req, &mut sink).await,
+                Some(b) => {
+                    // The small models get earlier lines only with dialogue context on, as when they are the live model.
+                    let backup_turns: &[(String, String)] = if inner.cfg.continuous.translation.dialogue_context { &turns } else { &[] };
+                    let backup_req = LiveRequest { text: &text, ctx: &ctx, turns: backup_turns };
+                    match crate::live_backup::translate(&inner, &llm, b, &req, &backup_req, &first_token, &mut sink).await {
+                        crate::live_backup::Answer::Server(r) => r,
+                        crate::live_backup::Answer::Backup(r) => { used_backup = true; r }
+                    }
+                }
+            }
+        };
         lock(&collected).translation_complete = result.is_ok();
         if let Err(e) = result {
             em.error(Stage::Llm, e.to_string());
@@ -509,17 +551,25 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
             em.done();
             return;
         }
-        lock(&inner.cache).put(key, result);
-        (first.load(Ordering::Relaxed), main)
+        // A backup answer is not cached: once the server is back, a repeated line gets its translation.
+        if !used_backup {
+            lock(&inner.cache).put(key, result);
+        }
+        (first.load(Ordering::Relaxed), main, used_backup)
     };
 
     let total_ms = since_ms(appeared);
-    timing.finish(if is_cached { "cached" } else { "translated" });
+    timing.finish(if is_cached { "cached" } else if used_backup { "backup" } else { "translated" });
     tracing::info!(
         "live line: on screen → read {ready_ms} ms (OCR {ocr_ms} ms) → first word {first_ms} ms → done {total_ms} ms, {} characters",
         text.chars().count()
     );
+    if let Some(earlier) = replaces {
+        lock(&inner.live_turns).forget(earlier);
+        lock(&inner.live_recent).forget(earlier, id);
+    }
     remember_live_turn(&inner, id, &text, &translation);
+    lock(&inner.live_recent).remember(id, &app_exe, &text, &translation, Instant::now());
     lock(&inner.memory).push(&app_exe, &text, &translation, Instant::now());
     lock(&inner.history).push(HistoryItem {
         live: true,

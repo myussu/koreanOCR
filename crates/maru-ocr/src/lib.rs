@@ -24,6 +24,9 @@ pub enum OcrError {
     Init(String),
     #[error("OCR failed: {0}")]
     Run(String),
+    /// A model the engine needs is still loading (see [`OcrEngine::recognize_now`]).
+    #[error("OCR model still loading: {0}")]
+    NotReady(String),
 }
 
 pub type Result<T, E = OcrError> = std::result::Result<T, E>;
@@ -118,6 +121,12 @@ pub trait OcrEngine: Send + Sync {
     fn name(&self) -> &'static str;
     /// Recognise text in `image`. Coordinates in the result are image pixels.
     fn recognize(&self, image: &RgbImage) -> Result<OcrOutput>;
+    /// Recognise text without waiting for a model that is still loading: such an engine starts loading it and answers
+    /// [`OcrError::NotReady`] meanwhile. Live subtitles read this way, so a line is not missed while a reader loads;
+    /// a deliberate snapshot waits for the better reading.
+    fn recognize_now(&self, image: &RgbImage) -> Result<OcrOutput> {
+        self.recognize(image)
+    }
 }
 
 #[cfg(test)]

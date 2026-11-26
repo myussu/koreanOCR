@@ -18,8 +18,9 @@ fn engine() -> Option<PaddleOcr> {
         det_model: dir.join("det.onnx"),
         rec_model: dir.join("rec.onnx"),
         dict_path: dir.join("dict.txt"),
-        device: "cpu".into(),
-        detect_side: None,
+        device: std::env::var("MARU_TEST_OCR_DEVICE").unwrap_or_else(|_| "cpu".into()),
+        detect_side: std::env::var("MARU_TEST_OCR_SIDE").ok().and_then(|n| n.parse().ok()),
+        threads: std::env::var("MARU_TEST_OCR_THREADS").ok().and_then(|n| n.parse().ok()),
     };
     Some(PaddleOcr::load(&cfg).expect("models load"))
 }
@@ -37,6 +38,36 @@ fn render(text: &str, w: u32, h: u32, x: i32, y: i32, size: f32, fg: [u8; 3], bg
     let mut img = RgbImage::from_pixel(w, h, Rgb(bg));
     draw_text_mut(&mut img, Rgb(fg), x, y, PxScale::from(size), &font, text);
     img
+}
+
+/// `MARU_TEST_OCR_THREADS=4 cargo test -p maru-ocr --features ort-dynamic --test real_models -- --ignored --nocapture`
+/// compares the time of a live-subtitle-sized read with and without a thread cap.
+#[test]
+#[ignore]
+fn a_subtitle_line_read_repeatedly_reports_its_time() {
+    let Some(ocr) = engine() else {
+        eprintln!("skipped: set MARU_TEST_OCR_DIR and ORT_DYLIB_PATH to run");
+        return;
+    };
+    // `MARU_TEST_OCR_IMAGE` times a picture of your own (a whole game screen) instead of the rendered line.
+    let img = match std::env::var("MARU_TEST_OCR_IMAGE") {
+        Ok(path) => image::open(path).unwrap().to_rgb8(),
+        Err(_) => {
+            let Ok(bytes) = std::fs::read(r"C:\Windows\Fonts\malgun.ttf") else { return };
+            let font = FontRef::try_from_slice(&bytes).unwrap();
+            let mut img = RgbImage::from_pixel(1100, 120, Rgb([20, 20, 24]));
+            draw_text_mut(&mut img, Rgb([255, 255, 255]), 30, 35, PxScale::from(44.0), &font, "왜 아직도 여기 있는 거야?");
+            img
+        }
+    };
+    let first = ocr.recognize(&img).unwrap();
+    eprintln!("{} lines: {:?}", first.lines.len(), first.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>());
+    assert!(first.text().contains("여기"), "{:?}", first.text());
+    let started = std::time::Instant::now();
+    for _ in 0..20 {
+        ocr.recognize(&img).unwrap();
+    }
+    eprintln!("device={:?} threads={:?}: {:.0} ms per read", std::env::var("MARU_TEST_OCR_DEVICE").ok(), std::env::var("MARU_TEST_OCR_THREADS").ok(), started.elapsed().as_secs_f64() * 1000.0 / 20.0);
 }
 
 #[test]

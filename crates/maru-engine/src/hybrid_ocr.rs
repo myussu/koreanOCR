@@ -37,16 +37,32 @@ impl OcrEngine for HybridOcr {
     }
 
     fn recognize(&self, image: &RgbImage) -> Result<OcrOutput> {
+        self.read(image, false)
+    }
+
+    /// While the reader loads, the detector's own reading answers (live subtitles must not stall for seconds).
+    fn recognize_now(&self, image: &RgbImage) -> Result<OcrOutput> {
+        self.read(image, true)
+    }
+}
+
+impl HybridOcr {
+    fn read(&self, image: &RgbImage, now: bool) -> Result<OcrOutput> {
+        let recognize = |engine: &Arc<dyn OcrEngine>| if now { engine.recognize_now(image) } else { engine.recognize(image) };
         // Different hardware (CPU and GPU), so running them together costs the slower one only.
         let (detected, read) = std::thread::scope(|scope| {
-            let detector = scope.spawn(|| self.detector.recognize(image));
-            let read = self.reader.recognize(image);
+            let detector = scope.spawn(|| recognize(&self.detector));
+            let read = recognize(&self.reader);
             let detected = detector.join().unwrap_or_else(|_| Err(OcrError::Run("the detector thread panicked".into())));
             (detected, read)
         });
         match (detected, read) {
             (Ok(mut out), Ok(read)) => {
                 merge(&mut out, &read);
+                Ok(out)
+            }
+            (Ok(out), Err(OcrError::NotReady(why))) => {
+                tracing::debug!("{why}; using the detector's text");
                 Ok(out)
             }
             (Ok(out), Err(e)) => {
@@ -154,6 +170,23 @@ mod tests {
         let only_reader = run(Err(OcrError::Run("model missing".into())), Ok(reader)).unwrap();
         assert_eq!(texts(&only_reader), ["지금도"]);
         assert!(run(Err(OcrError::Run("a".into())), Err(OcrError::Run("b".into()))).is_err());
+    }
+
+    #[test]
+    fn a_reader_still_loading_leaves_the_detectors_reading() {
+        let detector = Arc::new(Fixed(Ok(OcrOutput { lines: vec![line("안녕하세요 여러분", 0.0)] })));
+        struct Loading;
+        impl OcrEngine for Loading {
+            fn name(&self) -> &'static str {
+                "loading"
+            }
+            fn recognize(&self, _: &RgbImage) -> Result<OcrOutput> {
+                Err(OcrError::NotReady("the reader is loading".into()))
+            }
+        }
+        let reader = Arc::new(Loading);
+        let out = HybridOcr::new(detector, reader).recognize_now(&RgbImage::new(8, 8)).unwrap();
+        assert_eq!(texts(&out), ["안녕하세요 여러분"]);
     }
 
     #[test]

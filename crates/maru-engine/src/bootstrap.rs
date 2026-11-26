@@ -262,10 +262,19 @@ fn load_paddle(cfg: &Config, paths: &Paths, detect_side: Option<u32>) -> Result<
     let mut pc = PaddleConfig::resolve(&cfg.ocr, paths);
     pc.detect_side = detect_side;
     // ONNX Runtime failing to load can panic inside `ort`; never let that take the app down.
-    match std::panic::catch_unwind(|| PaddleOcr::load(&pc)) {
-        Ok(Ok(engine)) => Ok(Arc::new(engine)),
+    let load = |pc: &PaddleConfig| match std::panic::catch_unwind(|| PaddleOcr::load(pc)) {
+        Ok(Ok(engine)) => Ok(Arc::new(engine) as Arc<dyn OcrEngine>),
         Ok(Err(e)) => Err(e.to_string()),
-        Err(_) => Err("ONNX Runtime could not be loaded (set ORT_DYLIB_PATH, or place onnxruntime.dll next to the program)".into()),
+        Err(_) => Err("ONNX Runtime could not be loaded (set ORT_DYLIB_PATH, or place onnxruntime.dll next to the program)".to_string()),
+    };
+    match load(&pc) {
+        // A GPU that cannot run it (old driver, no DirectX 12, a build without that provider) must not cost OCR.
+        Err(e) if pc.device.trim() != "cpu" => {
+            tracing::warn!("PP-OCR could not start on {} ({e}); using the CPU", pc.device);
+            pc.device = "cpu".into();
+            load(&pc)
+        }
+        loaded => loaded,
     }
 }
 
@@ -486,8 +495,15 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     let mut model_runtime = None;
     let mut live_llm = None;
     let alternate = cfg.continuous.translation.model != maru_core::live_model::LiveModel::Main;
-    if alternate && opts.start_llm {
-        match crate::live_models::local_config(&cfg) {
+    // Live lines on a server can fall back to a local model; it is built like an alternate live model.
+    let backup = cfg.continuous.translation.backup_model
+        .filter(|m| !alternate && cfg.llm.endpoint.is_some() && *m != maru_core::live_model::LiveModel::Main);
+    let live_cfg = match backup {
+        Some(model) => { let mut c = cfg.clone(); c.continuous.translation.model = model; c }
+        None => cfg.clone(),
+    };
+    if (alternate || backup.is_some()) && opts.start_llm {
+        match crate::live_models::local_config(&live_cfg) {
             Ok(local) => {
                 let main = (cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart).then(|| cfg.llm.clone());
                 // A local live model's lifecycle must not gate the independent remote main client.
@@ -498,11 +514,15 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
                 }
                 live_llm = Some(LlmClient::from_config(&local).with_runtime(runtime.clone(), maru_llm::model_runtime::ModelRole::Live));
                 if cfg.llm.endpoint.is_none() { let _ = status_tx.send(LlmStatus::Disabled); }
-                notes.push("Live translation model: loaded on demand; local Gemma is unloaded when switching. Snapshots return to the normal model when live is off.".into());
+                notes.push(if backup.is_some() {
+                    "Backup translator: loads when live subtitles start; translates a line the server fails or is late with.".into()
+                } else {
+                    "Live translation model: loaded on demand; local Gemma is unloaded when switching. Snapshots return to the normal model when live is off.".into()
+                });
                 model_runtime = Some(runtime);
             }
             Err(why) => {
-                notes.push(format!("Live translation model unavailable: {why}"));
+                notes.push(format!("{} unavailable: {why}", if backup.is_some() { "Backup translator" } else { "Live translation model" }));
                 if cfg.llm.endpoint.is_none() { let _ = status_tx.send(LlmStatus::Failed(why)); }
             }
         }

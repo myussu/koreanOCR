@@ -122,6 +122,12 @@ pub(crate) struct Inner {
     pub live_llm: Option<LlmClient>,
     pub live_active: std::sync::atomic::AtomicBool,
     pub live_load_task: Mutex<Option<JoinHandle<()>>>,
+    /// A pending unload of the models on another computer (`server_hold.rs`).
+    pub server_release: Mutex<Option<JoinHandle<()>>>,
+    /// Live lines skip the translation server until then, after it failed (`live_backup.rs`).
+    pub server_rest: Mutex<Option<Instant>>,
+    /// The live lines of the last few seconds, to recognise one read again (`live_merge.rs`).
+    pub(crate) live_recent: Mutex<crate::live_merge::Recent>,
     pub live_counts: Arc<crate::live_lane::Counters>,
     pub live_queue: std::sync::OnceLock<mpsc::UnboundedSender<crate::live_lane::Job>>,
 }
@@ -173,6 +179,9 @@ impl Engine {
             live_llm: parts.live_llm,
             live_active: std::sync::atomic::AtomicBool::new(false),
             live_load_task: Mutex::new(None),
+            server_release: Mutex::new(None),
+            server_rest: Mutex::new(None),
+            live_recent: Mutex::new(Default::default()),
             live_counts: Arc::new(crate::live_lane::Counters::default()),
             live_queue: std::sync::OnceLock::new(),
             scan_task: Mutex::new(None),
@@ -212,6 +221,11 @@ impl Engine {
                 if let Err(e) = client.ensure_loaded().await { tracing::warn!("live model could not load: {e}"); }
             });
             *lock(&self.inner.live_load_task) = Some(task);
+        }
+        if active && !before {
+            self.hold_server_models(true);
+        } else if !active && before {
+            self.release_server_models_soon();
         }
     }
     pub fn live_work(&self) -> (usize, usize) { self.inner.live_counts.counts() }

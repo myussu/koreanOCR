@@ -1516,6 +1516,165 @@ async fn a_live_line_is_translation_only_and_goes_to_the_history_with_its_timing
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_ui_bar_read_as_a_lone_jamo_is_not_sent_to_the_model_but_a_sure_one_syllable_answer_is() {
+    let h = harness().await;
+    let mut bar = live_line("ㅣ");
+    bar.capture.confidence = Some(0.99);
+    let events = collect(h.engine.translate_live(bar).1).await;
+    assert!(!names(&events).contains(&"started"), "no subtitle is shown for noise: {:?}", names(&events));
+    let mut unsure = live_line("이");
+    unsure.capture.confidence = Some(0.4);
+    collect(h.engine.translate_live(unsure).1).await;
+    assert!(h.requests().is_empty(), "noise costs no model request");
+    let mut answer = live_line("네.");
+    answer.capture.confidence = Some(0.97);
+    let events = collect(h.engine.translate_live(answer).1).await;
+    assert!(names(&events).contains(&"translation_done"));
+    assert_eq!(h.requests().len(), 1);
+}
+
+/// Live lines on a server (`main` + endpoint) with a local backup model on its own scripted server.
+fn backup_harness(main: &MockServer, backup: &MockServer, after_ms: u64) -> Harness {
+    let mut cfg = Config::default();
+    cfg.llm.endpoint = Some(main.url.clone());
+    cfg.continuous.translation.backup_model = Some(maru_core::live_model::LiveModel::HyMt2Small);
+    cfg.continuous.translation.backup_after_ms = after_ms;
+    build_with_live(cfg.clone(), Some(LlmClient::from_config(&cfg.llm)), None, Some(LlmClient::new(&backup.url, &cfg.llm)))
+}
+
+fn backup_answers() -> impl Fn(&str, &str) -> MockResponse + Send + Sync + 'static {
+    |_, _| MockResponse { status: 200, chunks: sse_answer(&["Backup line."]), delay_ms: 0 }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_live_line_the_server_fails_is_translated_by_the_backup_and_the_next_lines_skip_the_server_for_a_while() {
+    let main = spawn_mock(|_, _| MockResponse { status: 500, chunks: vec![br#"{"error":{"message":"model runner has unexpectedly stopped"}}"#.to_vec()], delay_ms: 0 }).await;
+    let backup = spawn_mock(backup_answers()).await;
+    let h = backup_harness(&main, &backup, 2500);
+    let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    assert!(!names(&events).contains(&"error"), "{:?}", names(&events));
+    assert_eq!(text_of(&events, Variant::Primary), "Backup line.");
+    collect(h.engine.translate_live(live_line("저는 학생이에요")).1).await;
+    let lines_asked = || main.requests.lock().unwrap().iter().filter(|(_, b)| !b.contains("\"max_tokens\":1,")).count();
+    assert_eq!(lines_asked(), 1, "while the server rests, a line does not wait for it");
+    assert_eq!(backup.requests.lock().unwrap().len(), 2);
+    assert_eq!(h.engine.history().len(), 2, "backup lines reach the history");
+    // The same text from another game is not a repeat of this line, so only the cache could answer it.
+    let mut elsewhere = live_line(SENTENCE);
+    elsewhere.capture.app = Some(AppInfo { exe: "other.exe".into(), title: "Other".into() });
+    collect(h.engine.translate_live(elsewhere).1).await;
+    assert_eq!(backup.requests.lock().unwrap().len(), 3, "a backup answer is not cached for the server's next try");
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    assert_eq!(lines_asked(), 1);
+    assert_eq!(main.requests.lock().unwrap().len(), 2, "one background request lets the server finish loading during the rest");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_has_not_started_answering_in_time_is_dropped_for_the_backup() {
+    // Headers at once, then nothing for 3 s: what a reloading Ollama runner looks like.
+    let main = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![b": loading
+
+".to_vec(), maru_llm::testing::sse_event("Server line."), b"data: [DONE]
+
+".to_vec()], delay_ms: 3000 }).await;
+    let backup = spawn_mock(backup_answers()).await;
+    let h = backup_harness(&main, &backup, 300);
+    let started = std::time::Instant::now();
+    let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    assert_eq!(text_of(&events, Variant::Primary), "Backup line.");
+    assert!(started.elapsed() < Duration::from_millis(2000), "{:?}", started.elapsed());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_already_began_its_answer_is_never_mixed_with_the_backup() {
+    let main = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![maru_llm::testing::sse_event("Half a"), br#"data: {"error":{"message":"unexpected EOF"}}"#.to_vec()], delay_ms: 0 }).await;
+    let backup = spawn_mock(backup_answers()).await;
+    let h = backup_harness(&main, &backup, 2500);
+    let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    assert!(names(&events).contains(&"error"));
+    assert!(backup.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_broken_backup_does_not_cost_the_line_when_the_server_is_only_slow() {
+    let main = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![b": loading
+
+".to_vec(), maru_llm::testing::sse_event("Server line."), b"data: [DONE]
+
+".to_vec()], delay_ms: 600 }).await;
+    let backup = spawn_mock(|_, _| MockResponse { status: 500, chunks: vec![b"model file not found".to_vec()], delay_ms: 0 }).await;
+    let h = backup_harness(&main, &backup, 300);
+    let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    assert_eq!(text_of(&events, Variant::Primary), "Server line.");
+    assert!(!names(&events).contains(&"error"), "{:?}", names(&events));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_healthy_server_keeps_every_line_and_the_backup_is_never_asked() {
+    let main = spawn_mock(model).await;
+    let backup = spawn_mock(backup_answers()).await;
+    let h = backup_harness(&main, &backup, 2500);
+    for _ in 0..2 {
+        let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+        assert_eq!(text_of(&events, Variant::Primary), "I studied at school.");
+    }
+    assert!(backup.requests.lock().unwrap().is_empty());
+    assert_eq!(main.requests.lock().unwrap().len(), 1, "the server's answer is cached as before");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subtitle_read_again_with_other_spacing_costs_no_request_and_is_listed_once() {
+    let h = harness().await;
+    collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    for again in ["저는 학교에서공부했어요", "\"저는 학교에서 공부했어요.\""] {
+        let events = collect(h.engine.translate_live(live_line(again)).1).await;
+        assert_eq!(text_of(&events, Variant::Primary), "I studied at school.", "the band still shows the line");
+    }
+    assert_eq!(h.requests().len(), 1, "one model request for one spoken line");
+    assert_eq!(h.engine.history().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_read_in_part_while_it_fades_in_is_listed_once_as_the_whole_line() {
+    let h = harness().await;
+    collect(h.engine.translate_live(live_line("저는 학교에서")).1).await;
+    collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    assert_eq!(h.requests().len(), 2, "the whole line is translated");
+    let history = h.engine.history();
+    assert_eq!(history.iter().map(|i| i.source.as_str()).collect::<Vec<_>>(), [SENTENCE]);
+    // Reading only part of it again afterwards changes nothing.
+    collect(h.engine.translate_live(live_line("학교에서 공부했어요")).1).await;
+    assert_eq!(h.requests().len(), 2);
+    assert_eq!(h.engine.history().len(), 1);
+    assert!(!h.requests()[1].contains("저는 학교에서\"}"), "the partial reading is not a dialogue turn of its own");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lines_that_differ_by_one_syllable_of_meaning_are_both_translated_and_listed() {
+    let h = harness().await;
+    collect(h.engine.translate_live(live_line("나는 학교에 간다")).1).await;
+    collect(h.engine.translate_live(live_line("나는 학교에 안 간다")).1).await;
+    assert_eq!(h.requests().len(), 2);
+    assert_eq!(h.engine.history().len(), 2);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_subtitle_misread_while_it_stays_on_screen_costs_one_request_and_one_entry_without_its_stray_marks() {
+    let h = harness().await;
+    let (first, rx) = h.engine.translate_live(live_line("OTK 오늘따라 우리 왕자님 윤이 억수로 나쁘그든"));
+    collect(rx).await;
+    // The order of a real cutscene's misreadings: each one differs from some earlier reading by a syllable or two.
+    for read in ["오늘따라 우리 왕자님 운이 억수로 나쁘그듣 SX", "오늘따라 우리 왕자님 운이 억수로 나쁘고든", "오늘따라 우리 장자 운이 억수로 나쁘고든", "오늘따라 우리 왕자님 Lo 억수로 나쁘고든"] {
+        let events = collect(h.engine.translate_live(live_line(read)).1).await;
+        assert!(events.iter().any(|e| matches!(e, Event::TranslationDone { .. })), "the band still shows the translation for {read}");
+    }
+    assert_eq!(h.requests().len(), 1, "one model request for every reading");
+    let history = h.engine.history();
+    assert_eq!(history.iter().map(|i| i.source.as_str()).collect::<Vec<_>>(), ["오늘따라 우리 왕자님 윤이 억수로 나쁘그든"], "listed once, without OTK");
+    assert_eq!(history[0].id, first);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn earlier_live_lines_reach_the_model_as_chat_turns() {
     let h = harness().await;
     collect(h.engine.translate_live(live_line(SENTENCE)).1).await;

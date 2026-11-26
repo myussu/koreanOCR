@@ -25,23 +25,42 @@ pub fn validate_file(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+const FILES: [(&str, &str); 4] = [
+    ("hy_mt2", "Hy-MT2-7B-Q4_K_M.gguf"),
+    ("milmmt", "MiLMMT-46-4B-v1.0.Q6_K.gguf"),
+    ("hy_mt2_small", "Hy-MT2-1.8B-Q4_K_M.gguf"),
+    ("lfm", "lfm2-1.2b-koen-mt-v8-rl-10k-merged-Q5_K_M.gguf"),
+];
+
+/// The live model files in `<models>/live`. Development builds also look in this checkout's benchmark folders.
 pub fn available(paths: &Paths) -> Vec<ModelFile> {
-    let development = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/live-diagnostics/benchmark-expanded-2026-10-12/models");
-    let small = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/live-diagnostics/low-vram-2026-10-12/models");
-    [
-        ("hy_mt2", "Hy-MT2-7B-Q4_K_M.gguf", development.join("mt2-7-q4")),
-        ("milmmt", "MiLMMT-46-4B-v1.0.Q6_K.gguf", development.join("milmmt4-q6")),
-        ("hy_mt2_small", "Hy-MT2-1.8B-Q4_K_M.gguf", small.join("mt2-q4")),
-        ("lfm", "lfm2-1.2b-koen-mt-v8-rl-10k-merged-Q5_K_M.gguf", small.join("lfm2-v8")),
-    ]
-    .into_iter()
-    .map(|(model, name, folder)| {
-        let path = [paths.models_dir.join("live").join(name), folder.join(name)]
-            .into_iter()
-            .find(|p| validate_file(p).is_ok());
-        ModelFile { model, path }
-    })
-    .collect()
+    FILES
+        .into_iter()
+        .map(|(model, name)| {
+            let path = std::iter::once(paths.models_dir.join("live").join(name))
+                .chain(benchmark_file(model, name))
+                .find(|p| validate_file(p).is_ok());
+            ModelFile { model, path }
+        })
+        .collect()
+}
+
+/// Release builds must not carry or probe the build machine's source folders.
+#[cfg(debug_assertions)]
+fn benchmark_file(model: &str, name: &str) -> Option<PathBuf> {
+    let data = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../data/live-diagnostics");
+    let folder = match model {
+        "hy_mt2" => data.join("benchmark-expanded-2026-10-12/models/mt2-7-q4"),
+        "milmmt" => data.join("benchmark-expanded-2026-10-12/models/milmmt4-q6"),
+        "hy_mt2_small" => data.join("low-vram-2026-10-12/models/mt2-q4"),
+        _ => data.join("low-vram-2026-10-12/models/lfm2-v8"),
+    };
+    Some(folder.join(name))
+}
+
+#[cfg(not(debug_assertions))]
+fn benchmark_file(_model: &str, _name: &str) -> Option<PathBuf> {
+    None
 }
 
 pub(crate) fn local_config(cfg: &Config) -> Result<LlmConfig, String> {
@@ -89,6 +108,20 @@ pub(crate) fn local_config(cfg: &Config) -> Result<LlmConfig, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn a_live_model_in_the_models_folder_is_found_and_a_non_gguf_file_is_not() {
+        let root = std::env::temp_dir().join(format!("maru-live-available-{}", std::process::id()));
+        let live = root.join("models").join("live");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join("MiLMMT-46-4B-v1.0.Q6_K.gguf"), b"GGUFtest").unwrap();
+        std::fs::write(live.join("lfm2-1.2b-koen-mt-v8-rl-10k-merged-Q5_K_M.gguf"), b"<html>").unwrap();
+        let found = available(&Paths::under(&root));
+        let path_of = |model: &str| found.iter().find(|f| f.model == model).and_then(|f| f.path.clone());
+        assert_eq!(path_of("milmmt"), Some(live.join("MiLMMT-46-4B-v1.0.Q6_K.gguf")));
+        assert_ne!(path_of("lfm"), Some(live.join("lfm2-1.2b-koen-mt-v8-rl-10k-merged-Q5_K_M.gguf")));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn alternate_models_do_not_inherit_main_downloads_or_gpu_overrides() {
         let dir = std::env::temp_dir().join(format!("maru-live-model-{}", std::process::id()));

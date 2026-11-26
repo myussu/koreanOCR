@@ -39,6 +39,11 @@ pub struct LiveTranslationConfig {
     pub snapshot_model_name: String,
     pub snapshot_provider: crate::external_servers::ServerProvider,
     pub snapshot_api_key: Option<crate::external_servers::ServerKey>,
+    /// When live lines go to a server (`model = "main"` with `[llm] endpoint`): a local model that translates a line
+    /// the server fails or is late with. `None` (the default) waits for the server as before.
+    pub backup_model: Option<LiveModel>,
+    /// How long the server may take to start answering a live line before the backup takes it.
+    pub backup_after_ms: u64,
 }
 
 impl Default for LiveTranslationConfig {
@@ -56,13 +61,20 @@ impl Default for LiveTranslationConfig {
             snapshot_model_name: "maru".into(),
             snapshot_provider: Default::default(),
             snapshot_api_key: None,
+            backup_model: None,
+            backup_after_ms: 2500,
         }
     }
 }
 
 impl LiveTranslationConfig {
     pub fn selected_path(&self) -> Option<&std::path::Path> {
-        match self.model {
+        self.path_for(self.model)
+    }
+
+    /// The configured file of a local live model (`None` for the main model).
+    pub fn path_for(&self, model: LiveModel) -> Option<&std::path::Path> {
+        match model {
             LiveModel::Main => None,
             LiveModel::HyMt2 => self.hy_mt2_path.as_deref(),
             LiveModel::Milmmt => self.milmmt_path.as_deref(),

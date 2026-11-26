@@ -168,6 +168,24 @@ impl OcrEngine for DeferredOcr {
         .map_err(OcrError::Run)?;
         self.inner.recognize(image)
     }
+
+    fn recognize_now(&self, image: &RgbImage) -> maru_ocr::Result<OcrOutput> {
+        let status = self.model.status.borrow().clone();
+        match status {
+            LlmStatus::Ready | LlmStatus::Failed(_) => self.recognize(image),
+            LlmStatus::Starting => Err(OcrError::NotReady(format!("{} is still loading", self.inner.name()))),
+            LlmStatus::Disabled => {
+                // Not loaded (or released): load it in the background; this read goes without it.
+                let model = self.model.clone();
+                self.model.runtime.spawn(async move {
+                    if let Err(e) = model.ensure_loaded().await {
+                        tracing::warn!("the OCR reader did not load: {e}");
+                    }
+                });
+                Err(OcrError::NotReady(format!("{} is loading", self.inner.name())))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -272,6 +290,37 @@ mod tests {
         assert_eq!(*rx.borrow(), LlmStatus::Disabled);
         model.ensure_loaded().await.unwrap();
         assert_eq!(*rx.borrow(), LlmStatus::Ready);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_read_that_cannot_wait_starts_loading_the_reader_and_is_answered_without_it_meanwhile() {
+        struct Reader;
+        impl OcrEngine for Reader {
+            fn name(&self) -> &'static str {
+                "scripted"
+            }
+            fn recognize(&self, _: &RgbImage) -> maru_ocr::Result<OcrOutput> {
+                Ok(OcrOutput::default())
+            }
+        }
+        let (go, ready) = tokio::sync::oneshot::channel::<()>();
+        let ready = Arc::new(tokio::sync::Mutex::new(Some(ready)));
+        let (status, rx) = watch::channel(LlmStatus::Disabled);
+        let model = DeferredModel::new(status, move || async move {
+            let ready = ready.lock().await.take();
+            if let Some(ready) = ready {
+                let _ = ready.await;
+            }
+            Ok(())
+        });
+        let ocr = Arc::new(DeferredOcr { inner: Arc::new(Reader), model: model.clone() });
+        let read = |ocr: Arc<DeferredOcr>| tokio::task::spawn_blocking(move || ocr.recognize_now(&RgbImage::new(1, 1)));
+        assert!(matches!(read(ocr.clone()).await.unwrap(), Err(OcrError::NotReady(_))), "not loaded: no waiting");
+        tokio::time::timeout(std::time::Duration::from_secs(2), async { while *rx.borrow() != LlmStatus::Starting { tokio::task::yield_now().await } }).await.expect("loading started");
+        assert!(matches!(read(ocr.clone()).await.unwrap(), Err(OcrError::NotReady(_))), "still loading: no waiting");
+        go.send(()).unwrap();
+        model.ensure_loaded().await.unwrap();
+        assert!(read(ocr).await.unwrap().is_ok(), "loaded: read with it");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

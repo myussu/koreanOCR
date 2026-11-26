@@ -7,14 +7,17 @@
 //! MARU_CLIP=clip.mp4 MARU_CLIP_TRUTH=truth.txt cargo test -p maru-engine --test replay -- --ignored --nocapture
 //! ```
 //!
-//! * `MARU_CLIP_TRUTH`: one subtitle per line, `onset_seconds off_seconds` (when it is on screen in the clip).
+//! * `MARU_CLIP_TRUTH`: one subtitle per line, `onset_seconds off_seconds [text]` (when it is on screen in the clip, and
+//!   optionally its words: the stand-in OCR then answers with them, so the watcher's text rules are exercised too).
+//! * `MARU_CLIP_LABEL`: words the game always shows in the subtitle area (`AUTO LOG`), read along with every subtitle.
 //! * `MARU_CLIP_CROP`: `x:y:w:h` of the subtitle band in the video (default `160:545:960:130`, for 1280×720).
 //! * `MARU_CLIP_START` / `MARU_CLIP_END`: seconds of the clip to play (default 9 to the end).
 //! * `MARU_OCR_MS`: how long the stand-in OCR takes (default 350, about PP-OCR on a CPU).
 //! * `MARU_FILTER_OCR_JITTER=1`: enable visual duplicate confirmation (off by default).
 //!
 //! The stand-in OCR knows the truth: it answers with that subtitle's text if one is on screen when the frame was
-//! taken, and with nothing otherwise. So what is measured is the watcher's timing, not recognition quality.
+//! taken, and with nothing (or only the label) otherwise. So what is measured is the watcher's timing and its text
+//! rules, not recognition quality.
 
 use std::process::{Command, Stdio};
 use std::sync::Arc;
@@ -65,6 +68,9 @@ impl ScreenGrabber for Replay {
 
 struct StandIn {
     ms: u64,
+    /// The subtitles' own words, where the truth file gives them.
+    texts: Vec<Option<String>>,
+    label: Option<String>,
 }
 
 /// Distinct text per subtitle, so that consecutive lines never look like the same one.
@@ -79,10 +85,15 @@ impl OcrEngine for StandIn {
     fn recognize(&self, image: &RgbImage) -> maru_ocr::Result<OcrOutput> {
         std::thread::sleep(Duration::from_millis(self.ms));
         let page = image.get_pixel(0, 0)[0];
-        if page == 0 {
-            return Ok(OcrOutput::default());
+        let mut lines = Vec::new();
+        if page > 0 {
+            let text = self.texts.get(usize::from(page) - 1).cloned().flatten().unwrap_or_else(|| text_of(page));
+            lines.push(OcrLine { text, rect: Rect::new(300.0, 50.0, 360.0, 30.0), words: vec![], confidence: 0.95 });
         }
-        Ok(OcrOutput { lines: vec![OcrLine { text: text_of(page), rect: Rect::new(300.0, 50.0, 360.0, 30.0), words: vec![], confidence: 0.95 }] })
+        if let Some(label) = &self.label {
+            lines.push(OcrLine { text: label.clone(), rect: Rect::new(800.0, 90.0, 120.0, 20.0), words: vec![], confidence: 0.95 });
+        }
+        Ok(OcrOutput { lines })
     }
 }
 
@@ -117,21 +128,26 @@ async fn replay_a_recorded_clip_through_the_live_watcher() {
     let end = std::env::var("MARU_CLIP_END").ok().and_then(|v| v.parse().ok());
     let ocr_ms = env_f64("MARU_OCR_MS", 350.0) as u64;
 
-    let truth: Vec<(f64, f64)> = std::fs::read_to_string(truth_file)
+    let rows: Vec<(f64, f64, Option<String>)> = std::fs::read_to_string(truth_file)
         .expect("truth file")
         .lines()
         .filter_map(|l| {
-            let mut it = l.split_whitespace();
-            Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+            let mut it = l.splitn(3, char::is_whitespace);
+            let (on, off) = (it.next()?.parse().ok()?, it.next()?.trim().parse().ok()?);
+            Some((on, off, it.next().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned)))
         })
         .collect();
+    let truth: Vec<(f64, f64)> = rows.iter().map(|(on, off, _)| (*on, *off)).collect();
+    let texts: Vec<Option<String>> = rows.into_iter().map(|(_, _, text)| text).collect();
+    let label = std::env::var("MARU_CLIP_LABEL").ok().filter(|l| !l.is_empty());
     let (frames, w, h) = decode(&clip, &crop, start, end);
     assert!(!frames.is_empty(), "no frames decoded");
     let length = frames.len() as f64 / FPS;
     let replay = Arc::new(Replay { frames, truth: truth.clone(), start, began: Instant::now() });
 
     let cfg = ContinuousConfig { filter_ocr_jitter: std::env::var("MARU_FILTER_OCR_JITTER").is_ok_and(|v| v == "1"), ..Default::default() };
-    let mut handle = spawn(&tokio::runtime::Handle::current(), replay.clone(), Arc::new(StandIn { ms: ocr_ms }), cfg, Rect::new(0.0, 0.0, w as f32, h as f32));
+    let stand_in = StandIn { ms: ocr_ms, texts: texts.clone(), label };
+    let mut handle = spawn(&tokio::runtime::Handle::current(), replay.clone(), Arc::new(stand_in), cfg, Rect::new(0.0, 0.0, w as f32, h as f32));
     let mut lines: Vec<(f64, String, u32)> = Vec::new(); // (video time received, text, ready_ms as the watcher measured it)
     let mut cleared: Vec<f64> = Vec::new();
     let deadline = Instant::now() + Duration::from_secs_f64(length + 1.0);
@@ -151,8 +167,8 @@ async fn replay_a_recorded_clip_through_the_live_watcher() {
         if *on < start || *on > start + length {
             continue;
         }
-        let text = text_of(i as u8 + 1);
-        let hit = lines.iter().find(|(t, s, _)| *s == text && *t >= *on - 0.05);
+        let text = texts[i].clone().unwrap_or_else(|| text_of(i as u8 + 1));
+        let hit = lines.iter().find(|(t, s, _)| s.starts_with(&text) && *t >= *on - 0.05);
         match hit {
             Some((t, _, ready)) => {
                 let after = t - on;

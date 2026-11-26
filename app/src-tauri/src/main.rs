@@ -169,6 +169,8 @@ fn main() {
             watch::spawn_scan_hits(app.handle().clone(), state.clone());
             reading::spawn(app.handle().clone(), state.clone());
             reading_feedback::spawn(app.handle().clone(),state.clone());
+            // A model on another computer is loaded now rather than at the first subtitle ([llm] server_keep_minutes).
+            state.engine().hold_server_models(false);
             app.manage(state);
             Ok(())
         })
@@ -277,6 +279,14 @@ fn main() {
         if matches!(event,RunEvent::ExitRequested {code:Some(_),..}) { input_session::finish_all(handle); }
         if let RunEvent::Exit = event && let Some(service) = handle.try_state::<maru_engine::resource_monitor::ResourceService>() {
             service.shutdown();
+        }
+        // Give the other computer its GPU back; an unreachable server must not hold up quitting.
+        if let RunEvent::Exit = event && let Some(state) = handle.try_state::<Arc<AppState>>() {
+            let engine = state.engine().clone();
+            // The timer must be created inside the runtime, not on this (main) thread.
+            tauri::async_runtime::block_on(async move {
+                let _ = tokio::time::timeout(std::time::Duration::from_secs(2), engine.release_server_models()).await;
+            });
         }
         // Closing the hub window must not quit: Maru lives in the tray.
         if let RunEvent::ExitRequested { api, code, .. } = event

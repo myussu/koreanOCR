@@ -258,6 +258,9 @@ pub struct OcrConfig {
     /// Pair PP-OCR with the PaddleOCR-VL reading model when it is installed (`maru setup ocr-vl`):
     /// better letters, same lines. Costs about 2 GB of VRAM; turn off to save it.
     pub vision_reader: bool,
+    /// CPU threads PP-OCR may use for one read. 0 = ONNX Runtime's choice (every core: the quickest single read,
+    /// but live subtitles then compete with the game for all of them).
+    pub threads: u32,
 }
 
 impl Default for OcrConfig {
@@ -270,6 +273,7 @@ impl Default for OcrConfig {
             device: "cpu".into(),
             min_confidence: 0.80,
             vision_reader: true,
+            threads: 0,
         }
     }
 }

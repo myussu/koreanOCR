@@ -94,6 +94,15 @@ fn check_hotkeys(cfg: &Config) -> Res<()> {
     Ok(())
 }
 
+/// The backup must be a local live model whose file is set and readable.
+fn check_backup(live: &maru_core::live_model::LiveTranslationConfig, backup: maru_core::live_model::LiveModel) -> Res<()> {
+    if backup == maru_core::live_model::LiveModel::Main {
+        return Err("The backup translator must be a local live model, not the main model.".into());
+    }
+    let path = live.path_for(backup).ok_or("Set the backup translator's GGUF file first: pick its card once in Live subtitles.")?;
+    maru_engine::live_models::validate_file(path)
+}
+
 fn check_url(what: &str, url: &str) -> Res<()> {
     if url.starts_with("http://") || url.starts_with("https://") {
         return Ok(());
@@ -114,6 +123,9 @@ pub fn save_settings(app: AppHandle, state: S, changes: Map<String, Value>) -> R
     if patched.changed.iter().any(|p| p.starts_with("continuous.translation.")) {
         if let Some(path) = new.continuous.translation.selected_path() {
             maru_engine::live_models::validate_file(path)?;
+        }
+        if let Some(backup) = new.continuous.translation.backup_model {
+            check_backup(&new.continuous.translation, backup)?;
         }
         if let Some(endpoint) = &new.continuous.translation.snapshot_endpoint {
             check_url("snapshot server", endpoint)?;
@@ -212,6 +224,20 @@ mod tests {
         assert!(dup.contains("hover") && dup.contains("translate"), "{dup}");
         check_hotkeys(&with(|c| c.hotkeys.scan = "Ctrl+Alt+S | F7".into())).unwrap();
         assert!(check_hotkeys(&with(|c| c.hotkeys.scan = "F7 | F7".into())).is_err(), "twice in one action is also a clash");
+    }
+
+    #[test]
+    fn a_backup_translator_must_be_a_local_model_with_its_file_set() {
+        use maru_core::live_model::{LiveModel, LiveTranslationConfig};
+        let mut live = LiveTranslationConfig::default();
+        assert!(check_backup(&live, LiveModel::Main).is_err());
+        let err = check_backup(&live, LiveModel::HyMt2Small).unwrap_err();
+        assert!(err.contains("GGUF"), "{err}");
+        let file = std::env::temp_dir().join(format!("maru-backup-{}.gguf", std::process::id()));
+        std::fs::write(&file, b"GGUFtest").unwrap();
+        live.hy_mt2_small_path = Some(file.clone());
+        check_backup(&live, LiveModel::HyMt2Small).unwrap();
+        let _ = std::fs::remove_file(file);
     }
 
     #[test]

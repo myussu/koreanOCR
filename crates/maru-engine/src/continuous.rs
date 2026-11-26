@@ -131,6 +131,9 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
     let mut read_at: Option<Instant> = None;
     let mut still_since = Instant::now(); // the last time the picture changed
     let mut burst: Option<Instant> = None; // when the picture began changing towards the line in progress
+    // When a read last saw the line on screen: a line that replaces it without a gap appeared after that, not when
+    // a moving backdrop first changed the picture.
+    let mut shown_seen: Option<Instant> = None;
     let mut pending: Option<Pending> = None; // read once, waiting for a second read to agree
     let mut shown = String::new(); // the line on screen now
     let mut shown_lettering: Option<Arc<Lettering>> = None;
@@ -228,14 +231,20 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
 
         let ocr_started = Instant::now();
         let ocr = ocr.clone();
-        let Ok((Ok(out), frame)) = tokio::task::spawn_blocking(move || { let out = ocr.recognize(&frame); (out, frame) }).await else { continue };
+        // Never wait for a reader that is still loading: a line on screen meanwhile is read without it.
+        let Ok((Ok(out), frame)) = tokio::task::spawn_blocking(move || { let out = ocr.recognize_now(&frame); (out, frame) }).await else { continue };
         let ocr_ms = ocr_started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
         read_sig = Some(sig);
         read_at = Some(Instant::now());
 
         let lettering = mask.and_then(|m| Lettering::new(&frame, out.bounds(), m)).map(Arc::new);
         let out = out.to_screen(maru_core::Point { x: region.x, y: region.y }, 1.0);
-        let text = out.lines.iter().map(|l| l.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+        let mut text = out.lines.iter().map(|l| l.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+        // Live subtitles are Korean: a reading without a single Hangul syllable is a game's own label (`AUTO LOG`) or
+        // noise, so the subtitle area is as good as empty.
+        if !text.chars().any(maru_lang::hangul::is_syllable) {
+            text.clear();
+        }
 
         if text.is_empty() {
             pending = None;
@@ -266,12 +275,14 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
             crate::change::normalize(&shown) == crate::change::normalize(&text)
                 || shown_lettering.as_ref().zip(lettering.as_ref()).is_some_and(|(before, after)| before.same_read(&shown, &text, after))
         } else {
-            similarity(&shown, &text) >= SAME_TEXT
+            // A long line that gains a 안 or changes a number is still ≥ 88% alike: that is a new line, not a re-read.
+            similarity(&shown, &text) >= SAME_TEXT && !crate::live_merge::meaning_differs(&shown, &text)
         };
         if !shown.is_empty() && same {
             if cfg.filter_ocr_jitter && shown != text {
                 tracing::debug!(before = %shown, after = %text, "live OCR jitter ignored");
             }
+            shown_seen = Some(now);
             pending = None; // the line already on screen, read again
             if still {
                 burst = None;
@@ -282,13 +293,15 @@ async fn watch(screen: Arc<dyn ScreenGrabber>, ocr: Arc<dyn OcrEngine>, cfg: Con
         let read = Pending { text, out, ocr_ms, lettering };
         // Lettering that was there, and did not change while the OCR ran, is a finished line: one read is enough.
         let settled = !(still || agrees) && present && (text_still || text_settled(&screen, region, score, area).await);
+        tracing::trace!(text = %read.text, still, agrees, present, settled, "live read");
         if !(still || agrees || settled) {
             pending = Some(read); // wait for the next read (or the picture holding still) to confirm it
             continue;
         }
 
-        let appeared = burst.take().unwrap_or(now);
+        let appeared = burst.take().map_or(now, |b| shown_seen.filter(|_| !shown.is_empty()).map_or(b, |seen| b.max(seen)));
         pending = None;
+        shown_seen = Some(now);
         shown = read.text.clone();
         shown_lettering = read.lettering.clone();
         score_shown = score;
@@ -370,6 +383,48 @@ mod tests {
         assert_eq!(b.capture.text, "오늘도 만나서 반가워요", "the jittered re-read must not be reported");
 
         assert!(next(&mut h, 400).await.is_none(), "a static screen produces nothing more");
+    }
+
+    fn watch_pages(pages: Vec<(u8, OcrOutput)>, frames: Vec<RgbImage>) -> ContinuousHandle {
+        let ocr = Arc::new(FakeOcr::new(pages));
+        spawn(&tokio::runtime::Handle::current(), Arc::new(FakeScreen::new(frames)), ocr, cfg(), Rect::new(100.0, 800.0, 400.0, 80.0))
+    }
+
+    #[tokio::test]
+    async fn a_long_line_replaced_without_a_gap_by_its_negation_or_another_number_is_a_new_line() {
+        let label = |text: &str| vec![line(text, 5.0, 5.0, 300.0), line("AUTO LOG", 330.0, 60.0, 60.0)];
+        let pages = vec![
+            (10, OcrOutput { lines: label("오늘은 다 같이 저녁에 성으로 간다고 했어") }),
+            (11, OcrOutput { lines: label("오늘은 다 같이 저녁에 성으로 안 간다고 했어") }),
+            (20, OcrOutput { lines: label("3시에 광장 분수대 앞에서 만나자") }),
+            (21, OcrOutput { lines: label("5시에 광장 분수대 앞에서 만나자") }),
+        ];
+        // Each line on its own backdrop, as when a cutscene cuts to the next speaker.
+        let mut frames = vec![frame(10, 120); 12];
+        frames.extend(vec![frame(11, 170); 12]);
+        frames.extend(vec![frame(20, 60); 12]);
+        frames.extend(vec![frame(21, 210); 200]);
+        let mut h = watch_pages(pages, frames);
+        let mut read = Vec::new();
+        while let Some(l) = next_line(&mut h, 1500).await {
+            read.push(l.capture.text);
+        }
+        assert_eq!(read.len(), 4, "every line is reported: {read:?}");
+        assert!(read[1].contains("안 간다") && read[3].starts_with("5시에"), "{read:?}");
+    }
+
+    #[tokio::test]
+    async fn a_reading_without_hangul_is_an_empty_subtitle_area() {
+        let pages = vec![
+            (10, OcrOutput { lines: vec![line("안녕하세요 여러분", 5.0, 5.0, 200.0)] }),
+            (30, OcrOutput { lines: vec![line("AUTO LOG", 330.0, 60.0, 60.0)] }),
+        ];
+        let mut frames = vec![frame(10, 120); 12];
+        frames.extend(vec![frame(30, 20); 200]); // the subtitle is gone; only the game's label is left
+        let mut h = watch_pages(pages, frames);
+        assert!(next_line(&mut h, 2000).await.is_some());
+        assert!(matches!(next(&mut h, 2000).await, Some(LiveEvent::Cleared)), "the label alone is no line, and the subtitle has gone");
+        assert!(next(&mut h, 500).await.is_none(), "and nothing is reported for the label");
     }
 
     #[tokio::test]

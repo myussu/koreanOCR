@@ -29,6 +29,8 @@ pub struct PaddleConfig {
     /// default (960 px), which suits selections; reading a whole 1080p screen needs about 2048 or
     /// small interface text shrinks out of existence.
     pub detect_side: Option<u32>,
+    /// Threads one read may use; `None` leaves ONNX Runtime's default (all cores).
+    pub threads: Option<usize>,
 }
 
 impl PaddleConfig {
@@ -41,6 +43,7 @@ impl PaddleConfig {
             dict_path: cfg.dict_path.clone().unwrap_or_else(|| dir.join("dict.txt")),
             device: cfg.device.clone(),
             detect_side: None,
+            threads: (cfg.threads > 0).then_some(cfg.threads as usize),
         }
     }
 
@@ -58,13 +61,13 @@ impl PaddleConfig {
     }
 }
 
-/// `cpu` → default session; `cuda:0` / `directml:0` → that execution provider.
-pub fn session_config(device: &str) -> Result<Option<OrtSessionConfig>> {
+/// `cpu` → default session (or one limited to `threads`); `cuda:0` / `directml:0` → that execution provider.
+pub fn session_config(device: &str, threads: Option<usize>) -> Result<Option<OrtSessionConfig>> {
     let d = device.trim().to_ascii_lowercase();
     let (kind, id) = d.split_once(':').unwrap_or((d.as_str(), "0"));
     let device_id: i32 = id.parse().map_err(|_| OcrError::Init(format!("bad device id in {device:?}")))?;
     let provider = match kind {
-        "cpu" | "" => return Ok(None),
+        "cpu" | "" => return Ok(threads.map(|n| OrtSessionConfig::new().with_intra_threads(n.max(1)))),
         "cuda" => OrtExecutionProvider::CUDA {
             device_id: Some(device_id),
             gpu_mem_limit: None,
@@ -76,7 +79,8 @@ pub fn session_config(device: &str) -> Result<Option<OrtSessionConfig>> {
         other => return Err(OcrError::Init(format!("unknown OCR device {other:?}; use cpu, cuda[:N] or directml[:N]"))),
     };
     // DirectML requires sequential execution; we never enable parallel execution.
-    Ok(Some(OrtSessionConfig::new().with_execution_providers(vec![provider])))
+    let session = OrtSessionConfig::new().with_execution_providers(vec![provider]);
+    Ok(Some(match threads { Some(n) => session.with_intra_threads(n.max(1)), None => session }))
 }
 
 pub struct PaddleOcr {
@@ -90,7 +94,7 @@ impl PaddleOcr {
         let mut builder = OAROCRBuilder::new(cfg.det_model.clone(), cfg.rec_model.clone(), Path::new("in-memory-dict"))
             .character_dict_content(dict)
             .return_word_box(true);
-        if let Some(session) = session_config(&cfg.device)? {
+        if let Some(session) = session_config(&cfg.device, cfg.threads)? {
             builder = builder.ort_session(session);
         }
         if let Some(side) = cfg.detect_side {
@@ -157,12 +161,15 @@ mod tests {
 
     #[test]
     fn device_strings() {
-        assert!(session_config("cpu").unwrap().is_none());
-        assert!(session_config("CUDA:1").unwrap().is_some());
-        assert!(session_config("directml").unwrap().is_some());
-        assert!(session_config("dml:0").unwrap().is_some());
-        assert!(session_config("tpu").is_err());
-        assert!(session_config("cuda:x").is_err());
+        assert!(session_config("cpu", None).unwrap().is_none());
+        assert!(session_config("CUDA:1", None).unwrap().is_some());
+        assert!(session_config("directml", None).unwrap().is_some());
+        assert!(session_config("dml:0", None).unwrap().is_some());
+        assert!(session_config("tpu", None).is_err());
+        assert!(session_config("cuda:x", None).is_err());
+        // A thread cap keeps a CPU read off the game's cores; unset keeps the old default session.
+        assert_eq!(session_config("cpu", Some(4)).unwrap().unwrap().intra_threads, Some(4));
+        assert_eq!(session_config("directml", Some(2)).unwrap().unwrap().intra_threads, Some(2));
     }
 
     #[test]

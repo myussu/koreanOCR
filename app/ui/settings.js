@@ -76,8 +76,9 @@ export async function settingsView() {
       return { el: h('div', { class: 'set-ctl' }, h('label', { class: 'sw' }, input, h('i')), reset), sync, rebuild: () => (input.checked = value()) };
     }
     if (field.type === 'select') {
-      input = h('select', { onchange: (e) => edit(e.target.value) }, field.options.map((o) => h('option', { value: o.value, text: o.label })));
-      const set = () => (input.value = value());
+      // A nullable select stores its empty option as null ("off").
+      input = h('select', { onchange: (e) => edit(field.nullable && e.target.value === '' ? null : e.target.value) }, field.options.map((o) => h('option', { value: o.value ?? '', text: o.label })));
+      const set = () => (input.value = value() ?? '');
       set();
       return { el: h('div', { class: 'set-ctl' }, input, reset), sync, rebuild: set };
     }

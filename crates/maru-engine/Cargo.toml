@@ -38,7 +38,8 @@ maru-llm = { workspace = true, features = ["testing"] }
 
 # ONNX Runtime: bundled on Windows (the supported platform), located at run time elsewhere.
 [target.'cfg(windows)'.dependencies]
-maru-ocr = { workspace = true, features = ["ort-download"] }
+# DirectML lets `[ocr] device = "directml:0"` run PP-OCR on any DirectX 12 GPU; the CPU stays the default.
+maru-ocr = { workspace = true, features = ["ort-download", "directml"] }
 
 [target.'cfg(not(windows))'.dependencies]
 maru-ocr = { workspace = true, features = ["ort-dynamic"] }
