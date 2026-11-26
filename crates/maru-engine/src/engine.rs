@@ -114,7 +114,13 @@ pub(crate) struct Inner {
     pub anki: Option<AnkiClient>,
     /// A sync with AnkiWeb is already scheduled.
     pub anki_sync_pending: std::sync::atomic::AtomicBool,
+    /// Batches of Anki adds in progress (`AnkiBatch`) and when the last add or batch ended: the AnkiWeb sync waits
+    /// for both, since Anki refuses adds while it syncs.
+    pub(crate) anki_batches: std::sync::atomic::AtomicUsize,
+    pub(crate) anki_quiet_since: Mutex<Instant>,
     pub anki_add_gate: Arc<tokio::sync::Mutex<()>>,
+    /// Held by the one add in progress; a refresh only holds `anki_add_gate`, which an add waits for.
+    pub anki_add_slot: Arc<tokio::sync::Mutex<()>>,
     pub ocr_corrections: Mutex<crate::ocr_corrections::OcrState>,
     pub reading_areas: Mutex<crate::reading_areas::ReadingState>,
     pub runtime: tokio::runtime::Handle,
@@ -201,7 +207,10 @@ impl Engine {
             deep_task: Mutex::new(None),
             anki,
             anki_sync_pending: std::sync::atomic::AtomicBool::new(false),
+            anki_batches: std::sync::atomic::AtomicUsize::new(0),
+            anki_quiet_since: Mutex::new(Instant::now()),
             anki_add_gate: Arc::new(tokio::sync::Mutex::new(())),
+            anki_add_slot: Arc::new(tokio::sync::Mutex::new(())),
             ocr_corrections: Mutex::new(Default::default()),
             reading_areas: Mutex::new(Default::default()),
             runtime: tokio::runtime::Handle::current(),

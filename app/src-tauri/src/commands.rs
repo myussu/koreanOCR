@@ -452,7 +452,7 @@ pub async fn anki_add(state: S<'_>, request: AnkiAddRequest) -> Res<AnkiAddReply
         }
     }
     let added = engine
-        .finish_anki_add(permit, AnkiAddOptions { key: request.key, deck: request.deck, tags: request.tags, reverse, app: request.app, word_audio, sentence_audio })
+        .finish_anki_add(permit, AnkiAddOptions { key: request.key, deck: request.deck, tags: request.tags, reverse, app: request.app, word_audio, sentence_audio, context: None })
         .await
         .map_err(err)?;
     Ok(AnkiAddReply { added, note })

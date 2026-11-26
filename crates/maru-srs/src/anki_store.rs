@@ -35,11 +35,14 @@ impl Vocab {
         )?;
         tx.execute("DELETE FROM anki_membership", [])?;
         for (key, interval) in states {
-            tx.execute("INSERT OR IGNORE INTO words (key, surface, first_seen, last_seen) VALUES (?1, ?1, ?2, ?2)", params![key, now])?;
-            tx.execute(
-                "UPDATE words SET anki_interval = ?2, saved = 1 WHERE key = ?1",
-                params![key, interval],
-            )?;
+            // A suspended card (no interval) is still in Anki, but says nothing about what you know.
+            if interval.is_some() {
+                tx.execute("INSERT OR IGNORE INTO words (key, surface, first_seen, last_seen) VALUES (?1, ?1, ?2, ?2)", params![key, now])?;
+                tx.execute(
+                    "UPDATE words SET anki_interval = ?2, saved = 1 WHERE key = ?1",
+                    params![key, interval],
+                )?;
+            }
             tx.execute(
                 "INSERT OR IGNORE INTO anki_membership (key) VALUES (?1)",
                 [key],
@@ -198,6 +201,16 @@ mod tests {
         assert_eq!(v.get("suspended").unwrap().unwrap().anki_interval, None);
         assert_eq!(v.get("manual").unwrap().unwrap().state, WordState::Known);
         assert_eq!(v.anki_count().unwrap(), 2);
+    }
+
+    #[test]
+    fn a_suspended_card_does_not_save_or_add_a_word_maru_has_never_seen() {
+        let v = Vocab::open_in_memory(SrsConfig::default()).unwrap();
+        v.replace_anki_progress(&[("보류".into(), None), ("공부".into(), Some(3.0))], 1).unwrap();
+        assert!(v.get("보류").unwrap().is_none(), "no local word is invented for a suspended card");
+        assert!(v.get("공부").unwrap().unwrap().saved);
+        assert_eq!(v.anki_count().unwrap(), 2, "both cards are still in Anki");
+        assert_eq!(v.stats(1).unwrap().saved, 1);
     }
 
     #[test]

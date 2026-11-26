@@ -79,7 +79,7 @@ pub fn suggest_decks(
 }
 
 /// `TOPIK 1` → `topik-1`.
-fn slug(s: &str) -> String {
+pub(crate) fn slug(s: &str) -> String {
     let t: String = s.trim().chars().map(|c| if c.is_alphanumeric() { c.to_lowercase().next().unwrap_or(c) } else { '-' }).collect();
     t.split('-').filter(|p| !p.is_empty()).collect::<Vec<_>>().join("-")
 }
@@ -126,6 +126,21 @@ pub fn tags_for(cfg: &AnkiConfig, word: &WordRecord, app: Option<&str>, profile:
 
 // ───────────────────────────── the engine's side ─────────────────────────────
 
+/// How long Anki must have had no adds before Maru asks it to sync with AnkiWeb.
+const SYNC_QUIET: Duration = Duration::from_secs(4);
+
+/// A batch of Anki adds in progress (see [`Engine::anki_batch`]).
+pub struct AnkiBatch {
+    inner: std::sync::Arc<crate::engine::Inner>,
+}
+
+impl Drop for AnkiBatch {
+    fn drop(&mut self) {
+        *crate::engine::lock(&self.inner.anki_quiet_since) = std::time::Instant::now();
+        self.inner.anki_batches.fetch_sub(1, std::sync::atomic::Ordering::AcqRel);
+    }
+}
+
 /// Everything the "Add to Anki" popover needs.
 #[derive(Debug, Clone, Serialize)]
 pub struct AnkiOverview {
@@ -166,6 +181,8 @@ pub struct AnkiAddOptions {
     pub app: Option<String>,
     pub word_audio: Option<Media>,
     pub sentence_audio: Option<Media>,
+    /// The sentence to put on the card; `None` uses the newest one the word was met in.
+    pub context: Option<maru_srs::Context>,
 }
 
 fn anki_error(e: maru_srs::SrsError) -> EngineError {
@@ -173,7 +190,7 @@ fn anki_error(e: maru_srs::SrsError) -> EngineError {
 }
 
 impl Engine {
-    fn anki_client(&self) -> Result<&maru_srs::AnkiClient> {
+    pub(crate) fn anki_client(&self) -> Result<&maru_srs::AnkiClient> {
         self.inner.anki.as_ref().ok_or_else(|| EngineError::Other("Anki is switched off: turn it on in Settings → Anki".into()))
     }
 
@@ -236,14 +253,22 @@ impl Engine {
     }
 
     /// Sync with AnkiWeb in a few seconds; asking again meanwhile does not start another.
-    fn schedule_anki_sync(&self) {
+    pub(crate) fn schedule_anki_sync(&self) {
         use std::sync::atomic::Ordering;
+        *crate::engine::lock(&self.inner.anki_quiet_since) = std::time::Instant::now();
         if self.inner.anki_sync_pending.swap(true, Ordering::AcqRel) {
             return;
         }
         let inner = self.inner.clone();
         self.inner.runtime.spawn(async move {
-            tokio::time::sleep(Duration::from_secs(4)).await;
+            // Anki refuses adds while it syncs: wait until no batch is adding cards and the last add is SYNC_QUIET old.
+            loop {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+                let quiet = crate::engine::lock(&inner.anki_quiet_since).elapsed() >= SYNC_QUIET;
+                if quiet && inner.anki_batches.load(Ordering::Acquire) == 0 {
+                    break;
+                }
+            }
             inner.anki_sync_pending.store(false, Ordering::Release);
             if let Some(anki) = inner.anki.as_ref()
                 && let Err(e) = anki.sync().await
@@ -251,6 +276,27 @@ impl Engine {
                 tracing::warn!("Anki sync: {e}");
             }
         });
+    }
+
+    /// Hold while adding several cards (their sounds take time between adds): the AnkiWeb sync waits until it is dropped.
+    pub fn anki_batch(&self) -> AnkiBatch {
+        self.inner.anki_batches.fetch_add(1, std::sync::atomic::Ordering::AcqRel);
+        AnkiBatch { inner: self.inner.clone() }
+    }
+
+    /// Maru's Anki notes that lack a sound (speech was off or failed when they were added): how many, and the first `limit`.
+    pub async fn anki_silent_notes(&self, limit: usize) -> Result<maru_srs::anki_sounds::SilentNotes> {
+        self.anki_client()?.silent_notes(limit).await.map_err(anki_error)
+    }
+
+    /// Give a note the sounds it lacks; `false` if its fields have a sound by now.
+    pub async fn anki_add_sounds(&self, note_id: u64, word: Option<&Media>, sentence: Option<&Media>) -> Result<bool> {
+        let anki = self.anki_client()?;
+        let added = anki.add_sounds(note_id, word, sentence).await.map_err(anki_error)?;
+        if added && anki.config().sync_after_add {
+            self.schedule_anki_sync();
+        }
+        Ok(added)
     }
 
     /// Ask Anki to sync with AnkiWeb right now.
@@ -287,8 +333,10 @@ impl Engine {
         let anki = self.anki_client()?;
         let version = anki.ping().await.map_err(anki_error)?;
         anki.ensure_model().await.map_err(anki_error)?;
+        anki.ensure_sentence_model().await.map_err(anki_error)?;
         let decks = anki.decks().await.map_err(anki_error)?.len();
-        Ok(format!("Anki is reachable (AnkiConnect v{version}); the note type \"{}\" is ready; {decks} decks.", anki.config().note_type))
+        let cfg = anki.config();
+        Ok(format!("Anki is reachable (AnkiConnect v{version}); the note types \"{}\" (words) and \"{}\" (sentences) are ready; {decks} decks.", cfg.note_type, cfg.sentence_note_type))
     }
 }
 

@@ -4,6 +4,8 @@ pub mod anki;
 pub mod fsrs;
 pub mod store;
 pub mod anki_store;
+pub mod anki_sentence;
+pub mod anki_sounds;
 
 use thiserror::Error;
 

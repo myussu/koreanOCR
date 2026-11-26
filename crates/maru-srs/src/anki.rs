@@ -36,11 +36,11 @@ pub const FIELDS: [&str; 12] = [
     "Reverse",
 ];
 
-fn esc(s: &str) -> String {
+pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
-fn unesc(s: &str) -> String {
+pub(crate) fn unesc(s: &str) -> String {
     s.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
 }
 
@@ -150,7 +150,7 @@ pub struct Media {
 }
 
 impl Media {
-    fn attachment(&self, field: &str) -> Value {
+    pub(crate) fn attachment(&self, field: &str) -> Value {
         json!({ "filename": self.filename, "data": base64::engine::general_purpose::STANDARD.encode(&self.data), "fields": [field] })
     }
 }
@@ -208,7 +208,7 @@ pub struct DueCounts {
 }
 
 /// Escape text for an Anki search: backslash, quote and the wildcard characters.
-fn search_text(s: &str) -> String {
+pub(crate) fn search_text(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         if matches!(c, '\\' | '"' | '*' | '_' | ':') {
@@ -219,9 +219,13 @@ fn search_text(s: &str) -> String {
     out
 }
 
-fn str_of(v: &Value) -> String {
+pub(crate) fn str_of(v: &Value) -> String {
     v.as_str().unwrap_or_default().to_string()
 }
+
+/// Anki busy (`Collection lifecycle operation is active`): wait this long between tries, this many times (about 15 s).
+const BUSY_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+const BUSY_RETRIES: usize = 30;
 
 pub struct AnkiClient {
     http: reqwest::Client,
@@ -238,7 +242,18 @@ impl AnkiClient {
         &self.cfg
     }
 
-    async fn call(&self, action: &str, params: Value) -> Result<Value> {
+    pub(crate) async fn call(&self, action: &str, params: Value) -> Result<Value> {
+        // While Anki syncs (or opens or closes a collection) it refuses every request for a moment: wait it out.
+        for _ in 0..BUSY_RETRIES {
+            match self.call_once(action, params.clone()).await {
+                Err(SrsError::Anki(e)) if e.contains("lifecycle operation is active") => tokio::time::sleep(BUSY_WAIT).await,
+                other => return other,
+            }
+        }
+        self.call_once(action, params).await
+    }
+
+    async fn call_once(&self, action: &str, params: Value) -> Result<Value> {
         let mut body = json!({ "action": action, "version": 6, "params": params });
         if let Some(key) = self.cfg.api_key.as_deref().map(str::trim).filter(|k| !k.is_empty()) {
             body["key"] = json!(key);
@@ -327,6 +342,11 @@ impl AnkiClient {
     /// The word's note, if Anki has one.
     pub async fn find(&self, word: &str) -> Result<Option<ExistingNote>> {
         let query = format!("\"note:{}\" \"Word:{}\"", search_text(&self.cfg.note_type), search_text(&esc(word)));
+        self.first_note(&query).await
+    }
+
+    /// The first note an Anki search finds, with the deck and interval of its first card.
+    pub(crate) async fn first_note(&self, query: &str) -> Result<Option<ExistingNote>> {
         let ids = self.call("findNotes", json!({ "query": query })).await?;
         let Some(note_id) = ids.as_array().and_then(|a| a.first()).and_then(Value::as_u64) else { return Ok(None) };
         let info = self.call("notesInfo", json!({ "notes": [note_id] })).await?;
@@ -444,6 +464,7 @@ impl AnkiClient {
         let ids: Vec<u64> = found.as_array().ok_or_else(|| SrsError::Anki("Anki returned an invalid card list".into()))?
             .iter().map(|v| v.as_u64().ok_or_else(|| SrsError::Anki("Anki returned an invalid card ID".into()))).collect::<Result<_>>()?;
         let mut out = Vec::new();
+        let mut blank = 0;
         for chunk in ids.chunks(200) {
             let infos = self.call("cardsInfo", json!({ "cards": chunk })).await?;
             let infos = infos.as_array().ok_or_else(|| SrsError::Anki("Anki returned invalid card details".into()))?;
@@ -451,9 +472,15 @@ impl AnkiClient {
                 if c["type"].as_i64().is_none() || c["queue"].as_i64().is_none() || c["interval"].as_f64().is_none() {
                     return Err(SrsError::Anki("Anki returned incomplete scheduling details; progress was not changed".into()));
                 }
-                let word = unesc(&str_of(&c["fields"]["Word"]["value"]));
-                if word.is_empty() {
+                // No Word field at all means the note type changed: every card would look gone, so stop.
+                let Some(field) = c["fields"].get("Word") else {
                     return Err(SrsError::Anki("Anki card details are missing the Word field; progress was not changed".into()));
+                };
+                // One note left empty (by hand) names no word; it should not hold up the rest.
+                let word = unesc(&str_of(&field["value"]));
+                if word.is_empty() {
+                    blank += 1;
+                    continue;
                 }
                 out.push(CardState {
                     word,
@@ -465,6 +492,9 @@ impl AnkiClient {
                     lapses: c["lapses"].as_u64().unwrap_or(0) as u32,
                 });
             }
+        }
+        if blank > 0 {
+            tracing::warn!("{blank} Anki card(s) of the Maru note type have an empty Word field and were skipped");
         }
         Ok(out)
     }
@@ -580,6 +610,8 @@ mod tests {
         notes: Vec<(u64, Value, Vec<u64>)>, // id, note json, card ids
         cards: BTreeMap<u64, (String, f64)>, // card id → deck, interval
         next: u64,
+        /// Requests still to refuse as Anki does while it syncs.
+        busy: usize,
     }
 
     type Log = Arc<Mutex<Vec<(String, Value, Option<String>)>>>;
@@ -628,6 +660,10 @@ mod tests {
     }
 
     fn handle(c: &mut Collection, action: &str, p: &Value) -> std::result::Result<Value, String> {
+        if c.busy > 0 {
+            c.busy -= 1;
+            return Err("Collection lifecycle operation is active.".into());
+        }
         Ok(match action {
             "version" => json!(6),
             "deckNames" => json!(c.decks),
@@ -652,9 +688,19 @@ mod tests {
                 c.styling.insert(str_of(&p["model"]["name"]), str_of(&p["model"]["css"]));
                 json!(null)
             }
+            "findNotes" if str_of(&p["query"]).contains("Audio:") => {
+                // The "missing sound" search: empty sound fields with something to say.
+                let empty = |n: &Value, f: &str| n["fields"].get(f).is_some_and(|v| str_of(v).is_empty());
+                let ids: Vec<u64> = c.notes.iter().filter(|(_, n, _)| if n["fields"].get("Word").is_some() {
+                    empty(n, "WordAudio") || (empty(n, "SentenceAudio") && !empty(n, "Sentence"))
+                } else { empty(n, "SentenceAudio") }).map(|n| n.0).collect();
+                json!(ids)
+            }
             "findNotes" => {
                 let q = str_of(&p["query"]);
-                let ids: Vec<u64> = c.notes.iter().filter(|(_, n, _)| q.contains(&format!("Word:{}", str_of(&n["fields"]["Word"])))).map(|n| n.0).collect();
+                // A note matches its own note type and its key field: `Word` for words, `Sentence` for sentence cards.
+                let key = |n: &Value| if n["fields"].get("Word").is_some() { format!("\"Word:{}\"", str_of(&n["fields"]["Word"])) } else { format!("\"Sentence:{}\"", str_of(&n["fields"]["Sentence"])) };
+                let ids: Vec<u64> = c.notes.iter().filter(|(_, n, _)| q.contains(&format!("\"note:{}\"", str_of(&n["modelName"]))) && q.contains(&key(n))).map(|n| n.0).collect();
                 json!(ids)
             }
             "notesInfo" => {
@@ -669,7 +715,14 @@ mod tests {
                     .collect::<Vec<_>>())
             }
             "addNote" => {
-                let n = p["note"].clone();
+                let mut n = p["note"].clone();
+                // Like AnkiConnect: each attached sound lands in its field as `[sound:…]`.
+                for a in p["note"]["audio"].as_array().into_iter().flatten() {
+                    for f in a["fields"].as_array().unwrap() {
+                        let f = str_of(f);
+                        n["fields"][&f] = json!(format!("{}[sound:{}]", str_of(&n["fields"][&f]), str_of(&a["filename"])));
+                    }
+                }
                 if !c.decks.contains(&str_of(&n["deckName"])) {
                     return Err(format!("deck was not found: {}", n["deckName"]));
                 }
@@ -698,7 +751,10 @@ mod tests {
                     let (deck, ivl) = c.cards.get(&id).cloned().unwrap();
                     let note = c.notes.iter().find(|n| n.2.contains(&id)).unwrap();
                     json!({ "cardId": id, "deckName": deck, "interval": ivl, "type": if ivl > 0.0 { 2 } else { 0 }, "queue": 0, "reps": 3, "lapses": 1,
-                            "fields": { "Word": { "value": note.1["fields"]["Word"], "order": 0 } } })
+                            "fields": match note.1["fields"].get("Word") {
+                                Some(word) => json!({ "Word": { "value": word, "order": 0 } }),
+                                None => json!({}),
+                            } })
                 })
                 .collect::<Vec<_>>()),
             "findCards" => {
@@ -712,6 +768,16 @@ mod tests {
                 let note = c.notes.iter_mut().find(|n| n.0 == id).ok_or("note was not found")?;
                 for (k, v) in p["note"]["fields"].as_object().unwrap() {
                     note.1["fields"][k] = v.clone();
+                }
+                // Like the real AnkiConnect: a sound is attached only to a field the update also lists in `fields`
+                // (with an empty `fields` it answers success and attaches nothing).
+                for a in p["note"]["audio"].as_array().into_iter().flatten() {
+                    for f in a["fields"].as_array().unwrap() {
+                        let f = str_of(f);
+                        if p["note"]["fields"].get(&f).is_some() {
+                            note.1["fields"][&f] = json!(format!("{}[sound:{}]", str_of(&note.1["fields"][&f]), str_of(&a["filename"])));
+                        }
+                    }
                 }
                 json!(null)
             }
@@ -846,6 +912,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_card_with_an_empty_word_is_skipped_but_a_missing_word_field_stops_the_refresh() {
+        let col = Arc::new(Mutex::new(Collection::default()));
+        let (url, _) = fake_anki(col.clone()).await;
+        let anki = client(url);
+        anki.add(&request("Korean", ReverseMode::Subdeck)).await.unwrap();
+        {
+            let mut c = col.lock().unwrap();
+            c.cards.insert(90010, ("Korean".into(), 0.0));
+            c.notes.push((9001, json!({ "fields": { "Word": "" } }), vec![90010]));
+        }
+        let states = anki.states().await.unwrap();
+        assert_eq!(states.iter().map(|s| s.word.as_str()).collect::<Vec<_>>(), ["공부하다"]);
+        {
+            let mut c = col.lock().unwrap();
+            c.cards.insert(90020, ("Korean".into(), 0.0));
+            c.notes.push((9002, json!({ "fields": { "Front": "공부" } }), vec![90020]));
+        }
+        let err = anki.states().await.unwrap_err().to_string();
+        assert!(err.contains("missing the Word field"), "{err}");
+    }
+
+    #[tokio::test]
     async fn the_api_key_goes_with_every_call_and_sync_is_a_plain_call() {
         let col = Arc::new(Mutex::new(Collection::default()));
         let (url, log) = fake_anki(col).await;
@@ -865,5 +953,83 @@ mod tests {
         assert_eq!(client(url).decks().await.unwrap(), ["alpha", "Default", "Zeta"]);
         let err = client("http://127.0.0.1:1".into()).ping().await.unwrap_err().to_string();
         assert!(err.contains("cannot reach AnkiConnect") && err.contains("add-on"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn a_sentence_card_is_a_one_card_note_of_its_own_type_with_its_sound_and_is_added_once() {
+        use crate::anki_sentence::{SENTENCE_FIELDS, SentenceAdded, SentenceRequest, SentenceWord};
+        let col = Arc::new(Mutex::new(Collection::default()));
+        let (url, _) = fake_anki(col.clone()).await;
+        let anki = client(url);
+        let line = "다시는 못 볼 줄 알았어요";
+        // A word note whose example is the same line must not count as the sentence card.
+        anki.add(&AddRequest { contexts: vec![Context { sentence: line.into(), ..Default::default() }], ..request("Korean", ReverseMode::Off) }).await.unwrap();
+        let req = SentenceRequest {
+            sentence: line.into(),
+            translation: "I thought I would never see you again.".into(),
+            words: vec![SentenceWord { word: "보다".into(), meaning: "to see".into() }],
+            deck: "Korean::Games".into(),
+            tags: vec!["maru".into(), "sentence".into(), "maru".into()],
+            audio: Some(Media { filename: "maru_s.wav".into(), data: vec![1, 2] }),
+            source: Some("Elden Ring".into()),
+        };
+        assert!(matches!(anki.add_sentence(&req).await.unwrap(), SentenceAdded::New { .. }));
+        {
+            let c = col.lock().unwrap();
+            assert_eq!(c.models["Maru Korean Sentence"], SENTENCE_FIELDS);
+            let (_, note, cards) = c.notes.last().unwrap();
+            assert_eq!(note["modelName"], "Maru Korean Sentence");
+            assert_eq!(note["fields"]["Words"], "<div><b>보다</b> — to see</div>");
+            assert_eq!(note["fields"]["Source"], "Elden Ring");
+            assert_eq!(note["audio"][0]["fields"][0], "SentenceAudio");
+            assert_eq!(note["tags"], json!(["maru", "sentence"]));
+            assert_eq!(cards.len(), 1, "no reverse card for sentences");
+        }
+        assert!(matches!(anki.add_sentence(&req).await.unwrap(), SentenceAdded::Exists(_)), "the same line is not added twice");
+        assert_eq!(col.lock().unwrap().notes.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn cards_added_without_sound_are_found_and_only_their_empty_sound_fields_are_filled() {
+        use crate::anki_sentence::{SentenceRequest, SentenceWord};
+        let col = Arc::new(Mutex::new(Collection::default()));
+        let (url, _) = fake_anki(col.clone()).await;
+        let anki = client(url);
+        let silent = |key: &str, contexts: Vec<Context>| AddRequest {
+            word: WordRecord { key: key.into(), surface: key.into(), ..word() },
+            contexts,
+            word_audio: None,
+            sentence_audio: None,
+            ..request("Korean", ReverseMode::Off)
+        };
+        anki.add(&request("Korean", ReverseMode::Off)).await.unwrap(); // has both sounds
+        anki.add(&silent("학교", ctx())).await.unwrap();
+        anki.add(&silent("가다", Vec::new())).await.unwrap(); // no sentence: only the word needs a sound
+        let line = SentenceRequest { sentence: "다시는 못 볼 줄 알았어요".into(), translation: String::new(), words: vec![SentenceWord { word: "보다".into(), meaning: "to see".into() }], deck: "Korean".into(), tags: vec![], audio: None, source: None };
+        anki.add_sentence(&line).await.unwrap();
+
+        let found = anki.silent_notes(10).await.unwrap();
+        assert_eq!(found.total, 3);
+        let say: Vec<(Option<&str>, Option<&str>)> = found.notes.iter().map(|n| (n.word.as_deref(), n.sentence.as_deref())).collect();
+        assert_eq!(say, [(Some("학교"), Some("어제 공부했어요.")), (Some("가다"), None), (None, Some("다시는 못 볼 줄 알았어요"))], "spoken text has no markup");
+        assert_eq!(anki.silent_notes(1).await.unwrap().notes.len(), 1, "the batch is limited, the count is not");
+
+        let school = found.notes[0].note_id;
+        let media = |name: &str| Media { filename: name.into(), data: vec![7] };
+        assert!(anki.add_sounds(school, Some(&media("maru_w.wav")), Some(&media("maru_s.wav"))).await.unwrap());
+        let field = |id: u64, f: &str| str_of(&col.lock().unwrap().notes.iter().find(|n| n.0 == id).unwrap().1["fields"][f]);
+        assert_eq!(field(school, "WordAudio"), "[sound:maru_w.wav]");
+        assert_eq!(anki.silent_notes(10).await.unwrap().total, 2);
+        assert!(!anki.add_sounds(school, Some(&media("maru_other.wav")), None).await.unwrap(), "a sound already there is kept");
+        assert_eq!(field(school, "WordAudio"), "[sound:maru_w.wav]");
+    }
+
+    #[tokio::test]
+    async fn a_card_added_while_anki_syncs_waits_for_it_instead_of_failing() {
+        let col = Arc::new(Mutex::new(Collection { busy: 3, ..Default::default() }));
+        let (url, _) = fake_anki(col.clone()).await;
+        let anki = client(url);
+        assert!(matches!(anki.add(&request("Korean", ReverseMode::Off)).await.unwrap(), Added::New { .. }), "added once Anki was free again");
+        assert_eq!(col.lock().unwrap().notes.len(), 1);
     }
 }

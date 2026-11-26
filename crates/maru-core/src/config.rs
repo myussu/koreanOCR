@@ -322,6 +322,8 @@ pub struct AnkiConfig {
     pub deck: String,
     /// The note type Maru creates in Anki and keeps up to date.
     pub note_type: String,
+    /// The note type of sentence cards (a line from a game, its translation and the words picked from it).
+    pub sentence_note_type: String,
     pub reverse: ReverseMode,
     /// Name of the reverse subdeck.
     pub reverse_subdeck: String,
@@ -345,6 +347,7 @@ impl Default for AnkiConfig {
             api_key: None,
             deck: "Korean".into(),
             note_type: "Maru Korean".into(),
+            sentence_note_type: "Maru Korean Sentence".into(),
             reverse: ReverseMode::Subdeck,
             reverse_subdeck: "Reverse".into(),
             audio: true,

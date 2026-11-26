@@ -1427,7 +1427,7 @@ async fn an_incomplete_anki_add_is_reported_and_retried_without_audio_or_another
     let mut cfg=Config::default();cfg.learning.anki.enabled=true;cfg.learning.anki.url=server.url;cfg.learning.anki.sync_after_add=false;
     let h=build(cfg,None,None);
     h.vocab.record_lookup(&maru_srs::LookupInfo {key:"학교".into(),surface:"학교".into(),meaning:Some("school".into()),..Default::default()},1).unwrap();
-    let options=||AnkiAddOptions {key:"학교".into(),deck:"Korean".into(),tags:vec![],reverse:maru_core::config::ReverseMode::Subdeck,app:Some("game.exe".into()),word_audio:None,sentence_audio:None};
+    let options=||AnkiAddOptions {context:None,key:"학교".into(),deck:"Korean".into(),tags:vec![],reverse:maru_core::config::ReverseMode::Subdeck,app:Some("game.exe".into()),word_audio:None,sentence_audio:None};
     let result=h.engine.anki_add(options()).await.unwrap();
     assert!(matches!(result,AnkiAdded::Added {warning:Some(_),cards:0,..}));
     assert_eq!(h.engine.anki_count().unwrap(),1);
@@ -1438,6 +1438,27 @@ async fn an_incomplete_anki_add_is_reported_and_retried_without_audio_or_another
     let result=h.engine.finish_anki_add(permit,options()).await.unwrap();
     assert!(matches!(result,AnkiAdded::Added {warning:None,cards:2,reverse_deck:Some(_),..}));
     assert_eq!(adds.load(Ordering::SeqCst),1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_anki_add_during_a_progress_refresh_waits_for_it_instead_of_being_refused() {
+    let server = spawn_mock(|path, body| {
+        // The refresh's card search is slow, like a large collection.
+        if body.contains("findCards") { return MockResponse { status: 200, chunks: vec![br#"{"result":[],"error":null}"#.to_vec()], delay_ms: 400 }; }
+        ankiconnect(path, body)
+    }).await;
+    let mut cfg=Config::default();cfg.learning.anki.enabled=true;cfg.learning.anki.url=server.url;cfg.learning.anki.sync_after_add=false;
+    let h=build(cfg,None,None);
+    h.vocab.record_lookup(&maru_srs::LookupInfo {key:"학교".into(),surface:"학교".into(),meaning:Some("school".into()),..Default::default()},1).unwrap();
+    let engine=h.engine.clone();
+    let refresh=tokio::spawn(async move { engine.anki_refresh().await });
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let started=std::time::Instant::now();
+    let permit=h.engine.begin_anki_add("학교","Korean").await.expect("an add is not refused because a refresh is running");
+    assert!(started.elapsed()>=Duration::from_millis(200),"the add waited for the refresh");
+    assert!(refresh.await.unwrap().is_ok());
+    assert!(h.engine.begin_anki_add("학교","Korean").await.is_err(),"a second add at once is still refused");
+    drop(permit);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1473,7 +1494,7 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
     assert!(before.suggestions.iter().any(|s| s.deck == "Korean" && s.exists));
     assert!(before.tags.contains(&"app::hades".to_string()) && before.tags.contains(&"topik-1".to_string()), "{:?}", before.tags);
 
-    let opts = AnkiAddOptions { key: "학교".into(), deck: " Korean :: Games ".into(), tags: before.tags.clone(), reverse: before.reverse, app: Some("hades.exe".into()), word_audio: None, sentence_audio: None };
+    let opts = AnkiAddOptions { context: None, key: "학교".into(), deck: " Korean :: Games ".into(), tags: before.tags.clone(), reverse: before.reverse, app: Some("hades.exe".into()), word_audio: None, sentence_audio: None };
     let added = h.engine.anki_add(opts).await.unwrap();
     assert!(matches!(&added, AnkiAdded::Added { deck, reverse_deck: Some(r), cards: 2, sync: true, warning: None } if deck == "Korean::Games" && r == "Korean::Games::Reverse"), "{added:?}");
 
@@ -1484,7 +1505,7 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
 
     let calls: Vec<String> = anki.requests.lock().unwrap().iter().filter_map(|(_, b)| serde_json::from_str::<serde_json::Value>(b).ok()).map(|v| v["action"].as_str().unwrap_or_default().to_string()).collect();
     assert!(calls.contains(&"createDeck".to_string()) && calls.contains(&"changeDeck".to_string()), "{calls:?}");
-    assert!(h.engine.anki_add(AnkiAddOptions { key: "학교".into(), deck: "  ".into(), tags: vec![], reverse: before.reverse, app: None, word_audio: None, sentence_audio: None }).await.unwrap_err().to_string().contains("deck"), "no deck, no add");
+    assert!(h.engine.anki_add(AnkiAddOptions { context: None, key: "학교".into(), deck: "  ".into(), tags: vec![], reverse: before.reverse, app: None, word_audio: None, sentence_audio: None }).await.unwrap_err().to_string().contains("deck"), "no deck, no add");
 }
 
 // ───────────── live subtitles ─────────────

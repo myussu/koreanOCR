@@ -174,6 +174,7 @@ export const ANKI = {
     { path: 'learning.anki.url', label: 'AnkiConnect address', type: 'text', advanced: true },
     { path: 'learning.anki.api_key', label: 'AnkiConnect API key', help: 'Only if you set one in the add-on', type: 'password', nullable: true, advanced: true },
     { path: 'learning.anki.note_type', label: 'Note type', help: 'Maru creates and keeps it up to date', type: 'text', advanced: true },
+    { path: 'learning.anki.sentence_note_type', label: 'Sentence note type', help: 'For sentence cards made in History; Maru creates and keeps it up to date', type: 'text', advanced: true },
     { path: 'learning.anki.reverse_subdeck', label: 'Reverse subdeck name', type: 'text', advanced: true },
   ],
 };

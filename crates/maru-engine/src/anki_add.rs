@@ -3,6 +3,7 @@ use super::*;
 use maru_srs::{ExistingNote, anki_store::PendingAdd};
 
 pub struct AnkiAddPermit {
+    _slot: tokio::sync::OwnedMutexGuard<()>,
     _guard: tokio::sync::OwnedMutexGuard<()>,
     key: String,
     deck: String,
@@ -18,9 +19,9 @@ impl AnkiAddPermit {
 
 impl Engine {
     pub async fn begin_anki_add(&self, key: &str, deck: &str) -> Result<AnkiAddPermit> {
-        let guard = self
+        let slot = self
             .inner
-            .anki_add_gate
+            .anki_add_slot
             .clone()
             .try_lock_owned()
             .map_err(|_| {
@@ -28,6 +29,8 @@ impl Engine {
                     "Another Anki add is still running; wait for it to finish.".into(),
                 )
             })?;
+        // A progress refresh rewrites Anki membership as a whole, so the add waits for it to finish.
+        let guard = self.inner.anki_add_gate.clone().lock_owned().await;
         let anki = self.anki_client()?;
         self.word(key)?;
         let deck = clean_deck(deck);
@@ -51,6 +54,7 @@ impl Engine {
             pending = None;
         }
         Ok(AnkiAddPermit {
+            _slot: slot,
             _guard: guard,
             key: key.into(),
             deck,
@@ -72,7 +76,10 @@ impl Engine {
         let anki = self.anki_client()?;
         let cfg = anki.config();
         let word = self.word(&opts.key)?;
-        let contexts = self.inner.vocab.contexts(&opts.key, 2)?;
+        let contexts = match &opts.context {
+            Some(context) => vec![context.clone()],
+            None => self.inner.vocab.contexts(&opts.key, 2)?,
+        };
         let added = if let Some(pending) = &permit.pending {
             let result = anki
                 .finish_add(pending.note_id, &pending.deck, pending.reverse)
