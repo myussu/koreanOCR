@@ -1,0 +1,95 @@
+[
+ {
+  "type": "started",
+  "id": 1,
+  "direction": "ko_to_en",
+  "capture": {
+   "text": "공부했어요",
+   "source": "hover",
+   "rect": null,
+   "words": [],
+   "cursor": null,
+   "app": null,
+   "confidence": null
+  },
+  "cached": false
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "morphology",
+  "ms": 0
+ },
+ {
+  "type": "breakdown",
+  "id": 1,
+  "side": "source",
+  "eojeols": [
+   {
+    "index": 0,
+    "surface": "공부했어요",
+    "char_start": 0,
+    "char_end": 5,
+    "morphs": [
+     {
+      "form": "공부",
+      "tag": "NNG",
+      "role": "stem",
+      "label": "noun",
+      "start": 0,
+      "end": 2
+     },
+     {
+      "form": "하",
+      "tag": "XSV",
+      "role": "affix",
+      "label": "'do' (turns a noun into a verb)",
+      "start": 2,
+      "end": 3
+     },
+     {
+      "form": "었",
+      "tag": "EP",
+      "role": "ending",
+      "label": "past tense",
+      "start": 2,
+      "end": 3
+     },
+     {
+      "form": "어요",
+      "tag": "EF",
+      "role": "ending",
+      "label": "polite ending (해요체)",
+      "start": 3,
+      "end": 5
+     }
+    ],
+    "lemma": "공부하다",
+    "pos": "verb",
+    "content": true,
+    "formula": "공부 + 하다 ('do' (turns a noun into a verb)) + 었 (past tense) + 어요 (polite ending (해요체))",
+    "romanization": "gongbuhaesseoyo",
+    "pronunciation": "공부해써요",
+    "dict_glosses": [
+     "to study"
+    ],
+    "level": null,
+    "state": "new",
+    "lookups": 0,
+    "rect": null
+   }
+  ],
+  "romanization": "gongbuhaesseoyo",
+  "pronunciation": "공부해써요"
+ },
+ {
+  "type": "timing",
+  "id": 1,
+  "stage": "total",
+  "ms": 1
+ },
+ {
+  "type": "done",
+  "id": 1
+ }
+]

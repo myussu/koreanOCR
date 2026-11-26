@@ -194,7 +194,8 @@ For every feature: how it starts, where it flows, what it persists, how it is co
 `watch.rs` detects a pointer resting on a word (`logic.rs::Dwell`) → `Engine::capture_hover` → `Engine::lookup_word`
 (offline only, no model) → panel. Config: `[hotkeys].hover`; the dwell time, pointer radius and idle-hide time are constants at the top of `watch.rs`.
 A dwell is passive: `flow::show_hover` leaves saved-area reading (automatic, queued, held) and its progress untouched, while
-deliberate captures (`show_capture`) interrupt it.
+deliberate captures (`show_capture`) interrupt it. Browser demo: `index.html?replay=demo/hover.json&instant` (a recorded
+hover lookup of one word).
 
 ### 4.3 Deep dive (click a word)
 `commands::deep_dive` → `Engine::deep_dive` (`pipeline::deep_dive`): dictionary entries, how the form is built
