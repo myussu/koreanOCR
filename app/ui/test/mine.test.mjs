@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { addLabel, ankiIsOff, applySense, deckOptions, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, senseIndex, senseLabel } from '../mine-core.js';
+import { addLabel, ankiIsOff, answeredText, applySense, askFor, comesUp, deckOptions, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, queueLines, redraft, retryChoices, senseIndex, senseLabel } from '../mine-core.js';
 
 const sheet = (over = {}) => ({
   sentence: '다시는 못 볼 줄 알았어요',
@@ -36,7 +36,9 @@ test('adding is blocked, with a reason, until Anki is there, a deck is chosen, s
   assert.equal(mineBlocker(d, sheet()), null);
   assert.match(mineBlocker(d, sheet({ anki_error: 'cannot reach AnkiConnect' })), /^Anki: cannot reach/);
   assert.equal(mineBlocker(d, sheet({ anki_error: 'Anki is switched off: turn it on in Settings → Anki' })), 'Anki is switched off: turn it on in Settings → Anki');
-  assert.equal(mineBlocker({ ...d, deck: '  ' }, sheet()), 'Choose a deck.');
+  assert.equal(mineBlocker({ ...d, deck: '  ' }, sheet()), 'Choose a deck for the words.');
+  assert.equal(mineBlocker({ ...d, sentenceDeck: ' ' }, sheet()), 'Choose a deck for the sentence.');
+  assert.equal(mineBlocker({ ...d, deck: ' ', words: d.words.map((w) => ({ ...w, picked: false })) }, sheet()), null, 'a sentence alone needs only its own deck');
   assert.equal(mineBlocker({ ...d, sentenceCard: false, words: d.words.map((w) => ({ ...w, picked: false })) }, sheet()), 'Tick a word or the sentence card.');
   assert.equal(mineBlocker({ ...d, words: [{ ...d.words[0], meaning: ' ' }] }, sheet()), 'Give “다시는” a meaning, or untick it.');
 });
@@ -107,4 +109,72 @@ test('choosing another dictionary sense changes both meanings, and an edited mea
   assert.equal(senseLabel(word.senses[1]), 'ship; boat · barco');
   assert.equal(senseLabel(word.senses[2]), 'womb', 'a sense without Spanish shows the English alone');
   assert.equal(senseIndex({}, d), -1, 'a word without dictionary senses');
+});
+
+const twoDecks = { word_deck: 'Korean::Words', sentence_deck: 'Korean::Sentences', reverse: 'off', queue: { words: { deck: 'Korean::Words', waiting: 12, per_day: 3 }, sentences: { deck: 'Korean::Sentences', waiting: 5, per_day: 1 } } };
+
+test('words and the sentence each start in their own deck and the request carries both', () => {
+  const d = mineDraft(sheet(twoDecks));
+  assert.deepEqual([d.deck, d.sentenceDeck], ['Korean::Words', 'Korean::Sentences'], 'the configured decks, not a deck per program');
+  const req = mineRequest(d, {}, sheet(twoDecks));
+  assert.deepEqual([req.deck, req.sentence_deck], ['Korean::Words', 'Korean::Sentences']);
+  const one = mineDraft(sheet());
+  assert.equal(one.sentenceDeck, one.deck, 'a sheet without a sentence deck uses the words deck');
+  assert.equal(mineRequest(one, {}, sheet()).sentence_deck, 'Korean::Games');
+});
+
+test('before adding, the sheet says how many new cards wait in each deck and when these would come up', () => {
+  const d = mineDraft(sheet(twoDecks));
+  assert.deepEqual(queueLines(twoDecks.queue, d), [
+    '12 new cards already wait in Korean::Words. At 3 a day, this word would come up in 4 days.',
+    '5 new cards already wait in Korean::Sentences. At 1 a day, this sentence would come up in 5 days.',
+  ]);
+  const both = { ...d, words: d.words.map((w) => ({ ...w, picked: true })) };
+  assert.equal(queueLines({ ...twoDecks.queue, words: { deck: 'Korean::Words', waiting: 13, per_day: 3 } }, both)[0], '13 new cards already wait in Korean::Words. At 3 a day, these 2 words would come up in 4 days.');
+  assert.match(queueLines({ ...twoDecks.queue, words: { deck: 'Korean::Words', waiting: 14, per_day: 3 } }, both)[0], /these 2 words would come up in 4 to 5 days\.$/);
+  assert.match(queueLines({ ...twoDecks.queue, words: { deck: 'Korean::Words', waiting: 0, per_day: 3 } }, d)[0], /^No new cards wait in Korean::Words\. At 3 a day, this word would come up today\.$/);
+  assert.match(queueLines({ ...twoDecks.queue, words: { deck: 'Korean::Words', waiting: 1, per_day: 1 } }, d)[0], /^1 new card already waits in Korean::Words\..* tomorrow\.$/);
+  assert.match(queueLines({ ...twoDecks.queue, words: { deck: 'Korean::Words', waiting: 2, per_day: 3 } }, both)[0], /from today, the last tomorrow\.$/);
+  // Reverse cards double the word cards; nothing ticked says nothing; an unknown queue says nothing.
+  assert.match(queueLines(twoDecks.queue, { ...d, reverse: true })[0], /these 2 cards would come up in 4 days/);
+  assert.deepEqual(queueLines(twoDecks.queue, { ...d, sentenceCard: false, words: d.words.map((w) => ({ ...w, picked: false })) }), []);
+  assert.deepEqual(queueLines(null, d), []);
+  // A deck typed over is not answered with the other deck's count.
+  assert.equal(queueLines(twoDecks.queue, { ...d, deck: 'Other' }).length, 1);
+  assert.deepEqual(comesUp(12, 4, 3), [4, 5]);
+  assert.equal(comesUp(3, 0, 3), null);
+});
+
+test('the sheet says which model chose the meanings, or that none was needed, or that none answered', () => {
+  assert.equal(answeredText(sheet({ answered: { connection: 'local', model: 'gemma-4-12B', place: 'this_pc' } })), "Meanings chosen by This PC's model (gemma-4-12B), on this PC.");
+  assert.equal(answeredText(sheet({ answered: { connection: 'NAS', model: 'gemma4-12b', place: 'network' } })), 'Meanings chosen by NAS (gemma4-12b), on another computer.');
+  assert.equal(answeredText(sheet({ answered: null, attempts: [{ connection: 'Gemini', problem: 'quota' }] })), 'No model answered: the dictionary’s first sense is shown where a word has several.');
+  assert.equal(answeredText(sheet({ answered: null, attempts: [], words: [{ key: '학교', source: 'one_sense' }] })), 'No model was needed: each word has one dictionary sense.');
+  assert.equal(answeredText(sheet({ answered: null, attempts: [], words: [{ key: '저', source: 'first_sense' }] })), 'No model answered: the dictionary’s first sense is shown where a word has several.');
+});
+
+test('a line can be asked again with another connection, and this PC waits for live subtitles when it would have to load', () => {
+  const retry = [{ connection: 'local', model: 'gemma', place: 'this_pc', after_live: true }, { connection: 'NAS', model: 'gemma4-12b', place: 'network', after_live: false }, { connection: 'Claude', model: 'sonnet', place: 'hosted', after_live: false }];
+  const choices = retryChoices(sheet({ retry, answered: { connection: 'NAS', model: 'gemma4-12b', place: 'network' } }));
+  assert.deepEqual(choices.map((c) => c.label), ["Ask This PC's model when live subtitles stop", 'Retry with NAS', 'Retry with Claude']);
+  assert.deepEqual(choices.map((c) => c.current), [false, true, false]);
+  assert.deepEqual(askFor(choices[0]), { connection: 'local', after_live: true });
+  assert.deepEqual(askFor(choices[2]), { connection: 'Claude', after_live: false });
+  assert.equal(retryChoices(sheet({ retry: [{ connection: 'local', model: 'g', place: 'this_pc', after_live: false }] }))[0].label, 'Retry with this PC');
+  assert.deepEqual(retryChoices(sheet()), []);
+});
+
+test('asking again keeps your ticks, decks and what you typed, and takes the new meanings for the rest', () => {
+  const first = sheet({ ...twoDecks, words: [{ key: '다시', surface: '다시는', meaning: 'again', meaning_es: 'otra vez', pick: true }, { key: '보다', surface: '볼', meaning: 'to see', meaning_es: 'ver', pick: false }] });
+  const d = mineDraft(first);
+  d.words[1].picked = true;
+  d.words[1].meaning = 'to meet';
+  d.translation = 'my own words';
+  d.deck = 'Korean::Other';
+  d.sentenceCard = false;
+  const again = sheet({ ...twoDecks, translation: 'ignored', words: [{ key: '다시', surface: '다시는', meaning: 'never again', meaning_es: 'nunca más', pick: true }, { key: '보다', surface: '볼', meaning: 'to look at', meaning_es: 'mirar', pick: false }] });
+  const next = redraft(d, first, again);
+  assert.deepEqual([next.words[0].meaning, next.words[0].meaningEs], ['never again', 'nunca más'], 'the new choice replaces an untouched meaning');
+  assert.deepEqual([next.words[1].meaning, next.words[1].meaningEs, next.words[1].picked], ['to meet', 'mirar', true], 'a typed meaning and a tick are kept');
+  assert.deepEqual([next.translation, next.deck, next.sentenceDeck, next.sentenceCard], ['my own words', 'Korean::Other', 'Korean::Sentences', false]);
 });

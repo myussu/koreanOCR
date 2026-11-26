@@ -30,10 +30,16 @@ use maru_platform::testing::{FakeScreen, FakeSelection};
 use maru_srs::{Context, LookupInfo, SrsConfig, Vocab, now_secs};
 use serde_json::{Value, json};
 
-const DECK: &str = "Maru test (safe to delete)";
+/// Everything is written under this deck, which the guard confines changes to and the clean-up deletes whole.
+const ROOT: &str = "MaruTest";
+const DECK: &str = "MaruTest::engine";
+/// The two targets of Make cards, as the owner's real decks are shaped (words in one deck, sentences in another).
+const WORD_DECK: &str = "MaruTest::engine::1 Palabras";
+const SENTENCE_DECK: &str = "MaruTest::engine::2 Oraciones";
+const LINE_2: &str = "친구가 책을 읽어요";
 const SENTENCE: &str = "저는 학교에서 공부했어요";
 const TRANSLATION: &str = "I studied at school.";
-const WORDS: [&str; 3] = ["저", "학교", "공부하다"];
+const WORDS: [&str; 5] = ["저", "학교", "공부하다", "친구", "책"];
 const KAIKKI: &str = r#"
 {"word":"학교","lang_code":"ko","pos":"noun","senses":[{"glosses":["school"]}]}
 {"word":"공부하다","lang_code":"ko","pos":"verb","senses":[{"glosses":["to study; to learn"]}]}
@@ -76,6 +82,8 @@ struct Run {
     guard: Arc<GuardedAnki>,
     deck: String,
     stamp: i64,
+    /// Word cards of Maru's note type the profile had before the test (the owner's own): counted, never touched.
+    others: usize,
 }
 
 impl Run {
@@ -125,7 +133,7 @@ async fn the_anki_path_works_in_a_real_anki_from_a_word_card_to_sounds_added_lat
         panic!("set MARU_REAL_ANKI_PROFILE to the Anki profile this test may write to (it must be the one open in Anki)");
     };
     let anki_url = std::env::var("MARU_ANKI_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
-    let guard = Arc::new(GuardedAnki::start(&anki_url, &profile, DECK).await);
+    let guard = Arc::new(GuardedAnki::start(&anki_url, &profile, ROOT).await);
     for word in WORDS {
         let found = guard.read("findNotes", json!({ "query": format!("\"Word:{word}\"") })).await;
         assert!(found.as_array().is_some_and(Vec::is_empty), "this Anki profile already has {word}: use an empty test profile");
@@ -134,15 +142,15 @@ async fn the_anki_path_works_in_a_real_anki_from_a_word_card_to_sounds_added_lat
     let outcome = tokio::spawn(checks(guard.clone())).await;
 
     // Leave nothing behind, whatever happened above.
-    let leftovers = guard.read("findNotes", json!({ "query": format!("\"deck:{DECK}\"") })).await;
+    let leftovers = guard.read("findNotes", json!({ "query": format!("\"deck:{ROOT}\"") })).await;
     if leftovers.as_array().is_some_and(|a| !a.is_empty())
         && let Err(e) = guard.change("deleteNotes", json!({ "notes": leftovers })).await
     {
         eprintln!("clean-up deleteNotes: {e}");
     }
     let decks = guard.read("deckNames", json!({})).await;
-    if decks.as_array().is_some_and(|a| a.iter().any(|d| d == DECK))
-        && let Err(e) = guard.change("deleteDecks", json!({ "decks": [DECK], "cardsToo": true })).await
+    if decks.as_array().is_some_and(|a| a.iter().any(|d| d == ROOT))
+        && let Err(e) = guard.change("deleteDecks", json!({ "decks": [ROOT], "cardsToo": true })).await
     {
         eprintln!("clean-up deleteDecks: {e}");
     }
@@ -163,7 +171,8 @@ async fn checks(guard: Arc<GuardedAnki>) {
     let mut cfg = Config::default();
     cfg.learning.anki.enabled = true;
     cfg.learning.anki.url = guard.url.clone();
-    cfg.learning.anki.deck = DECK.into();
+    cfg.learning.anki.deck = WORD_DECK.into();
+    cfg.learning.anki.sentence_deck = SENTENCE_DECK.into();
     cfg.learning.anki.sync_after_add = false;
     let dict = Dictionary::open_in_memory().unwrap();
     dict.import_kaikki(Cursor::new(KAIKKI), |_| {}).unwrap();
@@ -185,7 +194,9 @@ async fn checks(guard: Arc<GuardedAnki>) {
         labels: None,
     });
     let stamp = now_secs();
-    let run = Run { engine, vocab, guard, deck: format!("{DECK}::Games"), stamp };
+    let others = engine.anki_refresh().await.expect("reading the cards the profile already has");
+    eprintln!("the profile already has {others} word card(s) of Maru's note type; they are left alone");
+    let run = Run { engine, vocab, guard, deck: format!("{DECK}::Games"), stamp, others };
 
     // M-9: Check Anki finds it and has both note types in place.
     let report = run.engine.anki_check().await.expect("Anki is open with AnkiConnect");
@@ -197,6 +208,60 @@ async fn checks(guard: Arc<GuardedAnki>) {
     let (pronoun_id, sentence_id) = cards_from_a_line(&run).await;
     sounds_later(&run, pronoun_id, sentence_id).await;
     progress(&run).await;
+    two_decks_and_the_queue(&run).await;
+}
+
+/// Run 2: words go to one deck and the sentence to another, the program is a tag and not a subdeck, and the count of
+/// new cards waiting in each deck (read with a search, never written) is what the sheet's forecast is made from.
+async fn two_decks_and_the_queue(run: &Run) {
+    use maru_engine::mining::comes_up;
+    let before = run.engine.card_queue(WORD_DECK, SENTENCE_DECK).await.unwrap();
+    assert_eq!((before.words.waiting, before.sentences.waiting), (0, 0), "decks that do not exist yet have nothing waiting");
+    assert_eq!((before.words.per_day, before.sentences.per_day), (3, 1), "the per-day numbers are Maru's own defaults");
+
+    let sheet = run.engine.mine_sheet(LINE_2, "My friend reads a book.", Some("EldenRing.exe")).await.unwrap();
+    assert_eq!((sheet.word_deck.as_str(), sheet.sentence_deck.as_str()), (WORD_DECK, SENTENCE_DECK));
+    assert_eq!(sheet.suggestions.first().map(|s| s.deck.as_str()), Some(WORD_DECK), "{:?}", sheet.suggestions);
+    assert!(sheet.suggestions.iter().all(|s| !s.deck.to_lowercase().contains("eldenring")), "no deck is named after the game: {:?}", sheet.suggestions);
+    assert!(sheet.anki_error.is_none(), "{:?}", sheet.anki_error);
+
+    let line = MineLine { sentence: LINE_2.into(), translation: "My friend reads a book.".into(), app: Some("EldenRing.exe".into()), deck: WORD_DECK.into(), reverse: ReverseMode::Off, sentence_deck: Some(SENTENCE_DECK.into()) };
+    let picks = [
+        MineChoice { key: "친구".into(), surface: "친구가".into(), pos: "noun".into(), level: None, meaning: "friend".into(), meaning_es: "amigo".into() },
+        MineChoice { key: "책".into(), surface: "책을".into(), pos: "noun".into(), level: None, meaning: "book".into(), meaning_es: "libro".into() },
+    ];
+    for pick in &picks {
+        let permit = run.engine.begin_mine_word(&line, pick).await.unwrap();
+        assert!(matches!(run.engine.finish_mine_word(permit, &line, pick, None, None).await.unwrap(), AnkiAdded::Added { cards: 1, reverse_deck: None, warning: None, .. }));
+    }
+    assert_eq!(run.engine.mine_sentence(&line, &picks, None).await.unwrap(), MinedSentence::Added { deck: SENTENCE_DECK.into() });
+
+    let friend = run.word_note("친구").await;
+    assert_eq!(run.decks_of(&friend).await, [WORD_DECK.to_string()], "the word card is in the deck for words");
+    assert_eq!(field(&friend, "MeaningEs"), "amigo");
+    let sentence = run.note(&format!("\"note:Maru Korean Sentence\" \"Sentence:{LINE_2}\"")).await;
+    assert_eq!(run.decks_of(&sentence).await, [SENTENCE_DECK.to_string()], "the sentence card is in the deck for sentences");
+    for note in [&friend, &sentence] {
+        let tags = tags(note);
+        assert!(tags.iter().any(|t| t == "maru::eldenring"), "the game is a tag: {tags:?}");
+        assert!(!tags.iter().any(|t| t.starts_with("app::")), "{tags:?}");
+    }
+    let decks = run.guard.read("deckNames", json!({})).await;
+    assert!(!decks.as_array().unwrap().iter().any(|d| d.as_str().unwrap_or_default().to_lowercase().contains("eldenring")), "no subdeck was made for the game: {decks}");
+
+    // The real search counts what was just added, in each deck apart (deck names with `::` and spaces).
+    let after = run.engine.card_queue(WORD_DECK, SENTENCE_DECK).await.unwrap();
+    assert_eq!((after.words.waiting, after.sentences.waiting), (2, 1), "{after:?}");
+    assert_eq!(comes_up(after.words.waiting, 2, after.words.per_day), Some((0, 1)), "two more words behind two, at three a day: today and tomorrow");
+    assert_eq!(comes_up(after.sentences.waiting, 1, after.sentences.per_day), Some((1, 1)), "one more sentence behind one, at one a day: tomorrow");
+
+    // A suspended new card does not wait.
+    run.guard.change("suspend", json!({ "cards": friend["cards"] })).await.unwrap();
+    assert_eq!(run.engine.card_queue(WORD_DECK, SENTENCE_DECK).await.unwrap().words.waiting, 1);
+    let again = run.engine.mine_sheet(LINE_2, "", Some("EldenRing.exe")).await.unwrap();
+    let queue = again.queue.expect("the sheet carries the queue");
+    assert_eq!((queue.words.waiting, queue.sentences.waiting), (1, 1));
+    eprintln!("two decks: 2 word cards in \"{WORD_DECK}\", the sentence in \"{SENTENCE_DECK}\", tag maru::eldenring, no game subdeck; queue read as 2 and 1 new cards, 1 after a suspension");
 }
 
 /// M-9: a word goes to the chosen deck with its fields, tags, sounds and a reverse card; it is added once.
@@ -216,7 +281,7 @@ async fn word_card(run: &Run) {
     assert_eq!(field(&note, "Translation"), TRANSLATION);
     assert!(field(&note, "WordAudio").contains("[sound:") && field(&note, "SentenceAudio").contains("[sound:"), "both sounds are attached");
     let has = tags(&note);
-    for tag in ["maru", "topik-1", "pos::noun", "app::game"] {
+    for tag in ["maru", "topik-1", "pos::noun", "maru::game"] {
         assert!(has.iter().any(|t| t == tag), "tag {tag} in {has:?}");
     }
     assert_eq!(run.decks_of(&note).await, [run.deck.clone(), reverse], "the English → Korean card is in the Reverse subdeck");
@@ -259,7 +324,7 @@ async fn cards_from_a_line(run: &Run) -> (u64, u64) {
     assert!(!sheet.sentence_in_anki && sheet.decks.contains(&run.deck));
 
     // Reverse cards off, as with `reverse = "off"`: the word gets its Korean → English card only.
-    let line = MineLine { sentence: SENTENCE.into(), translation: TRANSLATION.into(), app: Some("game.exe".into()), deck: run.deck.clone(), reverse: ReverseMode::Off };
+    let line = MineLine { sentence_deck: None, sentence: SENTENCE.into(), translation: TRANSLATION.into(), app: Some("game.exe".into()), deck: run.deck.clone(), reverse: ReverseMode::Off };
     let choice = MineChoice { key: "저".into(), surface: "저는".into(), pos: word("저").pos.clone(), level: None, meaning: "I (said humbly)".into(), meaning_es: "yo (humilde)".into() };
     let permit = run.engine.begin_mine_word(&line, &choice).await.unwrap();
     assert!(matches!(run.engine.finish_mine_word(permit, &line, &choice, None, None).await.unwrap(), AnkiAdded::Added { cards: 1, reverse_deck: None, warning: None, .. }));
@@ -312,8 +377,8 @@ async fn sounds_later(run: &Run, pronoun_id: u64, sentence_id: u64) {
 /// M-24 step 4: Refresh progress follows what happened in Anki: a suspended card keeps its place without counting
 /// as learned, a deleted note is forgotten.
 async fn progress(run: &Run) {
-    assert_eq!(run.engine.anki_refresh().await.unwrap(), 3, "three word cards of ours");
-    assert_eq!(run.engine.anki_count().unwrap(), 3);
+    assert_eq!(run.engine.anki_refresh().await.unwrap(), run.others + 3, "three word cards of ours, beside what the profile had");
+    assert_eq!(run.engine.anki_count().unwrap() as usize, run.others + 3);
     let interval = |key: &str| run.vocab.get(key).unwrap().unwrap().anki_interval;
     assert_eq!((interval("저"), interval("학교"), interval("공부하다")), (Some(0.0), Some(0.0), Some(0.0)), "new cards: in Anki, not learned yet");
 
@@ -321,8 +386,8 @@ async fn progress(run: &Run) {
     run.guard.change("suspend", json!({ "cards": pronoun["cards"] })).await.expect("suspend a test card");
     let study = run.word_note("공부하다").await;
     run.guard.change("deleteNotes", json!({ "notes": [study["noteId"]] })).await.expect("delete a test note");
-    assert_eq!(run.engine.anki_refresh().await.unwrap(), 2);
-    assert_eq!(run.engine.anki_count().unwrap(), 2, "the deleted note's word is no longer counted");
+    assert_eq!(run.engine.anki_refresh().await.unwrap(), run.others + 2);
+    assert_eq!(run.engine.anki_count().unwrap() as usize, run.others + 2, "the deleted note's word is no longer counted");
     assert_eq!((interval("저"), interval("학교"), interval("공부하다")), (None, Some(0.0), None), "suspended: no progress; deleted: forgotten");
     let overview = run.engine.anki_overview("저", Some("game.exe")).await.unwrap();
     assert!(overview.existing.is_some(), "a suspended word is still in Anki, so it is not offered again");

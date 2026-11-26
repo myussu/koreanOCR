@@ -84,13 +84,17 @@ auto_save_after_lookups = 2  # queue a word for review on the 2nd lookup
 # word and sentence, and reads your progress back so words you hold for weeks fade. Your AnkiWeb
 # login stays in Anki; Maru only asks Anki to sync.
 enabled = false
-deck = "Korean"             # suggested first; per program, a deck named after it is offered too
+deck = "Korean"             # where word cards go unless you type another deck when adding
+# sentence_deck = "Korean::Sentences"   # where sentence cards go; unset = the same deck as words
+new_words_per_day = 3       # new word cards you study a day: only used to say when the cards you add would come up
+new_sentences_per_day = 1   # (Anki's own limits are neither read nor changed; AnkiConnect cannot see a deck's overrides)
+suggest_app_decks = false   # true also offers a deck per program (Korean::<program>); false: the program is only a tag
 reverse = "subdeck"         # the English -> Korean card: subdeck (<deck>::Reverse) | same_deck | off
 sentence_note_type = "Maru Korean Sentence"  # History → Make cards: the line as a one-card note (no reverse)
 audio = true                # attach the spoken word and sentence (needs [tts])
 sync_after_add = true       # ask Anki to sync with AnkiWeb a few seconds after adding
 tags = ["maru"]             # on every card
-auto_tags = true            # + level (topik-1), pos::verb, app::<program>, added::<year-month>
+auto_tags = true            # + level (topik-1), pos::verb, maru::<program>, added::<year-month>
 refresh_minutes = 30        # read card intervals back from Anki (0 = only at start-up)
 # Settings → Anki → Refresh progress also reads intervals explicitly, including missing/suspended cards.
 # Local saved words remain separate from tracked Anki membership; unfinished note setup can be retried.

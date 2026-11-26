@@ -407,6 +407,27 @@ Settings layout (a "Translation model" section, a "Saved connection" selector, a
 behaviour they describe is unchanged, and their settings are now the connection of Live subtitles, the connection of
 Captures and "While live subtitles are on, use".
 
+## Making cards from a line
+
+History → **Make cards** on a live line opens a sheet with the words of the line. Each word has a short English and a
+short Spanish meaning (both can be typed over), the dictionary's other senses to pick from, and under the words a line
+saying which model chose the meanings ("Meanings chosen by This PC's model …"). If the connection you chose for card
+meanings could not answer, the sheet says why in plain words ("Gemini has no quota left. This PC's model answered
+instead.") and **Retry with …** asks any other connection for that line; your ticks and anything you typed are kept.
+While live subtitles run, this PC's model is not loaded for a card: the sheet offers the other connections now, or
+**Ask This PC's model when live subtitles stop**. **Translate again with …** gives the sentence card a fresh translation.
+
+Words and sentences go to two decks: **Deck for word cards** and **Deck for sentence cards** in Settings → Making cards
+(`learning.anki.deck`, `learning.anki.sentence_deck`); both can be typed over on the sheet. The game or program is the
+tag `maru::<name>` on the card, not a subdeck (turn on "Suggest a deck per program" in Advanced to get those offers
+back; cards made earlier keep their `app::<name>` tag). Before you add, the sheet reads how many new cards already wait
+in each deck and says when yours would come up ("12 new cards already wait in … At 3 a day, these 2 words would come up
+in 4 days."), using the per-day numbers you set in Maru (3 words and 1 sentence by default). Anki's own daily limits
+are not read or changed: AnkiConnect cannot see a deck's overrides.
+
+A word added from the panel (**Add to Anki**) now gets its Spanish meaning also when the dictionary has several senses
+for it: the sense that fits the sentence you saw it in is chosen by the card-meanings connection.
+
 ## Saved reading areas
 
 If the game hides or confines the pointer, press **Ctrl+Alt+Q** to open the controls wheel at its position.

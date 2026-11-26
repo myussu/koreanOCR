@@ -247,6 +247,7 @@ fn main() {
             commands::history_starred,
             mining::mine_sheet,
             mining::mine_sentence_translation,
+            mining::mine_queue,
             mining::task_status,
             mining::task_test,
             mining::mine_add,

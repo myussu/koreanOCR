@@ -520,6 +520,12 @@ impl AnkiClient {
         Ok(out)
     }
 
+    /// New cards waiting in `deck` and its subdecks, suspended ones left out. Only reads.
+    pub async fn new_cards(&self, deck: &str) -> Result<usize> {
+        let query = format!("\"deck:{}\" is:new -is:suspended", search_text(deck));
+        Ok(self.call("findCards", json!({ "query": query })).await?.as_array().map_or(0, Vec::len))
+    }
+
     /// How many of your cards are due now, and how many are new.
     pub async fn due(&self) -> Result<DueCounts> {
         let count = |extra: &'static str| {

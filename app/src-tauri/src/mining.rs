@@ -32,6 +32,12 @@ pub fn task_status(state: S<'_>) -> Vec<maru_engine::routes::TaskStatus> {
     state.engine().task_status()
 }
 
+/// New cards already waiting in the two decks the sheet shows (asked again when a deck is typed). Only reads Anki.
+#[tauri::command]
+pub async fn mine_queue(state: S<'_>, word_deck: String, sentence_deck: String) -> Result<maru_engine::mining::CardQueue, String> {
+    state.engine().card_queue(&word_deck, &sentence_deck).await.map_err(|e| e.to_string())
+}
+
 /// The settings' Test button: one short fixed question to the task's connection.
 #[tauri::command]
 pub async fn task_test(state: S<'_>, task: maru_core::tasks::Task) -> Result<maru_engine::routes::TaskStatus, String> {
@@ -46,6 +52,9 @@ pub struct MineAddRequest {
     pub translation: String,
     pub app: Option<String>,
     pub deck: String,
+    /// The deck of the sentence card; absent: the same deck as the words.
+    #[serde(default)]
+    pub sentence_deck: Option<String>,
     /// Reverse cards for the words (sentences never get one).
     pub reverse: bool,
     pub audio: bool,
@@ -102,6 +111,7 @@ pub async fn mine_add(state: S<'_>, request: MineAddRequest) -> Result<MineReply
         app: request.app.clone(),
         deck: request.deck.clone(),
         reverse: reverse_for(request.reverse, cfg.reverse),
+        sentence_deck: request.sentence_deck.clone(),
     };
     let want_audio = request.audio && cfg.audio;
     // Every card's sound takes a moment: Anki is asked to sync only once the whole batch is in.
