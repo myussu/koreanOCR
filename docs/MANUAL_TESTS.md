@@ -946,8 +946,7 @@ file, and a game with Korean subtitles.
    must still appear within about 3 s (`this line uses the backup translator`), the following ones quickly; after about
    20 s lines come from the server again. Repeat with the server switched off entirely.
 3. Watch for lines made of OCR noise (a bar or dash under the subtitle): none should appear in the band or the history.
-4. In a build with DirectML (`cargo run --release --features directml` in `app/src-tauri`; the default build has none
-   and stays on the CPU), set Run PP-OCR on → GPU (DirectML), save, restart. Compare Maru's CPU in Task Manager during a cutscene with the CPU
+4. Set Run PP-OCR on → GPU (DirectML), save, restart. Compare Maru's CPU in Task Manager during a cutscene with the CPU
    setting, and check reading speed in the `live line:` OCR times. Then CPU with `threads = 4`.
 
 **Verification (2026-10-14, developer PC, no game):** scripted-server tests cover failed, late, half-answered and healthy

@@ -68,7 +68,7 @@ request_timeout_secs = 60 # chat: waiting for response headers or stalled output
 
 [ocr]
 backend = "auto"      # auto | paddle | windows
-device  = "cpu"       # cpu | directml:0 (any DirectX 12 GPU; needs a build with --features directml) | cuda:0 (needs a CUDA build)
+device  = "cpu"       # cpu | directml:0 (any DirectX 12 GPU; Windows builds include it) | cuda:0 (needs a CUDA build)
 threads = 0           # CPU threads per PP-OCR read; 0 = every core. 4 leaves the rest to the game during live subtitles
 vision_reader = true  # pair PP-OCR with PaddleOCR-VL when installed (`maru setup ocr-vl`); ~2 GB VRAM
 

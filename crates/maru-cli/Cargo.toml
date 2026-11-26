@@ -11,10 +11,6 @@ description = "Command-line front end: translate, doctor, install models, evalua
 name = "maru"
 path = "src/main.rs"
 
-[features]
-# PP-OCR on any DirectX 12 GPU (`[ocr] device = "directml:0"`); see crates/maru-engine/Cargo.toml for why it is opt-in.
-directml = ["maru-engine/directml"]
-
 [dependencies]
 maru-core.workspace = true
 maru-lang.workspace = true
