@@ -1,15 +1,16 @@
-// The Settings tab of the hub window. The rules live in settings-core.js; this file draws them.
+// The Settings tab of the hub window. The rules live in settings-core.js and settings-flow-core.js; this file draws them.
 //
-// Edits are collected as a draft (only what differs from the file) and written with one Save. Typing
-// never re-renders the page (that would drop the cursor): each field updates itself.
+// The overview is a map of what a line goes through (read the screen → translate → words and meanings → cards),
+// each step showing what it uses now, where that runs and whether it works. The sections follow the same flow.
+// Edits are collected as a draft (only what differs from the file) and written with one Save. Typing never
+// re-renders the page (that would drop the cursor): each field updates itself.
 
 import { invoke } from './bridge.js';
 import { ankiSettingsPending, soundsText } from './anki.js';
-import { LIVE_MODELS, modelEdits, matchesSetting } from './settings-live-core.js';
-import { connectionFields, connectionKey, canTestConnection, connectionResult, connectionPaths, needsServerDetection } from './settings-connection-core.js';
+import { modelEdits } from './settings-live-core.js';
 import { discoveryControls } from './settings-discovery.js';
-import {savedServerControls} from './settings-servers.js';
-import { SECTIONS, isVisible, appliesLive, labelFor, toEditor, fromEditor, withEdit, withReset, shown, isDefault, valueAt, splitKeys, joinKeys, comboFromEvent, keyRisk } from './settings-core.js';
+import { SECTIONS, CATEGORIES, ALL_FIELDS, controlKind, isVisible, appliesLive, labelFor, matchesSetting, toEditor, fromEditor, withEdit, withReset, shown, isDefault, splitKeys, joinKeys, comboFromEvent, keyRisk } from './settings-core.js';
+import { LOCAL, PLACES, connections, routeChoices, stateDot, flowSteps, usedBy, connectionProblem, saveConnection, removeConnection, pendingSummary, needsKey } from './settings-flow-core.js';
 
 function h(tag, props = {}, ...kids) {
   const el = document.createElement(tag);
@@ -28,127 +29,108 @@ function h(tag, props = {}, ...kids) {
 
 const ensureStyles = () => {
   if (document.getElementById('settings-style')) return;
-  document.head.append(h('link', { id:'settings-style', rel:'stylesheet', href:'settings.css' }));
+  document.head.append(h('link', { id: 'settings-style', rel: 'stylesheet', href: 'settings.css' }));
 };
 
-const btn = (text, onclick, cls = '') => h('button', { class: `btn ${cls}`, onclick, text });
+const btn = (text, onclick, cls = '') => h('button', { class: `btn ${cls}`, type: 'button', onclick, text });
+const dot = (state) => h('span', { class: `dot ${state.kind}`, title: state.label, role: 'img', 'aria-label': state.label });
+const TASK_OF_SECTION = { live: 'Live subtitles', capture: 'Captures', card_meanings: 'Word meanings', card_sentence: 'Sentence translation' };
 
 export async function settingsView() {
   ensureStyles();
-  const root = h('div', {class:'settings-page'});
+  const root = h('div', { class: 'settings-page' });
   let data = await invoke('get_settings');
-  const status = await invoke('status').catch(() => null);
+  let status = await invoke('status').catch(() => null);
+  let tasks = await invoke('task_status').catch(() => []);
   let draft = {};
   let message = null; // { kind: 'ok' | 'bad', text }
   let capturing = null; // { path, stop }
+  let editing = null; // the connection being edited: { original, fields, check, discovery }
   const updaters = [];
-  const open = new Set(); // sections with Advanced expanded
-  const connectionChecks = new Map();
-  const discoveryStates = new Map();
-  let disposed=false;
-  root.dispose=()=>{disposed=true;stopCapture();for(const state of discoveryStates.values())if(state.busy)state.stop?.();};
-  let category = 'live', query = '', saving = false;
-  const sidebar = h('aside', {class:'settings-sidebar', 'aria-label':'Settings categories'});
-  const content = h('div');
-  const search = h('input', {class:'settings-search', type:'search', placeholder:'Search settings…', 'aria-label':'Search settings', oninput:e=>{query=e.target.value; rebuildAll();}});
+  let disposed = false;
+  root.dispose = () => { disposed = true; stopCapture(); editing?.discovery?.stop?.(); };
+  // A link can open one section, a search, or a connection's editor: hub.html?settings=connections&connection=NAS#settings
+  const asked = new URLSearchParams(location.search);
+  const start = asked.get('settings');
+  let category = CATEGORIES.some((c) => c.id === start) ? start : 'home', query = asked.get('q') ?? '', saving = false;
+  const wanted = asked.get('connection');
+  if (wanted) {
+    const saved = (data.values.llm?.servers ?? []).find((x) => x.name === wanted);
+    editing = saved ? { original: saved.name, fields: { ...saved, api_key: saved.api_key ?? '' }, problem: '' } : { original: null, fields: { name: '', endpoint: '', model_name: '', provider: 'openai', api_key: '' }, problem: '' };
+    category = 'connections';
+  }
+  const sidebar = h('nav', { class: 'settings-sidebar', 'aria-label': 'Settings sections' });
+  const content = h('div', { class: 'settings-content' });
+  const search = h('input', { class: 'settings-search', type: 'search', value: asked.get('q') ?? '', placeholder: 'Search by setting or feature…', 'aria-label': 'Search settings', oninput: (e) => { query = e.target.value; rebuildAll(); } });
   root.canLeave = () => {
     if (!Object.keys(draft).length && !saving) { stopCapture(); return true; }
-    message = {kind:'bad',text:'Save or discard your changes before leaving Settings.'}; refreshAll(); return false;
+    message = { kind: 'bad', text: 'Save or discard your changes before leaving Settings.' }; refreshAll(); return false;
   };
 
   const refreshAll = () => updaters.forEach((u) => u());
+  const value = (path) => shown(draft, data.values, data.defaults, path);
+  const live = () => ({ ...data.values, llm: { ...data.values.llm, servers: value('llm.servers') ?? [] } });
+  const stage = (edits) => { for (const [path, v] of Object.entries(edits)) draft = withEdit(draft, data.values, path, v); message = null; };
+  const go = (id) => { category = id; query = ''; search.value = ''; editing = null; rebuildAll(); root.scrollIntoView?.({ block: 'start' }); };
 
-  // ───────────── controls ─────────────
+  // ───────────── the three kinds of control ─────────────
 
-  function control(field) {
-    const value = () => shown(draft, data.values, data.defaults, field.path);
-    const edit = (v) => {
-      draft = withEdit(draft, data.values, field.path, v);
-      message = null;
-      refreshAll();
+  /** Cards to pick one of: a visible list of every possibility, the chosen one outlined. */
+  function choiceControl(field) {
+    const box = h('div', { class: 'choices', role: 'radiogroup', 'aria-label': field.label });
+    const options = () => (field.type === 'route' || field.type === 'route_optional' ? routeChoices(field, live(), value(field.path)) : field.options);
+    const pick = (v) => {
+      // Choosing a translation-only model also fills in the file Maru found for it.
+      if (field.path === 'tasks.live.model') stage(modelEdits(v === '' ? 'main' : v, Object.fromEntries(ALL_FIELDS.map((f) => [f.path, value(f.path)])), data.live_models));
+      else stage({ [field.path]: v });
+      rebuildAll();
     };
-    const reset = h('button', { class: 'reset', title: 'Back to the default', text: '↺', onclick: () => ((draft = withReset(draft, data.values, data.defaults, field.path)), (message = null), rebuild(field)) });
-    const sync = () => reset.classList.toggle('on', !isDefault(draft, data.values, data.defaults, field.path));
-    let input;
-
-    if (field.type === 'toggle') {
-      input = h('input', { type: 'checkbox', checked: value(), onchange: (e) => edit(e.target.checked) });
-      return { el: h('div', { class: 'set-ctl' }, h('label', { class: 'sw' }, input, h('i')), reset), sync, rebuild: () => (input.checked = value()) };
-    }
-    if (field.type === 'select') {
-      // A nullable select stores its empty option as null ("off").
-      input = h('select', { onchange: (e) => edit(field.nullable && e.target.value === '' ? null : e.target.value) }, field.options.map((o) => h('option', { value: o.value ?? '', text: o.label })));
-      const set = () => (input.value = value() ?? '');
-      set();
-      return { el: h('div', { class: 'set-ctl' }, input, reset), sync, rebuild: set };
-    }
-    if (field.type === 'range') {
-      const val = h('span', { class: 'val' });
-      input = h('input', { type: 'range', min: field.min, max: field.max, step: field.step, oninput: (e) => edit(Number(e.target.value)) });
-      const set = () => {
-        input.value = toEditor(field, value());
-        val.textContent = `${toEditor(field, value())}${field.unit ? ` ${field.unit}` : ''}`;
-      };
-      set();
-      return { el: h('div', { class: 'set-ctl' }, input, val, reset), sync: () => (sync(), set()), rebuild: set };
-    }
-    if (field.type === 'number' || field.type === 'percent') {
-      input = h('input', {
-        type: 'number', min: field.min, max: field.max, step: field.step,
-        oninput: (e) => {
-          const n = e.target.valueAsNumber;
-          if (!Number.isNaN(n)) edit(fromEditor(field, n));
-        },
-      });
-      const set = () => (input.value = toEditor(field, value()));
-      set();
-      const unit = field.type === 'percent' ? '%' : field.unit;
-      return { el: h('div', { class: 'set-ctl' }, input, unit && h('span', { class: 'unit', text: unit }), reset), sync, rebuild: set };
-    }
-    if (field.type === 'text' || field.type === 'password' || field.type === 'tags') {
-      input = h('input', { type: field.type === 'password' ? 'password' : 'text', autocomplete: 'off', placeholder: field.placeholder ?? '', spellcheck: 'false', oninput: (e) => edit(fromEditor(field, e.target.value)) });
-      const set = () => (input.value = toEditor(field, value()));
-      set();
-      return { el: h('div', { class: 'set-ctl' }, input, reset), sync, rebuild: set };
-    }
-    return null;
+    const draw = () => {
+      const now = value(field.path) ?? '';
+      box.replaceChildren(...options().map((o) => h('button', { class: `choice${o.missing ? ' missing' : ''}`, type: 'button', role: 'radio', 'aria-checked': String(String(o.value ?? '').toLowerCase() === String(now).toLowerCase()), onclick: () => pick(o.value) },
+        h('strong', { text: o.label }), o.detail && h('small', { text: o.detail }))));
+    };
+    draw();
+    return { el: box, sync: draw, rebuild: draw };
   }
 
-  // ───────────── shortcuts ─────────────
+  /** A switch: on or off. */
+  function switchControl(field) {
+    const input = h('input', { type: 'checkbox', role: 'switch', checked: value(field.path), 'aria-label': field.label, onchange: (e) => { stage({ [field.path]: e.target.checked }); refreshAll(); } });
+    const word = h('span', { class: 'sw-word' });
+    const set = () => { input.checked = !!value(field.path); word.textContent = input.checked ? 'On' : 'Off'; };
+    set();
+    return { el: h('label', { class: 'sw-wrap' }, h('span', { class: 'sw' }, input, h('i')), word), sync: set, rebuild: set };
+  }
+
+  /** A box to type in: text, a number with its unit, a secret, a list of tags. */
+  function typedControl(field) {
+    const edit = (v) => { stage({ [field.path]: v }); refreshAll(); };
+    const numeric = field.type === 'number' || field.type === 'percent';
+    const input = numeric
+      ? h('input', { type: 'number', min: field.min, max: field.max, step: field.step, 'aria-label': field.label, oninput: (e) => { const n = e.target.valueAsNumber; if (!Number.isNaN(n)) edit(fromEditor(field, n)); } })
+      : h('input', { type: field.type === 'password' ? 'password' : 'text', autocomplete: 'off', placeholder: field.placeholder ?? '', spellcheck: 'false', 'aria-label': field.label, oninput: (e) => edit(fromEditor(field, e.target.value)) });
+    const set = () => (input.value = toEditor(field, value(field.path)));
+    set();
+    const unit = field.type === 'percent' ? '%' : field.unit;
+    return { el: h('div', { class: `typed${numeric ? ' number' : ''}` }, input, unit && h('span', { class: 'unit', text: unit })), sync: () => {}, rebuild: set };
+  }
 
   function keysControl(field) {
     const box = h('div', { class: 'keys' });
     const note = h('div', { class: 'keys-note' });
-    const list = () => splitKeys(shown(draft, data.values, data.defaults, field.path));
-    const save = (next) => {
-      draft = withEdit(draft, data.values, field.path, joinKeys(next));
-      message = null;
-      refreshAll();
-    };
-    const reset = h('button', { class: 'reset', title: 'Back to the default', text: '↺', onclick: () => ((draft = withReset(draft, data.values, data.defaults, field.path)), (message = null), refreshAll()) });
+    const list = () => splitKeys(value(field.path));
+    const save = (next) => { stage({ [field.path]: joinKeys(next) }); refreshAll(); };
     const draw = () => {
       const keys = list();
       const risks = keys.map(keyRisk);
       const listening = capturing?.path === field.path;
-      box.replaceChildren(
-        h(
-          'div',
-          { class: 'list' },
-          ...keys.map((k, i) =>
-            h('span', { class: `k${risks[i] ? ' warn' : ''}` }, k, h('button', { title: 'Remove', text: '×', onclick: () => save(keys.filter((_, j) => j !== i)) })),
-          ),
-          h('button', {
-            class: `btn add${listening ? ' listening' : ''}`,
-            text: listening ? 'Press the keys…  (Esc to cancel)' : keys.length ? '+ Add another key' : '+ Set key',
-            onclick: () => (listening ? stopCapture() : startCapture(field, keys, save)),
-          }),
-        ),
-        reset,
-      );
-      reset.classList.toggle('on', !isDefault(draft, data.values, data.defaults, field.path));
+      box.replaceChildren(h('div', { class: 'list' },
+        ...keys.map((k, i) => h('span', { class: `k${risks[i] ? ' warn' : ''}` }, k, h('button', { title: 'Remove', type: 'button', text: '×', onclick: () => save(keys.filter((_, j) => j !== i)) }))),
+        h('button', { class: `btn add${listening ? ' listening' : ''}`, type: 'button', text: listening ? 'Press the keys…  (Esc to cancel)' : keys.length ? '+ Add another key' : '+ Set key', onclick: () => (listening ? stopCapture() : startCapture(field, keys, save)) })));
       note.textContent = listening && capturing.problem ? capturing.problem : risks.find(Boolean) ?? '';
     };
-    return { el: [box, note], sync: draw, rebuild: draw };
+    return { el: h('div', { class: 'keys-wrap' }, box, note), sync: draw, rebuild: draw };
   }
 
   function stopCapture() {
@@ -165,10 +147,7 @@ export async function settingsView() {
       const combo = comboFromEvent(e);
       if (combo === null) return;
       if (combo === 'cancel') return stopCapture();
-      if (combo === 'unknown') {
-        capturing.problem = 'Maru has no name for that key. Try another.';
-        return refreshAll();
-      }
+      if (combo === 'unknown') { capturing.problem = 'Maru has no name for that key. Try another.'; return refreshAll(); }
       if (!keys.includes(combo)) save([...keys, combo]);
       stopCapture();
     };
@@ -177,33 +156,218 @@ export async function settingsView() {
     refreshAll();
   }
 
-  // ───────────── rows ─────────────
+  // ───────────── a setting: its name, one sentence, who uses it, its control ─────────────
 
+  const rows = new Map();
   function row(field) {
-    const ctl = field.type === 'keys' ? keysControl(field) : control(field);
-    const live = appliesLive(field.path);
-    const holder = h('div', { class: `set-row${field.type === 'keys' ? ' keysrow' : ''}` });
-    const name = h('div', {}, h('div', { class: 'name' }, field.label, !live && h('span', { class: 'tag restart', title: 'Takes effect after a restart', text: 'restart' })), field.help && h('div', { class: 'help', text: field.help }));
-    const build = () => {
-      holder.classList.toggle('changed', field.path in draft);
-      holder.replaceChildren(...(field.type === 'keys' ? [name, ...[].concat(ctl.el)] : [name, ctl.el]));
-      for(const input of holder.querySelectorAll('input,select')) input.setAttribute('aria-label',field.label);
-    };
-    build();
+    const kind = controlKind(field);
+    const ctl = field.type === 'keys' ? keysControl(field) : kind === 'switch' ? switchControl(field) : kind === 'choice' ? choiceControl(field) : typedControl(field);
+    const reset = h('button', { class: 'reset', type: 'button', title: 'Back to the default', text: '↺', onclick: () => { draft = withReset(draft, data.values, data.defaults, field.path); message = null; ctl.rebuild(); refreshAll(); } });
+    const uses = field.uses?.length && h('div', { class: 'uses' }, 'Used by ', field.uses.map((u) => h('span', { class: 'use', text: u })));
+    const holder = h('div', { class: `set-row kind-${kind}${field.type === 'keys' ? ' keysrow' : ''}`, 'data-path': field.path },
+      h('div', { class: 'what' }, h('div', { class: 'name' }, field.label, reset), field.help && h('div', { class: 'help', text: field.help }), uses),
+      ctl.el);
     updaters.push(() => {
       holder.classList.toggle('changed', field.path in draft);
       holder.hidden = !isVisible(field, draft, data.values, data.defaults);
+      reset.classList.toggle('on', !isDefault(draft, data.values, data.defaults, field.path));
       ctl.sync();
     });
-    holder.dataset.path = field.path;
-    holder.rebuildField = () => ctl.rebuild();
+    rows.set(field.path, { rebuild: ctl.rebuild });
     return holder;
   }
 
-  const rows = new Map();
-  function rebuild(field) {
-    rows.get(field.path)?.rebuildField();
-    refreshAll();
+  // ───────────── what a task uses now ─────────────
+
+  /** "In use now": the connection the running app asks for this task, its dot, and a Test button. */
+  function taskLine(task) {
+    const box = h('div', { class: 'task-now' });
+    let busy = false;
+    const draw = () => {
+      const s = tasks.find((t) => t.task === task);
+      if (!s) return box.replaceChildren();
+      const state = stateDot(busy ? 'unknown' : s.state);
+      const who = s.state === 'off' ? s.message : `${s.connection === LOCAL ? 'This PC' : s.connection} · ${s.model}`;
+      const then = s.fallbacks?.length ? ` If it cannot answer: ${s.fallbacks.join(', then ')}.` : '';
+      const changed = Object.keys(draft).some((p) => p.startsWith(`tasks.${task}.`));
+      box.replaceChildren(...[
+        h('div', { class: 'task-who' }, h('span', { class: 'task-label', text: `${TASK_OF_SECTION[task]} now` }), dot(state), h('b', { text: who }), s.place && h('span', { class: 'place', text: PLACES[s.place] }), h('span', { class: `task-state ${state.kind}`, text: busy ? 'testing…' : state.label })),
+        h('div', { class: 'task-msg', text: `${busy || s.state === 'off' ? '' : s.message}${then}${changed ? ' Your change here takes effect after Save' + (appliesLive(`tasks.${task}.connection`) ? '.' : ' and a restart.') : ''}` }),
+        s.state !== 'off' && btn(busy ? 'Testing…' : 'Test', async () => {
+          if (busy) return;
+          busy = true; draw();
+          try {
+            const result = await invoke('task_test', { task });
+            tasks = tasks.map((t) => (t.task === task ? result : t));
+          } catch (e) { message = { kind: 'bad', text: String(e) }; }
+          busy = false; refreshAll();
+        })].filter(Boolean));
+    };
+    draw();
+    updaters.push(draw);
+    return box;
+  }
+
+  // ───────────── the overview: a map of the flow ─────────────
+
+  function homeView() {
+    const steps = flowSteps(status, tasks, data.values);
+    return h('section', { class: 'flow' },
+      h('p', { class: 'intro', text: 'What a line goes through, and what each step uses right now. Click a line to change it.' }),
+      h('ol', { class: 'flow-steps' }, steps.map((step, n) => h('li', { class: 'flow-step' },
+        h('div', { class: 'flow-head' }, h('span', { class: 'flow-n', text: String(n + 1) }), h('h3', { text: step.title })),
+        h('p', { class: 'flow-about', text: step.about }),
+        step.rows.map((r) => h('button', { class: 'flow-row', type: 'button', onclick: () => go(r.open) },
+          dot(r.dot), h('span', { class: 'flow-what', text: r.what }), h('span', { class: 'flow-uses', text: r.uses }), r.where && h('span', { class: 'place', text: r.where }),
+          r.note && h('span', { class: 'flow-note', text: r.note })))))),
+      h('p', { class: 'flow-legend' }, dot(stateDot('working')), ' working ', dot(stateDot('quota')), ' needs attention ', dot(stateDot('unknown')), ' not checked yet, or off'));
+  }
+
+  // ───────────── connections: the one place they are edited ─────────────
+
+  function connectionsView() {
+    const servers = () => value('llm.servers') ?? [];
+    const list = h('div', { class: 'conn-list' });
+    const draw = () => {
+      const cards = connections(live()).map((c) => {
+        const saved = servers().find((s) => s.name === c.name);
+        const users = usedBy(c.name, value);
+        const check = checks.get(c.name);
+        return h('div', { class: 'conn' },
+          h('div', { class: 'conn-head' }, h('b', { text: c.title }), h('span', { class: 'place', text: PLACES[c.place] }), check && dot(stateDot(check.state)), check && h('span', { class: `task-state ${stateDot(check.state).kind}`, text: check.message })),
+          h('div', { class: 'conn-detail', text: saved ? `${c.model} · ${saved.endpoint}${needsKey(saved.provider) || saved.api_key ? saved.api_key ? ' · key saved' : ' · no key' : ''}` : `${c.model}${c.ready ? '' : ' — set one below'}` }),
+          h('div', { class: 'uses' }, users.length ? ['Used by ', users.map((u) => h('span', { class: 'use', text: u }))] : 'Not used by any task'),
+          saved && h('div', { class: 'conn-actions' },
+            btn('Edit', () => { editing = { original: saved.name, fields: { ...saved, api_key: saved.api_key ?? '' }, problem: '' }; rebuildAll(); }),
+            btn(check?.busy ? 'Testing…' : 'Test', () => test(saved)),
+            btn('Remove', () => { try { stage(removeConnection(servers(), saved.name, value)); rebuildAll(); } catch (e) { message = { kind: 'bad', text: e.message }; refreshAll(); } })));
+      });
+      list.replaceChildren(...cards);
+    };
+    async function test(server) {
+      if (checks.get(server.name)?.busy) return;
+      checks.set(server.name, { busy: true, state: 'unknown', message: 'testing…' });
+      draw();
+      const r = await invoke('connection_check', { name: server.name, endpoint: server.endpoint, modelName: server.model_name, reasoningEffort: value('llm.reasoning_effort'), provider: server.provider ?? 'openai', apiKey: server.api_key || null }).catch((e) => ({ state: 'failed', message: String(e) }));
+      checks.set(server.name, { busy: false, state: r.state === 'input' ? 'failed' : r.state, message: r.message });
+      draw();
+    }
+    draw();
+    updaters.push(draw);
+    return h('section', { class: 'set-sec' }, list, editing ? connectionEditor() : btn('+ Add a connection', () => { editing = { original: null, fields: { name: '', endpoint: '', model_name: '', provider: 'openai', api_key: '' }, problem: '' }; rebuildAll(); }, 'primary'));
+  }
+  const checks = new Map();
+
+  function connectionEditor() {
+    const f = editing.fields;
+    const problem = h('div', { class: 'res bad', role: 'alert' });
+    const result = h('div', { class: 'res', role: 'status', 'aria-live': 'polite' });
+    const input = (key, label, help, props = {}) => {
+      const el = h('input', { type: props.type ?? 'text', value: f[key] ?? '', placeholder: props.placeholder ?? '', autocomplete: 'off', spellcheck: 'false', 'aria-label': label, oninput: (e) => { f[key] = e.target.value; problem.textContent = ''; result.textContent = ''; discovery.sync(); } });
+      inputs[key] = el;
+      return h('label', { class: 'conn-field' }, h('span', { class: 'name', text: label }), h('span', { class: 'help', text: help }), h('div', { class: 'typed' }, el));
+    };
+    const inputs = {};
+    const types = [['openai', 'A server of yours, or Anthropic', 'Ollama, LM Studio, llama.cpp, a NAS; https://api.anthropic.com'], ['azure', 'Azure OpenAI', 'The address is your resource; the model is your deployment'], ['gemini', 'Google Gemini', 'Needs a key from Google AI Studio']];
+    const typeBox = h('div', { class: 'choices', role: 'radiogroup', 'aria-label': 'Kind of server' });
+    const drawTypes = () => typeBox.replaceChildren(...types.map(([v, label, detail]) => h('button', { class: 'choice', type: 'button', role: 'radio', 'aria-checked': String((f.provider ?? 'openai') === v), onclick: () => {
+      f.provider = v;
+      if (v === 'gemini' && !f.endpoint) { f.endpoint = 'https://generativelanguage.googleapis.com/v1beta/openai'; inputs.endpoint.value = f.endpoint; }
+      drawTypes();
+    } }, h('strong', { text: label }), h('small', { text: detail }))));
+    drawTypes();
+    // Finding a server by a bare address reuses the discovery controls; they edit this form, not the file.
+    const state = editing.discovery ?? (editing.discovery = {});
+    const discovery = discoveryControls({
+      section: 'model', state,
+      fields: () => ({ endpoint: String(f.endpoint ?? '').trim(), modelName: String(f.model_name ?? '').trim() }),
+      edit: (path, v) => { const key = path === 'llm.endpoint' ? 'endpoint' : 'model_name'; f[key] = v; inputs[key].value = v; },
+      refresh: () => discovery.sync(), disposed: () => disposed,
+    });
+    discovery.sync();
+    const done = () => {
+      try {
+        stage(saveConnection(value('llm.servers') ?? [], f, editing.original, value));
+        editing = null; rebuildAll();
+      } catch (e) { problem.textContent = e.message; }
+    };
+    const test = btn('Test', async () => {
+      const wrong = connectionProblem([], { ...f, name: f.name || 'server' }, null);
+      if (wrong) return void (problem.textContent = wrong);
+      test.disabled = true; result.className = 'res'; result.textContent = 'Asking the server (up to a minute while it loads its model)…';
+      const r = await invoke('connection_check', { name: f.name, endpoint: f.endpoint, modelName: f.model_name, reasoningEffort: value('llm.reasoning_effort'), provider: f.provider ?? 'openai', apiKey: f.api_key || null }).catch((e) => ({ state: 'failed', message: String(e) }));
+      test.disabled = false; result.className = `res${r.state === 'working' ? ' good' : ' bad'}`; result.textContent = r.message;
+      if (r.endpoint && r.endpoint !== f.endpoint) { f.endpoint = r.endpoint; inputs.endpoint.value = r.endpoint; }
+    });
+    return h('div', { class: 'conn-edit' },
+      h('h4', { text: editing.original ? `Edit ${editing.original}` : 'A new connection' }),
+      input('name', 'Name', 'What the tasks call it: NAS, Claude, Azure…', { placeholder: 'NAS' }),
+      h('div', { class: 'conn-field' }, h('span', { class: 'name', text: 'Kind of server' }), h('span', { class: 'help', text: 'Decides how Maru signs in and where the model name goes.' }), typeBox),
+      input('endpoint', 'Address', 'The full address, or a bare IP or name to look for with Find the server.', { placeholder: 'http://192.168.1.20:11434' }),
+      discovery.el,
+      input('model_name', 'Model', 'The model that server should use, exactly as it names it.', { placeholder: 'gemma4-12b' }),
+      input('api_key', 'API key', 'Leave empty for a server without one. It is stored in config.toml on this PC.', { type: 'password' }),
+      h('div', { class: 'test-row' }, btn(editing.original ? 'Keep these changes' : 'Add it', done, 'primary'), test, btn('Cancel', () => { editing = null; rebuildAll(); }), result),
+      problem,
+      h('p', { class: 'help', text: 'Nothing is written until you press Save at the bottom of the page.' }));
+  }
+
+  // ───────────── actions that belong to a section ─────────────
+
+  function ttsTest() {
+    const res = h('span', { class: 'res' });
+    const button = btn('Test the voice', async () => {
+      button.disabled = true; res.className = 'res'; res.textContent = 'Speaking…';
+      try {
+        const clip = await invoke('tts_test', { text: null });
+        await new Audio(`data:${clip.mime};base64,${clip.data}`).play();
+        res.textContent = `${clip.seconds ? `${clip.seconds.toFixed(1)} s of speech` : 'Speech'} ${clip.cached ? 'from the cache' : `made in ${(clip.took_ms / 1000).toFixed(1)} s`}`;
+      } catch (e) { res.className = 'res bad'; res.textContent = String(e); } finally { button.disabled = false; }
+    });
+    updaters.push(() => {
+      const dirty = Object.keys(draft).some((p) => p.startsWith('tts.'));
+      button.disabled = dirty;
+      button.title = dirty ? 'Save first: the test uses the saved settings' : '';
+    });
+    return h('div', { class: 'test-row' }, button, res);
+  }
+
+  function ankiActions() {
+    const res = h('span', { class: 'res' });
+    const run = (what, command, ok, waiting = 'Asking Anki…') => btn(what, async (e) => {
+      const button = e.target;
+      button.disabled = true; res.className = 'res'; res.textContent = waiting;
+      try { res.textContent = ok(await invoke(command)); } catch (err) { res.className = 'res bad'; res.textContent = String(err); } finally { button.disabled = false; }
+    });
+    const all = [
+      run('Check Anki', 'anki_check', (r) => r),
+      run('Sync now', 'anki_sync', () => 'Asked Anki to sync with AnkiWeb. Anki shows its own progress.'),
+      run('Refresh my progress', 'anki_refresh', (n) => `Read ${n} words from Anki.`),
+      run('Add missing sounds', 'anki_fill_sounds', soundsText, 'Making sounds… the voice can take a minute to start.'),
+    ];
+    updaters.push(() => {
+      const dirty = ankiSettingsPending(draft, data.pending_restart);
+      for (const b of all) { b.disabled = dirty; b.title = dirty ? 'Save first, then restart: these use the settings Maru started with' : ''; }
+    });
+    return h('div', { class: 'test-row' }, all, res);
+  }
+
+  function installed() {
+    if (!status) return null;
+    const line = (what, ok, detail, command) => h('tr', {}, h('td', { text: what }), h('td', {}, dot(stateDot(ok ? 'working' : 'failed')), ' ', detail, !ok && command && [' ', h('span', { class: 'cmd', text: command }), ' ', btn('Copy', (e) => copy(command, e.target))]));
+    return h('section', { class: 'set-sec' }, h('h3', { text: 'Installed on this PC' }), h('p', { class: 'intro', text: 'For anything missing, run the command in a terminal, then restart Maru.' }),
+      h('table', { class: 'comp' },
+        line("This PC's model", status.llm === 'ready' || status.llm === 'loads on demand', status.llm, 'maru setup llm'),
+        line('Word splitter (Kiwi)', status.analyser === 'kiwi', status.analyser === 'kiwi' ? 'installed' : 'basic rules only', 'maru setup kiwi'),
+        line('Dictionary', status.dictionary, status.dictionary ? 'installed' : 'not installed', 'maru dict download'),
+        line('Text reader (PP-OCR)', status.ocr, status.ocr ? 'installed' : 'not installed', 'maru setup ocr'),
+        line('Reading model', status.ocr_reader !== 'off' && !String(status.ocr_reader).startsWith('failed'), status.ocr_reader === 'off' ? 'not in use' : status.ocr_reader, 'maru setup ocr-vl'),
+        line('Voice', status.tts !== 'off' && !String(status.tts).startsWith('failed'), status.tts, 'maru setup tts')),
+      h('div', { class: 'file-row' }, h('span', {}, 'Settings file: ', h('span', { class: 'cmd', text: data.path })), btn('Show in folder', () => invoke('open_config_file').catch((e) => { message = { kind: 'bad', text: String(e) }; refreshAll(); })), h('span', { text: 'Comments you add there are kept when you save here.' })));
+  }
+
+  async function copy(text, el) {
+    try { await navigator.clipboard.writeText(text); el.textContent = 'Copied'; setTimeout(() => (el.textContent = 'Copy'), 1200); } catch { /* the command is on screen */ }
   }
 
   // ───────────── page ─────────────
@@ -212,21 +376,17 @@ export async function settingsView() {
   const bar = h('div', { class: 'savebar' });
   const msg = h('div', { class: 'msg' });
   const saveBtn = btn('Save', () => save(), 'primary');
-  const discardBtn = btn('Discard', () => ((draft = {}), (message = null), stopCapture(), rebuildAll()));
+  const discardBtn = btn('Discard', () => { draft = {}; message = null; editing = null; stopCapture(); rebuildAll(); });
   bar.append(msg, discardBtn, saveBtn);
 
+  /** One banner for everything that waits for a restart, instead of a mark on every row. */
   function drawBanner() {
     const pending = data.pending_restart;
     banner.replaceChildren();
-    if (pending.length) {
-      const names = [...new Set(pending.map(labelFor))];
-      banner.append(
-        h('div', { class: 'banner restart' }, h('div', {}, h('b', { text: 'Restart to apply: ' }), names.slice(0, 6).join(', '), names.length > 6 ? ` and ${names.length - 6} more` : '', '.'), btn('Restart Maru', () => {
-          if(Object.keys(draft).length){message={kind:'bad',text:'Save or discard the unsaved changes before restarting.'};refreshAll();return;}
-          invoke('restart_app').catch(e=>{message={kind:'bad',text:String(e)};refreshAll();});
-        }, 'primary')),
-      );
-    }
+    if (pending.length) banner.append(h('div', { class: 'banner restart' }, h('div', {}, h('b', { text: 'Restart to apply: ' }), pendingSummary(pending, labelFor), '.'), btn('Restart Maru', () => {
+      if (Object.keys(draft).length) { message = { kind: 'bad', text: 'Save or discard the unsaved changes before restarting.' }; refreshAll(); return; }
+      invoke('restart_app').catch((e) => { message = { kind: 'bad', text: String(e) }; refreshAll(); });
+    }, 'primary')));
     if (data.lite_from_env) banner.append(h('div', { class: 'banner restart' }, 'MARU_LITE is set in the environment, so game mode is on whatever this page says.'));
   }
 
@@ -234,50 +394,55 @@ export async function settingsView() {
     const n = Object.keys(draft).length;
     msg.className = `msg${message?.kind === 'bad' ? ' bad' : ''}`;
     msg.textContent = message ? message.text : n ? `${n} unsaved change${n === 1 ? '' : 's'}` : 'All changes are saved';
-    saveBtn.disabled = n === 0 || saving;
-    discardBtn.disabled = n === 0 || saving;
-    saveBtn.style.opacity = discardBtn.style.opacity = n === 0 ? 0.5 : 1;
+    saveBtn.disabled = discardBtn.disabled = n === 0 || saving;
   }
-  updaters.push(drawBar);
 
   async function save() {
-    if(saving)return;
-    saving=true; root.inert=true; message={kind:'ok',text:'Saving…'};refreshAll();
+    if (saving) return;
+    saving = true; root.inert = true; message = { kind: 'ok', text: 'Saving…' }; refreshAll();
     try {
       const r = await invoke('save_settings', { changes: draft });
-      const live = r.changed.filter(appliesLive).length;
+      const waits = r.changed.filter((p) => !appliesLive(p)).length;
       data = await invoke('get_settings');
+      tasks = await invoke('task_status').catch(() => tasks);
       draft = {};
       const warn = r.warnings?.length ? ` ${r.warnings.join(' ')}` : '';
-      message = { kind: r.warnings?.length ? 'bad' : 'ok', text: (r.changed.length ? `Saved. ${live ? 'Changes that do not need a restart are active now.' : ''}` : 'Nothing changed.') + warn };
+      message = { kind: r.warnings?.length ? 'bad' : 'ok', text: (!r.changed.length ? 'Nothing changed.' : waits ? 'Saved. Some changes wait for a restart (see the top of the page).' : 'Saved. Everything is in effect now.') + warn };
       rebuildAll();
     } catch (e) {
       message = { kind: 'bad', text: String(e) };
       refreshAll();
     } finally {
-      saving=false;root.inert=false;refreshAll();
+      saving = false; root.inert = false; refreshAll();
     }
   }
 
-  const fieldRows = (section, advanced) => section.fields.filter((f) => (!f.auth||!!query) && f.path !== 'continuous.translation.model' && matchesSetting(f,query) && (!!query || !!f.advanced === advanced)).flatMap((f) => {
-    const r = row(f);
-    rows.set(f.path, r);
-    if(['llm.endpoint','continuous.translation.snapshot_endpoint'].includes(f.path)) {
-      const saved=savedServerControls({section:section.id,value:p=>shown(draft,data.values,data.defaults,p),edit:editServer});updaters.push(saved.sync);savedControls.set(section.id,saved);return [saved.el,r];
-    }
-    return ['llm.model_name','continuous.translation.snapshot_model_name'].includes(f.path) ? [r, !query&&serverAuthentication(section), serverTest(section.id), savedControls.get(section.id)?.saveEl].filter(Boolean) : [r];
-  });
+  const fieldsOf = (section, advanced) => section.fields.map((f) => ({ ...f, section: section.id })).filter((f) => !!f.advanced === advanced);
 
-  const savedControls=new Map();
-  function editServer(path,value) {draft=withEdit(draft,data.values,path,value);message=null;rows.get(path)?.rebuildField();refreshAll();}
-  function serverAuthentication(section) {
-    const auth=section.fields.filter(field=>field.auth);
-    const box=h('details',{class:'server-auth'},h('summary',{text:'Server type and API key (Azure, Gemini, …)'}));
-    const authenticated=()=>auth.some(field=>{const value=shown(draft,data.values,data.defaults,field.path);return field.type==='password'?!!value:(value??'openai')!=='openai';});
-    let previous=authenticated();box.open=previous;
-    for(const field of auth){const holder=row(field);rows.set(field.path,holder);box.append(holder);}
-    updaters.push(()=>{const next=authenticated();if(next!==previous){box.open=next;previous=next;}});
-    return box;
+  function sectionView(section) {
+    return h('section', { class: 'set-sec' },
+      h('h3', {}, section.title, section.subtitle && h('small', { text: ` ${section.subtitle}` })),
+      section.intro && h('p', { class: 'intro', text: section.intro }),
+      (section.tasks ?? []).map(taskLine),
+      section.custom === 'connections' && [connectionsView(), h('h4', { text: "This PC's model" })],
+      fieldsOf(section, false).map(row),
+      section.action === 'tts-test' && ttsTest(),
+      section.action === 'anki' && ankiActions(),
+      section.fields.some((f) => f.advanced) && h('p', { class: 'more' }, 'Less common settings for this are in ', h('a', { href: '#', text: 'Advanced', onclick: (e) => { e.preventDefault(); go('advanced'); } }), '.'));
+  }
+
+  function advancedView() {
+    return [
+      h('section', { class: 'set-sec' }, h('h3', { text: 'Advanced' }), h('p', { class: 'intro', text: 'Settings that rarely need changing, grouped by the section they belong to.' }),
+        SECTIONS.filter((s) => s.fields.some((f) => f.advanced)).map((s) => [h('h4', { text: s.title }), fieldsOf(s, true).map(row)])),
+      installed(),
+    ];
+  }
+
+  function searchView() {
+    const hits = SECTIONS.map((s) => [s, s.fields.map((f) => ({ ...f, section: s.id })).filter((f) => matchesSetting(f, query))]).filter(([, fields]) => fields.length);
+    if (!hits.length) return h('p', { class: 'settings-empty', text: 'No setting or feature matches that. Try a feature name such as "scan", "cards" or "live".' });
+    return hits.map(([s, fields]) => h('section', { class: 'set-sec' }, h('h3', {}, s.title, h('small', { text: ` ${fields.length} match${fields.length === 1 ? '' : 'es'}` })), fields.map(row)));
   }
 
   function rebuildAll() {
@@ -285,186 +450,13 @@ export async function settingsView() {
     updaters.length = 0;
     rows.clear();
     drawBanner();
-    sidebar.replaceChildren(...[...SECTIONS, {id:'components',title:'Installed resources',fields:[]}].map(s=>btn(s.title,()=>{category=s.id;query='';search.value='';rebuildAll();})));
-    [...sidebar.children].forEach((b,i)=>b.setAttribute('aria-current',String(!query && category===[...SECTIONS,{id:'components'}][i].id)));
-    const wanted = SECTIONS.filter(s=>query ? s.fields.some(f=>matchesSetting(f,query)) : s.id===category);
-    const sections = wanted.map((s) => {
-      const adv = s.fields.some((f) => f.advanced);
-      const advBox = h('div');
-      const draw = () => {
-        advBox.replaceChildren();
-        if (open.has(s.id)) advBox.append(...fieldRows(s, true));
-        toggle.textContent = open.has(s.id) ? 'Hide advanced ▴' : 'Advanced ▾';
-      };
-      const toggle = h('button', { class: 'adv-toggle', onclick: () => (open.has(s.id) ? open.delete(s.id) : open.add(s.id), draw(), refreshAll()) });
-      const body = fieldRows(s, false);
-      if (adv && !query) draw();
-      return h('section', { class: 'set-sec' }, h('h3', { text: s.title }), s.intro && h('p', { class: 'intro', text: s.intro }), s.id==='live' && liveCards(), body, adv && !query && toggle, adv && !query && advBox, s.action === 'tts-test' && ttsTest(), s.action === 'anki' && ankiActions());
-    });
+    sidebar.replaceChildren(...CATEGORIES.map((c) => h('button', { type: 'button', text: c.title, 'aria-current': String(!query && category === c.id), onclick: () => go(c.id) })));
+    const section = SECTIONS.find((s) => s.id === category);
+    const view = query ? searchView() : category === 'home' ? homeView() : category === 'advanced' ? advancedView() : sectionView(section);
+    content.replaceChildren(...[].concat(view).flat(Infinity).filter(Boolean));
     updaters.push(drawBar);
-    content.replaceChildren(...[...sections, !query && category==='components' && components(), !query && category==='components' && fileRow(), query && !sections.length && h('p',{class:'settings-empty',text:'No settings match this search.'})].filter(el=>el!==false && el!==''));
-    if(!root.children.length) root.append(h('header',{class:'settings-head'},h('div',{},h('h2',{text:'Settings'}),h('p',{text:'Make Maru fit the way you read and play.'})),search),banner,h('div',{class:'settings-grid'},sidebar,content),bar);
+    if (!root.children.length) root.append(h('header', { class: 'settings-head' }, h('div', {}, h('h2', { text: 'Settings' }), h('p', { text: 'What Maru does with a line, step by step, and what each step uses.' })), search), banner, h('div', { class: 'settings-grid' }, sidebar, content), bar);
     refreshAll();
-  }
-
-  function liveCards() {
-    const selected=shown(draft,data.values,data.defaults,'continuous.translation.model');
-    const values=Object.fromEntries(LIVE_MODELS.filter(m=>m.path).map(m=>[m.path,shown(draft,data.values,data.defaults,m.path)]));
-    const cards=LIVE_MODELS.map(m=>h('button',{class:'live-card','aria-pressed':String(selected===m.id),onclick:()=>{
-      for(const [path,v] of Object.entries(modelEdits(m.id,values,data.live_models))) draft=withEdit(draft,data.values,path,v);
-      message=null;rebuildAll();
-    }},h('span',{class:'model-tag',text:m.tag}),h('strong',{text:m.name}),h('small',{text:m.note}),m.path && h('small',{text:values[m.path]||data.live_models?.find(f=>f.model===m.id)?.path?'Local file available':'Choose a local GGUF file below'})));
-    return h('div',{},h('div',{class:'live-cards','aria-label':'Live translation models'},cards),h('p',{class:'live-note',text:'The lightweight choices leave more GPU memory for a game, with more translation errors. Their tested GGUF files use smaller runtime buffers. Choose GPU or CPU below, save and restart. Only one owned local translation model is kept loaded. OCR and speech have separate memory costs.'}));
-  }
-
-  // ───────────── speech test ─────────────
-
-  function serverTest(section) {
-    const fields = () => connectionFields(section, p => shown(draft,data.values,data.defaults,p));
-    const edit=(path,value)=>{draft=withEdit(draft,data.values,path,value);message=null;rows.get(path)?.rebuildField();refreshAll();};
-    if(!discoveryStates.has(section))discoveryStates.set(section,{});
-    const discoveryState=discoveryStates.get(section);
-    const discovery=discoveryControls({section,state:discoveryState,fields,edit,refresh:refreshAll,disposed:()=>disposed});
-    updaters.push(discovery.sync);
-    const result = h('span', {class:'res', role:'status', 'aria-live':'polite'});
-    const button = btn('Test connection', async () => {
-      let args = fields();
-      if (!canTestConnection(args) || connectionChecks.get(section)?.busy || discoveryState.busy) return;
-      const state = {key:connectionKey(args), busy:true, phase:needsServerDetection(args.endpoint) ? 'discovery' : 'inference', result:null};
-      connectionChecks.set(section,state);
-      refreshAll();
-      try {
-        await discovery.resolveForTest();
-        const current=fields();
-        if(disposed || args.modelName!==current.modelName || args.reasoningEffort!==current.reasoningEffort || args.provider!==current.provider || args.apiKey!==current.apiKey)throw Error('Settings changed during discovery. Test the current values again.');
-        args=current;state.key=connectionKey(args);state.phase='inference';refreshAll();
-        const reply = await invoke('test_model_connection', args);
-        if(reply.endpoint && state.key===connectionKey(fields()) && !disposed){
-          const paths=connectionPaths(section);state.key=connectionKey({...args,endpoint:reply.endpoint});edit(paths.endpoint,reply.endpoint);
-        }
-        state.result = {kind:'ok', text:`Connected · model replied in ${(reply.took_ms/1000).toFixed(1)} s: ${reply.reply}`};
-      } catch (e) {
-        if(state.phase==='discovery' && discoveryState.selected===fields().endpoint)state.key=connectionKey(fields());
-        state.result = {kind:'bad', text:`Connection failed: ${String(e)}`};
-      } finally {
-        state.busy=false;
-        refreshAll();
-      }
-    });
-    const sync = () => {
-      const args=fields(), state=connectionChecks.get(section);
-      // Editing invalidates the old result, even if the fields are changed back later.
-      if(state && state.key!==connectionKey(args)) state.result=null;
-      const reply=connectionResult(state,args);
-      button.disabled=!!state?.busy || !!discoveryState.busy || !canTestConnection(args);
-      button.textContent=state?.busy ? 'Testing…' : 'Test connection';
-      result.className=`res${reply?.kind==='bad' ? ' bad' : ''}`;
-      result.textContent=state?.busy ? state.phase==='discovery' ? 'Detecting the model server…' : 'Waiting for the server model (up to 60 s)…' : reply?.text ?? '';
-    };
-    updaters.push(sync);
-    return h('div',{class:'server-test', 'data-connection':section},
-      discovery.el,
-      h('div',{class:'help',text:'Tests the address and model entered above before saving. Sends only “안녕하세요.” with a translation instruction; the server may load its model.'}),
-      h('div',{class:'test-row'},button,result));
-  }
-
-  function ttsTest() {
-    const res = h('span', { class: 'res' });
-    const button = btn('Test voice', async () => {
-      button.disabled = true;
-      res.className = 'res';
-      res.textContent = 'Speaking…';
-      try {
-        const clip = await invoke('tts_test', { text: null });
-        const audio = new Audio(`data:${clip.mime};base64,${clip.data}`);
-        await audio.play();
-        res.textContent = `${clip.seconds ? `${clip.seconds.toFixed(1)} s of speech` : 'Speech'} ${clip.cached ? 'from the cache' : `made in ${(clip.took_ms / 1000).toFixed(1)} s`}`;
-      } catch (e) {
-        res.className = 'res bad';
-        res.textContent = String(e);
-      } finally {
-        button.disabled = false;
-      }
-    });
-    const sync = () => {
-      const dirty = Object.keys(draft).some((p) => p.startsWith('tts.'));
-      button.disabled = dirty;
-      button.title = dirty ? 'Save first: the test uses the saved settings' : '';
-    };
-    updaters.push(sync);
-    return h('div', { class: 'test-row' }, button, res, h('span', { class: 'res', text: 'Uses the saved settings.' }));
-  }
-
-  // ───────────── Anki ─────────────
-
-  function ankiActions() {
-    const res = h('span', { class: 'res' });
-    const run = (what, command, ok, waiting = 'Asking Anki…') =>
-      btn(what, async (e) => {
-        const button = e.target;
-        button.disabled = true;
-        res.className = 'res';
-        res.textContent = waiting;
-        try {
-          const r = await invoke(command);
-          res.textContent = ok(r);
-        } catch (err) {
-          res.className = 'res bad';
-          res.textContent = String(err);
-        } finally {
-          button.disabled = false;
-        }
-      });
-    const check = run('Check Anki', 'anki_check', (r) => r);
-    const sync = run('Sync now', 'anki_sync', () => 'Asked Anki to sync with AnkiWeb. Anki shows its own progress.');
-    const progress = run('Refresh progress', 'anki_refresh', (n) => `Read ${n} words from Anki; local learning progress is updated.`);
-    // Notes added while speech was off or failing; the voice may take a minute to start the first time.
-    const sounds = run('Add missing sounds', 'anki_fill_sounds', soundsText, 'Making sounds… the voice can take a minute to start.');
-    const sync_ = () => {
-      const dirty = ankiSettingsPending(draft,data.pending_restart);
-      check.disabled = sync.disabled = progress.disabled = sounds.disabled = dirty;
-      check.title = sync.title = progress.title = sounds.title = dirty ? 'Save first, then restart: these use the settings Maru started with' : '';
-    };
-    updaters.push(sync_);
-    return h('div', { class: 'test-row' }, check, sync, progress, sounds, res);
-  }
-
-  // ───────────── components and the file ─────────────
-
-  function components() {
-    if (!status) return h('div');
-    const row = (what, ok, detail, command) =>
-      h('tr', {}, h('td', { text: what }), h('td', {}, ok ? h('span', { class: 'flag on', text: detail }) : [h('span', { class: 'flag off', text: detail }), ' ', command && h('span', { class: 'cmd', text: command }), ' ', command && btn('Copy', (e) => copy(command, e.target))]));
-    return h(
-      'section',
-      { class: 'set-sec' },
-      h('h3', { text: 'Models and downloads' }),
-      h('p', { class: 'intro', text: 'What is installed. For anything missing, run the command in a terminal; then restart Maru.' }),
-      h(
-        'table',
-        { class: 'comp' },
-        row('Translation model', status.llm === 'ready', status.llm === 'ready' ? 'ready' : status.llm, 'maru setup llm'),
-        row('Korean analyser', status.analyser === 'kiwi', status.analyser === 'kiwi' ? 'Kiwi' : `${status.analyser} (basic)`, 'maru setup kiwi'),
-        row('Dictionary', status.dictionary, status.dictionary ? 'installed' : 'not installed', 'maru dict download'),
-        row('Text reader (PP-OCR)', status.ocr, status.ocr ? 'ready' : 'not installed', 'maru setup ocr'),
-        row('Speech', status.tts === 'ready', status.tts === 'off' ? 'off' : status.tts === 'ready' ? (status.tts_source === 'local' ? 'ready (this PC)' : 'ready (server)') : status.tts, 'maru setup tts'),
-        row('OCR reading model', status.ocr_reader === 'ready', status.ocr_reader === 'ready' ? 'ready' : status.ocr_reader === 'off' ? 'not in use' : status.ocr_reader, 'maru setup ocr-vl'),
-      ),
-    );
-  }
-
-  async function copy(text, el) {
-    try {
-      await navigator.clipboard.writeText(text);
-      el.textContent = 'Copied';
-      setTimeout(() => (el.textContent = 'Copy'), 1200);
-    } catch {
-      /* clipboard unavailable: the command is on screen */
-    }
-  }
-
-  function fileRow() {
-    return h('div', { class: 'file-row' }, h('span', {}, 'Settings file: ', h('span', { class: 'cmd', text: data.path })), btn('Show in folder', () => invoke('open_config_file').catch((e) => ((message = { kind: 'bad', text: String(e) }), refreshAll()))), h('span', { text: 'Comments you add there are kept when you save here.' }));
   }
 
   rebuildAll();

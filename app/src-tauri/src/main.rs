@@ -274,6 +274,7 @@ fn main() {
             commands::tts_reading,
             settings::get_settings,
             server_check::test_model_connection,
+            server_check::connection_check,
             server_check::discovery_networks,
             server_check::discovery_start,
             server_check::discovery_status,

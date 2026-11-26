@@ -56,6 +56,19 @@ pub fn sentence(name: &str, problem: Problem) -> String {
     }
 }
 
+/// An error as the panel or the live band shows it: what a server answered is never quoted (it is JSON or a web
+/// page), only what kind of refusal it was. Errors that are already sentences stay as they are.
+pub fn plain(error: &LlmError) -> String {
+    let LlmError::Http { status, .. } = error else { return error.to_string() };
+    match (classify(error), status) {
+        (Problem::Quota, _) => "The model has no quota left: its account is out of credit or is being rate limited.".into(),
+        (Problem::NoKey, _) => "The model's server refused the API key. Check the connection in Settings.".into(),
+        (Problem::Unreachable, _) => "The model's server is not answering right now.".into(),
+        (Problem::Failed, 404) => "The model's server does not know that model name. Check the connection in Settings.".into(),
+        (Problem::Failed, _) => "The model's server refused the request.".into(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -83,6 +96,16 @@ mod tests {
         assert_eq!(classify(&LlmError::Spawn("no model file".into())), Problem::Unreachable);
         assert_eq!(classify(&http(404, "model not found")), Problem::Failed);
         assert_eq!(classify(&LlmError::Stream("cut".into())), Problem::Failed);
+    }
+
+    #[test]
+    fn what_a_server_answered_is_never_quoted_to_the_person() {
+        let quota = plain(&http(429, r#"{"error":{"code":429,"status":"RESOURCE_EXHAUSTED"}}"#));
+        assert!(quota.contains("no quota left") && !quota.contains('{') && !quota.contains("429"), "{quota}");
+        assert!(plain(&http(404, "<html>not found</html>")).contains("does not know that model name"));
+        assert!(plain(&http(401, "bad key")).contains("refused the API key"));
+        assert!(plain(&http(503, "busy")).contains("not answering"));
+        assert_eq!(plain(&LlmError::Stalled(60)), LlmError::Stalled(60).to_string(), "a sentence stays as it is");
     }
 
     #[test]

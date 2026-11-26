@@ -7,27 +7,27 @@ const button=(text,action)=>{const node=el('button','btn',text);node.type='butto
 const option=(value,text)=>{const node=el('option','',text);node.value=value;return node;};
 
 export function discoveryControls({section,state,fields,edit,refresh,disposed}) {
-  const paths=connectionPaths(section);
+  const paths=connectionPaths();
   const root=el('div','server-discovery');
   const message=el('div','discovery-message');message.setAttribute('role','status');message.setAttribute('aria-live','polite');
   const servers=el('select');servers.setAttribute('aria-label','Discovered model servers');
   const models=el('select');models.setAttribute('aria-label','Models on selected server');
   const choices=el('div','discovery-choices');choices.append(servers,models);
-  const detect=button('Detect server',()=>run('host',fields().endpoint).catch(()=>{}));
-  const find=button('Find LAN servers',async()=>{
+  const detect=button('Find the server',()=>run('host',fields().endpoint).catch(()=>{}));
+  const find=button('Look on my network',async()=>{
     state.showLan=true;state.error=null;state.loadingNetworks=true;refresh();
     try {state.networks=await invoke('discovery_networks');}
     catch(e){state.error=String(e);}
     finally{state.loadingNetworks=false;refresh();}
   });
-  const cancel=button('Cancel search',()=>stop());
+  const cancel=button('Stop looking',()=>stop());
   const actions=el('div','test-row');actions.append(detect,find,cancel);
   const lan=el('div','discovery-lan');
   const networks=el('select');networks.setAttribute('aria-label','Local network to search');
   networks.addEventListener('change',()=>{state.network=networks.value;refresh();});
   const search=button('Search this network',()=>run('lan',networks.value).catch(()=>{}));
   lan.append(el('div','help','Choose a local network. Searches only ports 11434, 1234 and 8080; larger networks are limited to the shown /24 portion.'),networks,search);
-  root.append(el('div','help','Enter an IP, hostname or full URL above. Detect server finds common ports and lists models without requesting a translation. Custom ports and routes are kept.'),actions,lan,message,choices);
+  root.append(actions,lan,message,choices);
 
   function selectServer(endpoint) {
     state.key=endpoint;state.selected=endpoint;
@@ -67,8 +67,8 @@ export function discoveryControls({section,state,fields,edit,refresh,disposed}) 
   async function resolveForTest() {
     if(!needsServerDetection(fields().endpoint))return;
     const found=await run('host',fields().endpoint);
-    if(found.length!==1)throw Error(found.length ? 'Multiple servers found. Select one below, then test again.' : 'No server selected. Use Detect server or enter the complete URL.');
-    if(found[0].models.length && !found[0].models.includes(fields().modelName))throw Error('Server found. Choose its translation model below, then test again.');
+    if(found.length!==1)throw Error(found.length ? 'Several servers were found. Choose one below, then test again.' : 'No server was found there. Press Find the server, or type the full address.');
+    if(found[0].models.length && !found[0].models.includes(fields().modelName))throw Error('The server was found. Choose its model below, then test again.');
   }
 
   function sync() {
@@ -96,7 +96,7 @@ export function discoveryControls({section,state,fields,edit,refresh,disposed}) 
     models.disabled=!selected || !selected.models.length;
     models.value=selected?.models.includes(current.modelName) ? current.modelName : '';
     message.classList.toggle('bad',!!state.error);
-    message.textContent=state.error??(state.loadingNetworks ? 'Reading local network interfaces…' : state.showLan && state.networks?.length===0 ? 'No private IPv4 network found. You can still detect a server by address.' : discoveryText(state.progress));
+    message.textContent=state.error??(state.loadingNetworks ? 'Reading local network interfaces…' : state.showLan && state.networks?.length===0 ? 'No home network was found. You can still find a server by its address.' : discoveryText(state.progress));
     if(selected && !selected.models.length)message.textContent+=' No models were listed; enter a model name manually or load one on the server.';
     if(state.progress?.done && !list.length && !state.progress.cancelled && state.progress.errors?.length)message.textContent+=` ${state.progress.errors.join(' ')}`;
   }

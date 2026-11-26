@@ -1,32 +1,28 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {modelEdits,matchesSetting} from '../settings-live-core.js';
+import {modelEdits} from '../settings-live-core.js';
 import {withEdit} from '../settings-core.js';
 import {ACTIONS,statusText,moved} from '../launcher-core.js';
-test('choosing a live model stages its available file without overwriting a custom path',()=>{
+test('choosing a live model on this PC stages its available file without overwriting a custom path',()=>{
   const files=[{model:'milmmt',path:'D:/approved.gguf'}];
   const edits=modelEdits('milmmt',{},files);
   assert.equal(edits['continuous.translation.milmmt_path'],'D:/approved.gguf');
-  assert.deepEqual(modelEdits('milmmt',{'continuous.translation.milmmt_path':'E:/mine.gguf'},files),{'continuous.translation.model':'milmmt'});
-  const current={continuous:{translation:{model:'main',milmmt_path:null}}};
+  assert.deepEqual(modelEdits('milmmt',{'continuous.translation.milmmt_path':'E:/mine.gguf'},files),{'tasks.live.connection':'local','tasks.live.model':'milmmt'});
+  const current={tasks:{live:{connection:'NAS',model:''}},continuous:{translation:{milmmt_path:null}}};
   let draft={};for(const [k,v]of Object.entries(edits))draft=withEdit(draft,current,k,v);
-  assert.equal(current.continuous.translation.model,'main');
-  assert.equal(draft['continuous.translation.model'],'milmmt');
+  assert.equal(current.tasks.live.connection,'NAS','nothing is applied until Save');
+  assert.deepEqual([draft['tasks.live.connection'],draft['tasks.live.model']],['local','milmmt']);
 });
-test('choosing the main model keeps both test file paths and rejects unknown model IDs',()=>{
-  assert.deepEqual(modelEdits('main',{},[]),{'continuous.translation.model':'main'});
+test('choosing the full model clears the model name and unknown models stage nothing',()=>{
+  assert.deepEqual(modelEdits('main',{},[]),{'tasks.live.connection':'local','tasks.live.model':''});
   assert.deepEqual(modelEdits('unknown',{},[]),{});
-  assert.deepEqual(modelEdits('hy_mt2',{},[]),{'continuous.translation.model':'hy_mt2'});
+  assert.deepEqual(modelEdits('hy_mt2',{},[]),{'tasks.live.connection':'local','tasks.live.model':'hy_mt2'});
 });
-test('lightweight model choices keep separate files and only stage the requested option',()=>{
+test('small model choices keep separate files and only stage the requested one',()=>{
   const files=[{model:'hy_mt2_small',path:'D:/small.gguf'},{model:'lfm',path:'D:/lfm.gguf'}];
-  assert.deepEqual(modelEdits('hy_mt2_small',{},files),{'continuous.translation.model':'hy_mt2_small','continuous.translation.hy_mt2_small_path':'D:/small.gguf'});
-  assert.deepEqual(modelEdits('lfm',{},files),{'continuous.translation.model':'lfm','continuous.translation.lfm_path':'D:/lfm.gguf'});
-  assert.deepEqual(modelEdits('lfm',{'continuous.translation.lfm_path':'E:/custom.gguf'},files),{'continuous.translation.model':'lfm'});
-});
-test('search finds help and config keys as well as setting labels',()=>{
-  const f={label:'Snapshot server',help:'Sends text to your NAS',path:'continuous.translation.snapshot_endpoint'};
-  assert(matchesSetting(f,'NAS'));assert(matchesSetting(f,'snapshot_endpoint'));assert(!matchesSetting(f,'anki'));
+  assert.deepEqual(modelEdits('hy_mt2_small',{},files),{'tasks.live.connection':'local','tasks.live.model':'hy_mt2_small','continuous.translation.hy_mt2_small_path':'D:/small.gguf'});
+  assert.deepEqual(modelEdits('lfm',{},files),{'tasks.live.connection':'local','tasks.live.model':'lfm','continuous.translation.lfm_path':'D:/lfm.gguf'});
+  assert.deepEqual(modelEdits('lfm',{'continuous.translation.lfm_path':'E:/custom.gguf'},files),{'tasks.live.connection':'local','tasks.live.model':'lfm'});
 });
 test('floating controls expose tray actions and give errors and loading priority over live status',()=>{
   for(const id of ['translate','region','hover','continuous','continuous_area','scan','speak','review','status','settings'])assert(ACTIONS.some(a=>a[0]===id));
