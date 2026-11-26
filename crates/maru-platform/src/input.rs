@@ -56,6 +56,12 @@ pub trait InputControl: Send + Sync {
     fn transfer(&self, lease: &mut InputLease, owner: u64) -> Result<()>;
     fn finish(&self, lease: InputLease) -> Result<()>;
     fn still_owns(&self, lease: &InputLease) -> bool;
+    /// Is the foreground still Maru's: the lease's own window, or another of Maru's (Windows hands the foreground to
+    /// the next window in line, often Maru's always-on-top controls, when the area selector hides)? Only a switch to
+    /// another program means the user moved on and must not be pulled back.
+    fn maru_has_focus(&self, lease: &InputLease) -> bool {
+        self.still_owns(lease)
+    }
 }
 
 pub fn native() -> Arc<dyn InputControl> {
@@ -127,22 +133,35 @@ impl<B: Backend> Control<B> {
         Ok(())
     }
 
+    /// The foreground is the lease's window or another of Maru's own.
+    fn ours(&self, lease: &InputLease) -> bool {
+        let foreground = self.0.foreground();
+        foreground == lease.owner || self.0.window(foreground).is_some_and(|w| w.process == self.0.process())
+    }
+
     fn restore(&self, lease: &InputLease) -> Result<()> {
         self.check_thread(&lease.snapshot)?;
-        if !lease.returning || self.0.foreground() != lease.owner {
+        if !lease.returning || !self.ours(lease) {
+            tracing::debug!(returning = lease.returning, foreground = self.0.foreground(), owner = lease.owner, "focus not returned: the user moved to another program");
             return Ok(());
         }
         let Some(source) = lease.snapshot.source else {
+            tracing::debug!("focus not returned: no previous window was recorded");
             return Ok(());
         };
-        if self.0.window(source.handle) != Some(source)
-            || self.0.desktop()? != lease.snapshot.desktop
-        {
+        // Focus goes back to the same window: same handle, process and thread. Its size may differ (a borderless or
+        // fullscreen game gives up a pixel when it loses focus); a closed or reused handle is never activated.
+        let now = self.0.window(source.handle);
+        if now.map(|w| (w.handle, w.process, w.thread)) != Some((source.handle, source.process, source.thread)) {
+            tracing::debug!(?source, ?now, "focus not returned: the previous window closed or its handle was reused");
             return Ok(());
         }
-        // Another application (or the game itself) may have changed the shared clip.
-        let restore_clip =
-            self.0.clip()? == lease.released && lease.snapshot.clip != lease.snapshot.desktop;
+        // The old pointer confinement fits only the old geometry and desktop; another application (or the game
+        // itself) may also have changed the shared clip.
+        let restore_clip = now == Some(source)
+            && self.0.desktop()? == lease.snapshot.desktop
+            && self.0.clip()? == lease.released
+            && lease.snapshot.clip != lease.snapshot.desktop;
         self.0.activate(source.handle)?;
         if self.0.foreground() != source.handle {
             return Ok(());
@@ -263,6 +282,10 @@ impl<B: Backend> InputControl for Control<B> {
     fn still_owns(&self, lease: &InputLease) -> bool {
         self.0.foreground() == lease.owner
     }
+
+    fn maru_has_focus(&self, lease: &InputLease) -> bool {
+        self.ours(lease)
+    }
 }
 
 #[cfg(not(windows))]
@@ -309,6 +332,8 @@ mod tests {
     const WHEEL: u64 = 99;
     const PICKER: u64 = 100;
     const OTHER: u64 = 8;
+    /// Maru's floating controls: another window of Maru's own process.
+    const CONTROLS: u64 = 101;
     const DESKTOP: Bounds = Bounds {
         left: -1920,
         top: 0,
@@ -351,6 +376,7 @@ mod tests {
                 (GAME, 22, 220),
                 (WHEEL, 11, 110),
                 (PICKER, 11, 110),
+                (CONTROLS, 11, 110),
                 (OTHER, 33, 330),
             ]
             .into_iter()
@@ -502,6 +528,25 @@ mod tests {
     }
 
     #[test]
+    fn the_game_gets_focus_back_when_windows_handed_it_to_another_of_marus_windows() {
+        let fake = Fake::new();
+        let lease = open(&fake, PICKER);
+        // The selector hides; Windows activates Maru's always-on-top controls before Maru returns focus.
+        fake.state().foreground = CONTROLS;
+        assert!(fake.control().maru_has_focus(&lease), "still Maru's: not a switch away");
+        fake.control().finish(lease).unwrap();
+        assert_eq!(fake.state().foreground, GAME);
+    }
+
+    #[test]
+    fn another_program_taking_the_foreground_is_a_switch_away() {
+        let fake = Fake::new();
+        let lease = open(&fake, PICKER);
+        fake.state().foreground = OTHER;
+        assert!(!fake.control().maru_has_focus(&lease));
+    }
+
+    #[test]
     fn an_observed_switch_away_prevents_return_even_if_controls_are_focused_again() {
         let fake = Fake::new();
         let mut lease = open(&fake, WHEEL);
@@ -557,17 +602,20 @@ mod tests {
     }
 
     #[test]
-    fn changed_game_geometry_or_desktop_layout_prevents_restoring_an_old_clip() {
+    fn changed_game_geometry_or_desktop_layout_returns_focus_without_restoring_an_old_clip() {
         for desktop in [false, true] {
             let fake = Fake::new();
             let lease = open(&fake, WHEEL);
             if desktop {
                 fake.state().desktop.right = 2560;
             } else {
-                fake.state().windows.get_mut(&GAME).unwrap().client.right = 1280;
+                // A fullscreen window giving up a pixel when it loses focus.
+                fake.state().windows.get_mut(&GAME).unwrap().client.bottom -= 1;
             }
             fake.control().finish(lease).unwrap();
-            assert_eq!(fake.state().actions.len(), 2);
+            let state = fake.state();
+            assert_eq!(state.foreground, GAME, "the same game gets focus back");
+            assert!(!state.actions.iter().any(|a| matches!(a, Action::Confine(_))), "the old clip no longer fits");
         }
     }
 

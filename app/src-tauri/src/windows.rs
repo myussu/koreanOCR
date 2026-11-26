@@ -217,13 +217,19 @@ pub async fn open_reserved_picker(app: &AppHandle, _slot: &tokio::sync::OwnedMut
         session_id=Some(id);
         crate::picker_session::wait_ready(app,id).await?;
         crate::launcher::pause_for_picker(app);
-        crate::input_session::show(app, &win, snapshot, true).await
+        if let Err(error) = crate::input_session::show(app, &win, snapshot, true).await {
+            // Still offer the selector: it is always on top and works with the mouse, as before input control.
+            tracing::warn!("region picker opened without keyboard control: {error}");
+            crate::input_session::show_without_control(app, &win).await?;
+        }
+        Ok(())
     }.await;
     if let Err(error) = opened {
         if let Some(id)=session_id { crate::picker_session::clear(app,id); }
+        // The floating controls come back before focus returns: showing them while Maru is foreground activates them.
+        crate::launcher::resume_after_picker(app);
         let _ = crate::input_session::finish(app, &win).await;
         let _ = win.destroy();
-        crate::launcher::resume_after_picker(app);
         tracing::warn!("region picker: {error}");
         return Err(error);
     }
@@ -231,11 +237,13 @@ pub async fn open_reserved_picker(app: &AppHandle, _slot: &tokio::sync::OwnedMut
 }
 
 pub async fn close_picker(app: &AppHandle) {
+    // The floating controls come back first: shown while Maru still has the foreground, they would take it from the
+    // game that focus is about to return to.
+    crate::launcher::resume_after_picker(app);
     if let Some(w) = app.get_webview_window(PICKER) {
         if let Err(error) = crate::input_session::finish(app, &w).await { tracing::warn!("region picker return: {error}"); }
         let _ = w.destroy();
     }
-    crate::launcher::resume_after_picker(app);
     if let Some(id)=crate::picker_session::current(app) { crate::picker_session::clear(app,id); }
 }
 

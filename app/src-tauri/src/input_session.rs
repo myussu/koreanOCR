@@ -76,6 +76,21 @@ pub async fn show(
     show_window(app, window, snapshot, crosshair, false).await
 }
 
+/// Show a window that works with the mouse alone, without taking keyboard control or confining anything.
+/// Windows refuses to bring Maru forward while another program keeps receiving input; the first click
+/// on the window then activates it.
+pub async fn show_without_control(app: &AppHandle, window: &WebviewWindow) -> Result<(), String> {
+    let window = window.clone();
+    on_ui(app, move |_| {
+        window.show().map_err(|e| e.to_string())?;
+        window.set_cursor_icon(tauri::CursorIcon::Crosshair).map_err(|e| e.to_string())?;
+        window.set_cursor_visible(true).map_err(|e| e.to_string())?;
+        let _ = window.set_focus();
+        Ok(())
+    })
+    .await
+}
+
 /// Keep Maru foreground during an explicit wheel-to-manager action.
 pub async fn handoff(
     app: &AppHandle,
@@ -101,6 +116,15 @@ async fn show_window(
         #[cfg(not(windows))]
         let owner = 0;
         let current = state.control.snapshot().map_err(|e| e.to_string())?;
+        if let Some(stale) = lease.as_ref().map(InputLease::owner)
+            && lease_was_abandoned(stale, current.foreground(), owner)
+            && let Some(token) = lease.take()
+        {
+            // The user clicked back into the game while the wheel was open. That wheel is finished:
+            // put it away and open the new control from the window that is in front now.
+            let _ = state.control.finish(token);
+            hide_owner(&app, stale);
+        }
         let expected = lease
             .as_ref()
             .map(|token| token.owner())
@@ -160,6 +184,22 @@ async fn show_window(
     .await
 }
 
+/// A lease belongs to a Maru window in front; once another application is in front, nothing will hand it on.
+fn lease_was_abandoned(lease_owner: u64, foreground: u64, opening: u64) -> bool {
+    lease_owner != foreground && opening != foreground
+}
+
+fn hide_owner(app: &AppHandle, owner: u64) {
+    #[cfg(windows)]
+    for window in app.webview_windows().into_values() {
+        if window.hwnd().is_ok_and(|handle| handle.0 as usize as u64 == owner) {
+            let _ = window.hide();
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = (app, owner);
+}
+
 pub fn release_hub_raise(window: &WebviewWindow) {
     if let Some(state) = window.app_handle().try_state::<InputState>()
         && state
@@ -216,8 +256,9 @@ pub fn focus_changed(app: &AppHandle) {
     let Ok(mut lease) = state.lease.try_lock() else {
         return;
     };
+    // Focus moving between Maru's own windows (the selector hiding, the controls coming back) is not the user leaving.
     if let Some(token) = lease.as_mut()
-        && !state.control.still_owns(token)
+        && !state.control.maru_has_focus(token)
     {
         token.focus_lost();
     }
@@ -233,5 +274,26 @@ pub fn finish_all(app: &AppHandle) {
         && let Err(error) = state.control.finish(token)
     {
         tracing::warn!("pointer control return on exit: {error}");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::lease_was_abandoned;
+
+    const WHEEL: u64 = 1;
+    const GAME: u64 = 2;
+    const PICKER: u64 = 3;
+
+    #[test]
+    fn a_wheel_left_for_the_game_no_longer_decides_who_opens_next() {
+        assert!(lease_was_abandoned(WHEEL, GAME, PICKER));
+    }
+
+    #[test]
+    fn a_wheel_still_in_front_hands_its_lease_to_the_next_control() {
+        assert!(!lease_was_abandoned(WHEEL, WHEEL, PICKER));
+        // Activation can already have moved to the window being opened.
+        assert!(!lease_was_abandoned(WHEEL, PICKER, PICKER));
     }
 }
