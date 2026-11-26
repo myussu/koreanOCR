@@ -92,6 +92,9 @@ def main():
     ap.add_argument("--check", action="store_true", help="do not write: apply the rule to pictures a person labelled and compare")
     ap.add_argument("--set-aside", metavar="FOLDER", help="move pictures with no Korean in any reading, and repeats, to this folder")
     args = ap.parse_args()
+    # What this prints is Korean; a Windows console or pipe that is not UTF-8 must not make the check fail.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     root = Path(args.set)
     if not root.is_dir():
         sys.exit(f"{root} is not a folder")
