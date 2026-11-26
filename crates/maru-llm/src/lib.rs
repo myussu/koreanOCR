@@ -8,6 +8,7 @@
 
 pub mod client;
 pub mod connection;
+mod auth;
 pub mod discovery;
 pub mod demux;
 pub mod live_bench;
@@ -52,7 +53,7 @@ pub enum LlmStatus {
     Failed(String),
 }
 
-pub use client::{ChatOpts, LlmClient, Message};
+pub use client::{ChatOpts, LlmClient, Message, Reply};
 #[cfg(any(test, feature = "testing"))]
 pub use client::testing;
 pub use prompts::PromptContext;

@@ -1,8 +1,8 @@
 //! Settings draft checks do not alter configuration or the running services.
 
 #[tauri::command]
-pub async fn test_model_connection(endpoint: String, model_name: String, reasoning_effort: String) -> Result<maru_engine::ConnectionReply, String> {
-    maru_engine::test_connection(&endpoint, &model_name, &reasoning_effort).await
+pub async fn test_model_connection(endpoint: String, model_name: String, reasoning_effort: String, provider: Option<maru_core::external_servers::ServerProvider>, api_key: Option<maru_core::external_servers::ServerKey>) -> Result<maru_engine::ConnectionReply, String> {
+    maru_engine::test_authenticated_connection(&endpoint, &model_name, &reasoning_effort, provider.unwrap_or_default(), api_key).await
 }
 
 #[tauri::command]

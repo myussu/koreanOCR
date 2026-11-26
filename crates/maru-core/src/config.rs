@@ -155,6 +155,9 @@ pub struct LlmConfig {
     /// Use an already running OpenAI-compatible server instead of spawning one
     /// (LM Studio, Ollama's `/v1`, a remote box on your LAN…).
     pub endpoint: Option<String>,
+    pub provider: crate::external_servers::ServerProvider,
+    pub api_key: Option<crate::external_servers::ServerKey>,
+    pub servers: Vec<crate::external_servers::SavedServer>,
     /// Spawn and supervise `llama-server` ourselves.
     pub autostart: bool,
     /// Path to `llama-server(.exe)`; defaults to `<bin_dir>/llama-server`.
@@ -190,12 +193,19 @@ pub struct LlmConfig {
     /// How many recent lines to give the model as context.
     pub context_lines: usize,
     pub request_timeout_secs: u64,
+    /// For a model on another computer (Ollama): keep it loaded this many minutes after each request, load it
+    /// when Maru opens and when live subtitles start, and unload it when they stop and when Maru quits, so that
+    /// computer's GPU is only taken while you play. 0 leaves loading and unloading to the server.
+    pub server_keep_minutes: u32,
 }
 
 impl Default for LlmConfig {
     fn default() -> Self {
         Self {
             endpoint: None,
+            provider: Default::default(),
+            api_key: None,
+            servers: Vec::new(),
             autostart: true,
             server_path: None,
             model_path: None,
@@ -217,6 +227,7 @@ impl Default for LlmConfig {
             max_tokens: 512,
             context_lines: 4,
             request_timeout_secs: 60,
+            server_keep_minutes: 0,
         }
     }
 }

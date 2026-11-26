@@ -67,3 +67,6 @@ main:has(.settings-page){max-width:1100px}.settings-page{padding-bottom:20px}.se
 .server-discovery select { font:inherit; font-size:12px; padding:8px; min-width:0; max-width:100%; border:1px solid var(--line); border-radius:7px; background:var(--bg); color:var(--fg); }
 .discovery-choices select { flex:1 1 240px; }
 .server-discovery [hidden] { display:none; }
+/* Saved servers share the existing draft and save bar. */
+.saved-servers{margin:14px 0;padding:12px;border:1px solid var(--border,#465069);border-radius:8px}.saved-servers label{display:flex;align-items:center;gap:12px}.saved-servers select{flex:1;min-width:0}.saved-servers .test-row{margin-top:10px;flex-wrap:wrap}.saved-servers input{min-width:120px;flex:1}.server-auth{margin:8px 0}.server-auth summary{cursor:pointer;color:var(--muted,#afb9ce)}
+.saved-servers{scroll-margin-top:66px}.saved-servers input,.saved-servers select,.server-auth input[type=password]{min-width:0;font:inherit;font-size:13px;padding:5px 8px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--fg)}.server-auth input[type=password]{flex:1}.saved-servers label{flex-wrap:wrap}

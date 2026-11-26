@@ -172,16 +172,19 @@ async fn measure_with_sampling(client: &LlmClient, profile: Profile, sampling: S
                 if sampling != Sampling::Greedy || (matches!(profile, Profile::Milmmt) && !turns.is_empty()) {
                     Err(LlmError::Api("MiLMMT requires greedy sampling; context requires the experimental milmmt-context profile".into()))
                 } else {
-                    crate::live_completion::stream(client.root(), source, turns, &mut delta).await
+                    crate::live_completion::stream(client, source, turns, &mut delta).await
                 }
             }
             Profile::Maru => {
                 let ctx = PromptContext { from_ocr: true, ..Default::default() };
-                client.translate_live(&LiveRequest { text: source, ctx: &ctx, turns }, &mut |chunk| {
-                    if let LlmChunk::Text { delta: text, .. } = chunk {
-                        delta(&text);
-                    }
-                }).await
+                let mut capped = false;
+                let result = client.translate_live(&LiveRequest { text: source, ctx: &ctx, turns }, &mut |chunk| match chunk {
+                    LlmChunk::Text { delta: text, .. } => delta(&text),
+                    LlmChunk::Capped => capped = true,
+                    _ => {}
+                }).await;
+                // A benchmark scores a capped answer as a failure rather than as a short translation.
+                if capped { Err(LlmError::Api("translation stopped at the length limit".into())) } else { result }
             }
             Profile::HyMt | Profile::HyMt2 | Profile::Lfm | Profile::Index => {
                 let opts = ChatOpts {
@@ -196,7 +199,10 @@ async fn measure_with_sampling(client: &LlmClient, profile: Profile, sampling: S
                     Profile::Index => index_messages(source, turns),
                     _ => hy_messages(source, turns),
                 };
-                client.stream_chat(&messages, &opts, &mut delta).await.map(|s| crate::tasks::clean_text(&s))
+                match client.stream_chat_reply(&messages, &opts, &mut delta).await {
+                    Ok(reply) if reply.capped => Err(LlmError::Api("translation stopped at the length limit".into())),
+                    reply => reply.map(|r| crate::tasks::clean_text(&r.text)),
+                }
             }
         }
     };

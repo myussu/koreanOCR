@@ -20,6 +20,7 @@ export function matchesSetting(field, query) {
   const q=query.trim().toLowerCase();
   return !q || `${field.label} ${field.help??''} ${field.path}`.toLowerCase().includes(q);
 }
+import {serverAuthFields} from './settings-servers-core.js';
 export const LIVE_FIELDS = [
   {path:'continuous.translation.model',label:'Live translation model',type:'select',options:LIVE_MODELS.map(m=>({value:m.id,label:m.name}))},
   {path:'continuous.translation.hy_mt2_path',label:'HY-MT2 GGUF file',type:'text',nullable:true,placeholder:'D:/models/Hy-MT2-7B-Q4_K_M.gguf',when:{path:'continuous.translation.model',value:'hy_mt2'}},
@@ -31,4 +32,5 @@ export const LIVE_FIELDS = [
   {path:'continuous.translation.dialogue_context',label:'Experimental dialogue context',help:'Earlier answers sometimes improved pronouns but also introduced meaning errors in our tests. Off uses the native single-line prompt. The lightweight models have less room for long context.',type:'toggle'},
   {path:'continuous.translation.snapshot_endpoint',label:'Snapshot quality server',help:'Optional. While live is on, snapshot text and context are sent to this address for translation and analysis. If unavailable, use the local live translator and offline meanings. Blank keeps snapshots local. An IP or hostname works with Detect server below.',type:'text',nullable:true,placeholder:'192.168.18.217 or http://192.168.18.217:11434'},
   {path:'continuous.translation.snapshot_model_name',label:'Snapshot server model name',help:'Exact name expected by the server, such as the Gemma name from ollama list.',type:'text',placeholder:'maru'},
+  ...serverAuthFields('live'),
 ];

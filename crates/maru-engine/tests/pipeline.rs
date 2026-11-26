@@ -84,7 +84,7 @@ async fn failed_or_missing_requested_korean_registers_end_with_done_and_are_not_
 
 #[tokio::test]
 async fn an_unfinished_translation_is_not_added_to_cache_or_history() {
-    for tail in ["", "data: broken\n\ndata: [DONE]\n\n", "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n", "data: {\"error\":\"failed at EOF\"}"] {
+    for tail in ["", "data: broken\n\ndata: [DONE]\n\n", "data: {\"error\":\"failed at EOF\"}"] {
         let h = harness_with(move |path, body| {
             if body.contains("Words:") { model(path, body) }
             else { MockResponse { status: 200, chunks: vec![maru_llm::testing::sse_event("Partial."), tail.as_bytes().to_vec()], delay_ms: 0 } }
@@ -98,6 +98,23 @@ async fn an_unfinished_translation_is_not_added_to_cache_or_history() {
         assert_eq!(h.requests().iter().filter(|b| !b.contains("Words:")).count(), 2);
         assert!(h.engine.history().is_empty());
     }
+}
+
+#[tokio::test]
+async fn a_translation_cut_off_at_the_length_limit_is_shown_with_a_note_and_kept_in_history_but_not_cached() {
+    let h = harness_with(|path, body| {
+        if body.contains("Words:") { model(path, body) }
+        else { MockResponse { status: 200, chunks: vec![maru_llm::testing::sse_event("A long translation that"), b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n".to_vec()], delay_ms: 0 } }
+    }, |_| {}).await;
+    for _ in 0..2 {
+        let events = collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+        assert!(!events.iter().any(|e| matches!(e, Event::Error { .. })), "{events:?}");
+        assert!(events.iter().any(|e| matches!(e, Event::TranslationDone { text, .. } if text == "A long translation that")));
+        assert!(events.iter().any(|e| matches!(e, Event::Note { text, .. } if text.contains("length limit"))));
+    }
+    // Asked twice, translated twice: a cut-off answer is never replayed from the cache.
+    assert_eq!(h.requests().iter().filter(|b| !b.contains("Words:")).count(), 2);
+    assert_eq!(h.engine.history().len(), 2);
 }
 
 #[tokio::test]

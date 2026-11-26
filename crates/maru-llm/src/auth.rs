@@ -1,0 +1,344 @@
+//! Authentication and Azure's v1 request dialect; ordinary local servers keep their requests.
+use crate::{LlmError, Result};
+use maru_core::config::LlmConfig;
+use maru_core::external_servers::{ServerKey, ServerProvider};
+use reqwest::{RequestBuilder, header::HeaderValue};
+use serde_json::Value;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct Authentication {
+    pub provider: ServerProvider,
+    key: Option<ServerKey>,
+}
+impl Authentication {
+    pub fn from_config(cfg: &LlmConfig, root: &str) -> Self {
+        if cfg.endpoint.is_none() {
+            return Self::default();
+        }
+        let auth = Self {
+            provider: cfg.provider,
+            key: cfg
+                .api_key
+                .clone()
+                .filter(|key| !key.as_str().trim().is_empty()),
+        };
+        if cfg
+            .endpoint
+            .as_ref()
+            .is_some_and(|endpoint| auth.root(endpoint) != auth.root(root))
+        {
+            return Self::default();
+        }
+        auth
+    }
+    pub fn authenticated(&self) -> bool {
+        self.key.is_some()
+    }
+    /// A hosted API: no `/health`, no Ollama routes or fields, and it always needs a key.
+    pub fn cloud(&self) -> bool {
+        matches!(self.provider, ServerProvider::Azure | ServerProvider::Gemini)
+    }
+    pub fn root(&self, root: &str) -> String {
+        if self.provider == ServerProvider::Gemini {
+            // Gemini's OpenAI-compatible base already carries its version (`/v1beta/openai`); a bare host gets it.
+            let root = root.trim_end_matches('/');
+            let has_path = root.split_once("://").is_some_and(|(_, rest)| rest.contains('/'));
+            return if has_path { root.into() } else { format!("{root}/v1beta/openai") };
+        }
+        let root = root.trim_end_matches('/').trim_end_matches("/v1");
+        if self.provider == ServerProvider::Azure && !root.ends_with("/openai") {
+            format!("{root}/openai")
+        } else {
+            root.into()
+        }
+    }
+    /// Where chat completions live under [`Self::root`].
+    pub fn chat_route(&self) -> &'static str {
+        if self.provider == ServerProvider::Gemini { "/chat/completions" } else { "/v1/chat/completions" }
+    }
+    pub fn request(&self, request: RequestBuilder) -> Result<RequestBuilder> {
+        let Some(key) = &self.key else {
+            if self.provider == ServerProvider::Azure {
+                return Err(LlmError::Api(
+                    "Enter the Azure OpenAI resource API key in Settings.".into(),
+                ));
+            }
+            if self.provider == ServerProvider::Gemini {
+                return Err(LlmError::Api("Enter the Gemini API key in Settings.".into()));
+            }
+            return Ok(request);
+        };
+        let (name, text) = if self.provider == ServerProvider::Azure {
+            ("api-key", key.as_str().to_string())
+        } else {
+            ("authorization", format!("Bearer {}", key.as_str()))
+        };
+        let mut header = HeaderValue::from_str(&text).map_err(|_| {
+            LlmError::Api("The API key is not a valid HTTP header. Enter it again.".into())
+        })?;
+        header.set_sensitive(true);
+        Ok(request.header(name, header))
+    }
+    pub fn body(&self, body: &mut Value) {
+        let Some(fields) = body.as_object_mut() else { return };
+        if self.cloud() {
+            fields.remove("keep_alive");
+        }
+        if self.provider == ServerProvider::Azure {
+            if let Some(limit) = fields.remove("max_tokens") {
+                fields.insert("max_completion_tokens".into(), limit);
+            }
+            // Temperature stays: a deployment that refuses it (a reasoning model) answers 400 naming it, and the
+            // client then asks again without it (`client.rs`, rejected optional fields).
+            if fields.get("reasoning_effort").is_some_and(|v| v == "none") {
+                fields.remove("reasoning_effort");
+            }
+        }
+    }
+    pub fn redact(&self, text: String) -> String {
+        match &self.key {
+            Some(key) => text.replace(key.as_str(), "[redacted]"),
+            None => text,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+    #[tokio::test]
+    async fn an_explicit_different_client_root_does_not_inherit_a_configured_cloud_key() {
+        let server = crate::testing::spawn_mock(|_, _| crate::testing::MockResponse {
+            status: 200,
+            chunks: crate::testing::sse_answer(&["Hello"]),
+            delay_ms: 0,
+        })
+        .await;
+        let cfg = LlmConfig {
+            endpoint: Some("https://production.openai.azure.com".into()),
+            provider: ServerProvider::Azure,
+            api_key: Some("private-cloud-key".to_string().into()),
+            ..Default::default()
+        };
+        crate::LlmClient::new(&server.url, &cfg)
+            .stream_chat(
+                &[crate::Message::user("hello")],
+                &Default::default(),
+                &mut |_| {},
+            )
+            .await
+            .unwrap();
+        assert!(
+            server
+                .headers
+                .lock()
+                .unwrap()
+                .iter()
+                .all(|header| !header.contains("private-cloud-key"))
+        );
+        assert_eq!(server.requests.lock().unwrap()[0].0, "/v1/chat/completions");
+    }
+    #[tokio::test]
+    async fn an_authenticated_redirect_cannot_contact_another_server_or_forward_the_key() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let destination = crate::testing::spawn_mock(|_, _| crate::testing::MockResponse {
+            status: 200,
+            chunks: crate::testing::sse_answer(&["Wrong server"]),
+            delay_ms: 0,
+        })
+        .await;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let location = format!("{}/v1/chat/completions", destination.url);
+        tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut buffer = [0u8; 4096];
+            let _ = socket.read(&mut buffer).await;
+            let response = format!(
+                "HTTP/1.1 302 Found\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+            );
+            let _ = socket.write_all(response.as_bytes()).await;
+        });
+        let cfg = LlmConfig {
+            endpoint: Some(endpoint),
+            api_key: Some("private-key".to_string().into()),
+            ..Default::default()
+        };
+        let error = crate::LlmClient::from_config(&cfg)
+            .stream_chat(
+                &[crate::Message::user("hello")],
+                &Default::default(),
+                &mut |_| {},
+            )
+            .await
+            .unwrap_err();
+        assert!(matches!(error, LlmError::Http { status: 302, .. }));
+        assert!(destination.requests.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn a_missing_azure_key_is_refused_before_any_request_is_sent() {
+        let server = crate::testing::spawn_mock(|_, _| crate::testing::MockResponse {
+            status: 200,
+            chunks: crate::testing::sse_answer(&["Hello"]),
+            delay_ms: 0,
+        })
+        .await;
+        let cfg = LlmConfig {
+            endpoint: Some(server.url.clone()),
+            provider: ServerProvider::Azure,
+            ..Default::default()
+        };
+        let error = crate::LlmClient::from_config(&cfg)
+            .stream_chat(
+                &[crate::Message::user("hello")],
+                &Default::default(),
+                &mut |_| {},
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("API key"));
+        assert!(server.requests.lock().unwrap().is_empty());
+    }
+    #[tokio::test]
+    async fn azure_inference_uses_the_deployment_and_key_without_health_or_unload_requests() {
+        let server = crate::testing::spawn_mock(|_, _| crate::testing::MockResponse {
+            status: 200,
+            chunks: crate::testing::sse_answer(&["Hello."]),
+            delay_ms: 0,
+        })
+        .await;
+        let cfg = LlmConfig {
+            endpoint: Some(format!("{}/openai/v1/", server.url)),
+            provider: ServerProvider::Azure,
+            api_key: Some("azure-secret".to_string().into()),
+            model_name: "my-deployment".into(),
+            server_keep_minutes: 20,
+            ..Default::default()
+        };
+        let client = crate::LlmClient::from_config(&cfg);
+        assert!(client.health().await);
+        assert!(!client.holds_server_model());
+        let result = client
+            .stream_chat(
+                &[crate::Message::user("안녕하세요.")],
+                &Default::default(),
+                &mut |_| {},
+            )
+            .await
+            .unwrap();
+        assert_eq!(result, "Hello.");
+        client.release_server_model().await.unwrap();
+        let requests = server.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].0, "/openai/v1/chat/completions");
+        let body: Value = serde_json::from_str(&requests[0].1).unwrap();
+        assert_eq!(body["model"], "my-deployment");
+        assert!(body.get("max_completion_tokens").is_some());
+        assert!(body.get("keep_alive").is_none());
+        assert!(!requests[0].1.contains("azure-secret"));
+        let headers = server.headers.lock().unwrap();
+        assert!(headers[0].contains("api-key: azure-secret"));
+        assert!(!headers[0].contains("authorization:"));
+    }
+    #[tokio::test]
+    async fn a_generic_server_gets_its_own_bearer_key_and_errors_do_not_expose_it() {
+        let server = crate::testing::spawn_mock(|_, _| crate::testing::MockResponse {
+            status: 401,
+            chunks: vec![b"invalid generic-secret".to_vec()],
+            delay_ms: 0,
+        })
+        .await;
+        let cfg = LlmConfig {
+            endpoint: Some(server.url.clone()),
+            api_key: Some("generic-secret".to_string().into()),
+            ..Default::default()
+        };
+        let error = crate::LlmClient::from_config(&cfg)
+            .stream_chat(
+                &[crate::Message::user("hello")],
+                &Default::default(),
+                &mut |_| {},
+            )
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("401"));
+        assert!(!error.contains("generic-secret"));
+        assert!(server.headers.lock().unwrap()[0].contains("authorization: Bearer generic-secret"));
+    }
+    #[test]
+    fn azure_resource_and_v1_addresses_use_the_same_route_without_ollama_fields() {
+        let auth = Authentication {
+            provider: ServerProvider::Azure,
+            key: None,
+        };
+        for base in [
+            "https://example.azure.com",
+            "https://example.azure.com/openai",
+            "https://example.azure.com/openai/v1/",
+        ] {
+            assert_eq!(auth.root(base), "https://example.azure.com/openai");
+        }
+        let mut body = json!({"max_tokens":200,"temperature":0.1,"reasoning_effort":"none","keep_alive":"20m","model":"deployment"});
+        auth.body(&mut body);
+        assert_eq!(
+            body,
+            json!({"max_completion_tokens":200,"temperature":0.1,"model":"deployment"})
+        );
+    }
+    #[test]
+    fn gemini_uses_its_versioned_openai_route_and_keeps_sampling_and_thinking_fields() {
+        let auth = Authentication { provider: ServerProvider::Gemini, key: Some("k".to_string().into()) };
+        for base in ["https://generativelanguage.googleapis.com", "https://generativelanguage.googleapis.com/v1beta/openai/"] {
+            assert_eq!(auth.root(base), "https://generativelanguage.googleapis.com/v1beta/openai");
+        }
+        assert_eq!(auth.chat_route(), "/chat/completions");
+        let mut body = json!({"max_tokens":200,"temperature":0.1,"reasoning_effort":"none","keep_alive":"20m"});
+        auth.body(&mut body);
+        assert_eq!(body, json!({"max_tokens":200,"temperature":0.1,"reasoning_effort":"none"}));
+    }
+
+    #[test]
+    fn local_clients_never_inherit_cloud_keys_or_the_azure_request_dialect() {
+        let cfg = LlmConfig {
+            provider: ServerProvider::Azure,
+            api_key: Some("private-key".to_string().into()),
+            ..Default::default()
+        };
+        let auth = Authentication::from_config(&cfg, "http://127.0.0.1:8080");
+        assert!(!auth.authenticated());
+        assert_eq!(auth.provider, ServerProvider::Openai);
+    }
+    #[test]
+    fn keys_are_sent_only_as_sensitive_headers_and_never_as_url_or_body_fields() {
+        let http = reqwest::Client::new();
+        for (provider, name, value) in [
+            (
+                ServerProvider::Openai,
+                "authorization",
+                "Bearer private-key",
+            ),
+            (ServerProvider::Azure, "api-key", "private-key"),
+        ] {
+            let auth = Authentication {
+                provider,
+                key: Some("private-key".to_string().into()),
+            };
+            let request = auth
+                .request(
+                    http.post("http://127.0.0.1/v1/chat/completions")
+                        .json(&json!({"model":"deployment"})),
+                )
+                .unwrap()
+                .build()
+                .unwrap();
+            assert_eq!(request.headers()[name], value);
+            assert!(request.headers()[name].is_sensitive());
+            assert!(!request.url().as_str().contains("private-key"));
+            assert!(!format!("{request:?}").contains("private-key"));
+            assert_eq!(auth.redact("bad private-key".into()), "bad [redacted]");
+        }
+    }
+}

@@ -37,6 +37,8 @@ pub struct LiveTranslationConfig {
     /// Optional quality model for snapshots while live subtitles are active.
     pub snapshot_endpoint: Option<String>,
     pub snapshot_model_name: String,
+    pub snapshot_provider: crate::external_servers::ServerProvider,
+    pub snapshot_api_key: Option<crate::external_servers::ServerKey>,
 }
 
 impl Default for LiveTranslationConfig {
@@ -52,6 +54,8 @@ impl Default for LiveTranslationConfig {
             cpu_threads: 4,
             snapshot_endpoint: None,
             snapshot_model_name: "maru".into(),
+            snapshot_provider: Default::default(),
+            snapshot_api_key: None,
         }
     }
 }

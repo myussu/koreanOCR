@@ -8,6 +8,7 @@ import { ankiSettingsPending } from './anki.js';
 import { LIVE_MODELS, modelEdits, matchesSetting } from './settings-live-core.js';
 import { connectionFields, connectionKey, canTestConnection, connectionResult, connectionPaths, needsServerDetection } from './settings-connection-core.js';
 import { discoveryControls } from './settings-discovery.js';
+import {savedServerControls} from './settings-servers.js';
 import { SECTIONS, isVisible, appliesLive, labelFor, toEditor, fromEditor, withEdit, withReset, shown, isDefault, valueAt, splitKeys, joinKeys, comboFromEvent, keyRisk } from './settings-core.js';
 
 function h(tag, props = {}, ...kids) {
@@ -247,7 +248,7 @@ export async function settingsView() {
       data = await invoke('get_settings');
       draft = {};
       const warn = r.warnings?.length ? ` ${r.warnings.join(' ')}` : '';
-      message = { kind: r.warnings?.length ? 'bad' : 'ok', text: (r.changed.length ? `Saved. ${live ? 'Shortcuts and panel changes are active now.' : ''}` : 'Nothing changed.') + warn };
+      message = { kind: r.warnings?.length ? 'bad' : 'ok', text: (r.changed.length ? `Saved. ${live ? 'Changes that do not need a restart are active now.' : ''}` : 'Nothing changed.') + warn };
       rebuildAll();
     } catch (e) {
       message = { kind: 'bad', text: String(e) };
@@ -257,11 +258,26 @@ export async function settingsView() {
     }
   }
 
-  const fieldRows = (section, advanced) => section.fields.filter((f) => f.path !== 'continuous.translation.model' && matchesSetting(f,query) && (!!query || !!f.advanced === advanced)).flatMap((f) => {
+  const fieldRows = (section, advanced) => section.fields.filter((f) => (!f.auth||!!query) && f.path !== 'continuous.translation.model' && matchesSetting(f,query) && (!!query || !!f.advanced === advanced)).flatMap((f) => {
     const r = row(f);
     rows.set(f.path, r);
-    return ['llm.model_name','continuous.translation.snapshot_model_name'].includes(f.path) ? [r, serverTest(section.id)] : [r];
+    if(['llm.endpoint','continuous.translation.snapshot_endpoint'].includes(f.path)) {
+      const saved=savedServerControls({section:section.id,value:p=>shown(draft,data.values,data.defaults,p),edit:editServer});updaters.push(saved.sync);savedControls.set(section.id,saved);return [saved.el,r];
+    }
+    return ['llm.model_name','continuous.translation.snapshot_model_name'].includes(f.path) ? [r, !query&&serverAuthentication(section), serverTest(section.id), savedControls.get(section.id)?.saveEl].filter(Boolean) : [r];
   });
+
+  const savedControls=new Map();
+  function editServer(path,value) {draft=withEdit(draft,data.values,path,value);message=null;rows.get(path)?.rebuildField();refreshAll();}
+  function serverAuthentication(section) {
+    const auth=section.fields.filter(field=>field.auth);
+    const box=h('details',{class:'server-auth'},h('summary',{text:'Server type and API key (Azure, Gemini, …)'}));
+    const authenticated=()=>auth.some(field=>{const value=shown(draft,data.values,data.defaults,field.path);return field.type==='password'?!!value:(value??'openai')!=='openai';});
+    let previous=authenticated();box.open=previous;
+    for(const field of auth){const holder=row(field);rows.set(field.path,holder);box.append(holder);}
+    updaters.push(()=>{const next=authenticated();if(next!==previous){box.open=next;previous=next;}});
+    return box;
+  }
 
   function rebuildAll() {
     stopCapture();
@@ -319,7 +335,7 @@ export async function settingsView() {
       try {
         await discovery.resolveForTest();
         const current=fields();
-        if(disposed || args.modelName!==current.modelName || args.reasoningEffort!==current.reasoningEffort)throw Error('Settings changed during discovery. Test the current values again.');
+        if(disposed || args.modelName!==current.modelName || args.reasoningEffort!==current.reasoningEffort || args.provider!==current.provider || args.apiKey!==current.apiKey)throw Error('Settings changed during discovery. Test the current values again.');
         args=current;state.key=connectionKey(args);state.phase='inference';refreshAll();
         const reply = await invoke('test_model_connection', args);
         if(reply.endpoint && state.key===connectionKey(fields()) && !disposed){

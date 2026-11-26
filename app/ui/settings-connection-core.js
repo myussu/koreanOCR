@@ -1,15 +1,18 @@
 // Draft fields used by each external-server check; results belong to these exact values.
 export function connectionFields(section, value) {
   const prefix = section === 'live' ? 'continuous.translation.snapshot_' : 'llm.';
-  return {
+  const fields = {
     endpoint: String(value(`${prefix}endpoint`) ?? '').trim(),
     modelName: String(value(`${prefix}model_name`) ?? '').trim(),
     reasoningEffort: String(value('llm.reasoning_effort') ?? '').trim(),
   };
+  const provider=value(`${prefix}provider`)??'openai',apiKey=value(`${prefix}api_key`)||null;
+  if(provider!=='openai'||apiKey){fields.provider=provider;fields.apiKey=apiKey;}
+  return fields;
 }
 
 export const connectionKey = fields => JSON.stringify(fields);
-export const canTestConnection = fields => !!fields.endpoint && !!fields.modelName;
+export const canTestConnection = fields => !!fields.endpoint && !!fields.modelName && (!['azure','gemini'].includes(fields.provider)||!!fields.apiKey);
 export function connectionResult(state, fields) {
   return state?.key === connectionKey(fields) ? state.result : null;
 }

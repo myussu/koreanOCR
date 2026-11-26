@@ -1,13 +1,9 @@
 //! Native Korean-to-English translation for the optional live models.
 
 use crate::{LiveRequest, LlmChunk, LlmClient, LlmError, Result};
-use futures_util::StreamExt;
 use maru_core::{event::Variant, live_model::LiveModel};
 use serde_json::{Value, json};
-use std::sync::LazyLock;
 use std::time::Duration;
-
-static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 fn request(model: LiveModel, alias: &str, source: &str, turns: &[(String, String)]) -> (&'static str, Value) {
     let cap = source.chars().count().saturating_mul(2).saturating_add(40).min(256);
@@ -53,96 +49,18 @@ fn request(model: LiveModel, alias: &str, source: &str, turns: &[(String, String
     }
 }
 
-#[derive(Default)]
-struct Parser {
-    buffer: Vec<u8>,
-    done: bool,
-}
-
-impl Parser {
-    fn push(&mut self, bytes: &[u8], receive: &mut (dyn FnMut(&str) + Send)) -> Result<()> {
-        self.buffer.extend_from_slice(bytes);
-        while let Some(end) = self.buffer.iter().position(|&b| b == b'\n') {
-            let line: Vec<_> = self.buffer.drain(..=end).collect();
-            self.line(&line, receive)?;
-        }
-        Ok(())
-    }
-    fn line(&mut self, line: &[u8], receive: &mut (dyn FnMut(&str) + Send)) -> Result<()> {
-        let line = std::str::from_utf8(line).map_err(|e| LlmError::Stream(e.to_string()))?;
-        let Some(payload) = line.trim().strip_prefix("data:").map(str::trim) else {
-            return Ok(());
-        };
-        if payload == "[DONE]" {
-            self.done = true;
-            return Ok(());
-        }
-        let value: Value = serde_json::from_str(payload).map_err(|e| LlmError::Stream(e.to_string()))?;
-        if let Some(error) = value.get("error") {
-            return Err(LlmError::Api(error.to_string()));
-        }
-        if value.get("truncated").and_then(Value::as_bool) == Some(true)
-            || value.get("stop_type").and_then(Value::as_str) == Some("limit")
-            || value.pointer("/choices/0/finish_reason").and_then(Value::as_str).is_some_and(|r| r != "stop")
-        {
-            return Err(LlmError::Api("translation stopped before finishing; try a shorter snapshot".into()));
-        }
-        if let Some(text) = value
-            .get("content")
-            .or_else(|| value.pointer("/choices/0/delta/content"))
-            .and_then(Value::as_str)
-        {
-            receive(text);
-        }
-        self.done |= value.get("stop").and_then(Value::as_bool) == Some(true);
-        Ok(())
-    }
-}
-
 impl LlmClient {
     pub async fn translate_selected_live(&self, model: LiveModel, req: &LiveRequest<'_>, sink: &mut (dyn FnMut(LlmChunk) + Send)) -> Result<()> {
         if model == LiveModel::Main {
             return self.translate_live(req, sink).await.map(|_| ());
         }
-        let _lease = self.model_lease().await?;
         let (route, body) = request(model, self.model_name(), req.text, req.turns);
-        let root = self.root();
-        let timeout = Duration::from_secs(60);
-        let response = HTTP
-            .post(format!("{root}{route}"))
-            .json(&body)
-            .timeout(timeout)
-            .send()
-            .await
-            .map_err(|source| LlmError::Unreachable { url: root.into(), source })?;
-        if !response.status().is_success() {
-            let status = response.status().as_u16();
-            let body = response.text().await.unwrap_or_default().chars().take(400).collect();
-            return Err(LlmError::Http { status, body });
-        }
-        let mut parser = Parser::default();
-        let mut stream = response.bytes_stream();
-        let mut full = String::new();
-        let mut receive = |s: &str| {
-            full.push_str(s);
-            sink(LlmChunk::Text {
-                variant: Variant::Primary,
-                delta: s.into(),
-            });
-        };
-        while let Some(chunk) = stream.next().await {
-            parser.push(&chunk.map_err(|e| LlmError::Stream(e.to_string()))?, &mut receive)?;
-            if parser.done {
-                break;
-            }
-        }
-        if !parser.done {
-            let rest = std::mem::take(&mut parser.buffer);
-            parser.line(&rest, &mut receive)?;
-        }
-        if !parser.done {
-            return Err(LlmError::Stream("translation ended without its final event".into()));
-        }
+        let reply = self
+            .stream_route(route, &body, false, Some(Duration::from_secs(60)), &mut |s| {
+                sink(LlmChunk::Text { variant: Variant::Primary, delta: s.into() });
+            })
+            .await?;
+        let full = reply.text;
         if full.trim().is_empty() {
             return Err(LlmError::Api("the live model returned an empty translation".into()));
         }
@@ -150,6 +68,9 @@ impl LlmClient {
             variant: Variant::Primary,
             text: full.trim().into(),
         });
+        if reply.capped {
+            sink(LlmChunk::Capped);
+        }
         Ok(())
     }
 }
@@ -247,11 +168,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn invalid_capped_empty_and_incomplete_streams_never_complete_a_translation() {
+    async fn invalid_empty_and_incomplete_streams_never_complete_a_translation() {
         for event in [
             "data: nope\n",
             "data: {\"content\":\"partial\"}\n",
-            "data: {\"content\":\"partial\",\"stop\":true,\"stop_type\":\"limit\"}\n",
             "data: [DONE]\n",
         ] {
             let mock = spawn_mock(move |_, _| MockResponse {
@@ -277,6 +197,24 @@ mod tests {
                     .is_err()
             );
             assert!(!completed);
+        }
+    }
+
+    #[tokio::test]
+    async fn a_live_line_cut_off_at_its_output_cap_is_shown_and_marked_capped() {
+        for (model, event) in [
+            (LiveModel::Milmmt, "data: {\"content\":\"You know, I\",\"stop\":true,\"stop_type\":\"limit\"}\n"),
+            (LiveModel::HyMt2, "data: {\"choices\":[{\"delta\":{\"content\":\"You know, I\"},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n"),
+        ] {
+            let mock = spawn_mock(move |_, _| MockResponse { status: 200, chunks: vec![event.as_bytes().to_vec()], delay_ms: 0 }).await;
+            let client = LlmClient::new(&mock.url, &LlmConfig::default());
+            let mut chunks = Vec::new();
+            client
+                .translate_selected_live(model, &LiveRequest { text: "네", ctx: &PromptContext::default(), turns: &[] }, &mut |c| chunks.push(c))
+                .await
+                .unwrap();
+            assert!(chunks.contains(&LlmChunk::TextDone { variant: Variant::Primary, text: "You know, I".into() }), "{model:?}");
+            assert_eq!(chunks.last(), Some(&LlmChunk::Capped));
         }
     }
 }

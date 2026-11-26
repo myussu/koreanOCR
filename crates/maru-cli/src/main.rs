@@ -464,7 +464,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             cfg.ocr.vision_reader = false;
             cfg.tts.enabled = false;
             if let Some(url) = endpoint {
-                cfg.llm.endpoint = Some(url);
+                cfg.llm.override_endpoint(url);
             }
             if let Some(name) = model {
                 cfg.llm.model_name = name;
@@ -573,7 +573,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                             continue;
                         };
                         let mut cfg = s.engine.config().llm.clone();
-                        cfg.endpoint = Some(url.clone());
+                        cfg.override_endpoint(url.clone());
                         let prompt = vlm_prompt.clone().unwrap_or_else(|| PADDLE_VL_PROMPT.to_string());
                         ("Vision model (endpoint)".into(), Arc::new(VlmOcr::new(&url, &cfg, &prompt)) as Arc<dyn maru_ocr::OcrEngine>, None)
                     }

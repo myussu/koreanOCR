@@ -94,20 +94,29 @@ fn check_hotkeys(cfg: &Config) -> Res<()> {
     Ok(())
 }
 
+fn check_url(what: &str, url: &str) -> Res<()> {
+    if url.starts_with("http://") || url.starts_with("https://") {
+        return Ok(());
+    }
+    Err(format!("The {what} address must start with http:// or https://. For an IP or hostname, press Detect server to find its port."))
+}
+
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: S, changes: Map<String, Value>) -> Res<SaveResult> {
     let path = state.services.paths.config_file.clone();
     let patched = settings::patch(&read_text(&state)?, &changes).map_err(|e| e.to_string())?;
     let new = patched.config.clone();
     check_hotkeys(&new)?;
+    // A bare IP or hostname is only a starting point for Detect server; saved as is, every request would fail.
+    if patched.changed.iter().any(|p| p == "llm.endpoint") && let Some(endpoint) = &new.llm.endpoint {
+        check_url("language model server", endpoint)?;
+    }
     if patched.changed.iter().any(|p| p.starts_with("continuous.translation.")) {
         if let Some(path) = new.continuous.translation.selected_path() {
             maru_engine::live_models::validate_file(path)?;
         }
         if let Some(endpoint) = &new.continuous.translation.snapshot_endpoint {
-            if !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
-                return Err("The snapshot server address must start with http:// or https://.".into());
-            }
+            check_url("snapshot server", endpoint)?;
             if new.continuous.translation.snapshot_model_name.trim().is_empty() {
                 return Err("Enter the model name your snapshot server expects.".into());
             }
@@ -203,5 +212,14 @@ mod tests {
         assert!(dup.contains("hover") && dup.contains("translate"), "{dup}");
         check_hotkeys(&with(|c| c.hotkeys.scan = "Ctrl+Alt+S | F7".into())).unwrap();
         assert!(check_hotkeys(&with(|c| c.hotkeys.scan = "F7 | F7".into())).is_err(), "twice in one action is also a clash");
+    }
+
+    #[test]
+    fn a_server_address_without_http_is_refused_with_a_pointer_to_detection() {
+        let err = check_url("language model server", "192.168.18.217").unwrap_err();
+        assert!(err.contains("http://") && err.contains("Detect server"), "{err}");
+        assert!(check_url("language model server", "localhost:11434").is_err());
+        check_url("language model server", "http://192.168.18.217:11434").unwrap();
+        check_url("snapshot server", "https://example.org/v1").unwrap();
     }
 }

@@ -79,19 +79,35 @@ pub struct LlmClient {
     reasoning_effort: Option<String>,
     runtime: Option<(std::sync::Arc<crate::model_runtime::ModelRuntime>, crate::model_runtime::ModelRole)>,
     request_deadline: Option<Duration>,
+    /// Ollama's `keep_alive` for a server given by `endpoint`; `None` leaves the server's own timeout.
+    keep_alive: Option<String>,
+    auth: crate::auth::Authentication,
+    /// Optional request fields this server refused (HTTP 400 naming them); shared by clones of this client.
+    rejected: std::sync::Arc<std::sync::Mutex<Vec<&'static str>>>,
+}
+
+/// Fields Maru can leave out when a server refuses them: sampling, thinking, Ollama's keep-alive, usage reports.
+const OPTIONAL_FIELDS: [&str; 4] = ["temperature", "reasoning_effort", "keep_alive", "stream_options"];
+
+/// The optional field a 400 answer names, if the request carried it.
+fn rejected_field(error: &str, body: &Value) -> Option<&'static str> {
+    let error = error.to_ascii_lowercase();
+    OPTIONAL_FIELDS.into_iter().find(|field| body.get(*field).is_some() && error.contains(field))
 }
 
 impl LlmClient {
     pub fn new(root: &str, cfg: &LlmConfig) -> Self {
-        let http = reqwest::Client::builder()
+        let auth = crate::auth::Authentication::from_config(cfg, root);
+        let mut builder = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(3))
             .pool_idle_timeout(Duration::from_secs(300))
-            .tcp_nodelay(true)
-            .build()
+            .tcp_nodelay(true);
+        if auth.authenticated() { builder = builder.redirect(reqwest::redirect::Policy::none()); }
+        let http = builder.build()
             .expect("static client configuration is valid");
         Self {
             http,
-            root: root.trim_end_matches('/').trim_end_matches("/v1").to_string(),
+            root: auth.root(root),
             model: cfg.model_name.clone(),
             temperature: cfg.temperature,
             max_tokens: cfg.max_tokens,
@@ -100,6 +116,9 @@ impl LlmClient {
             reasoning_effort: Some(cfg.reasoning_effort.trim().to_string()).filter(|e| !e.is_empty()),
             runtime: None,
             request_deadline: None,
+            keep_alive: (cfg.endpoint.is_some() && cfg.server_keep_minutes > 0 && !auth.cloud()).then(|| format!("{}m", cfg.server_keep_minutes)),
+            auth,
+            rejected: Default::default(),
         }
     }
 
@@ -140,10 +159,48 @@ impl LlmClient {
         &self.model
     }
 
+    /// Both clients name the same model on the same server.
+    pub fn same_server_model(&self, other: &LlmClient) -> bool {
+        self.root == other.root && self.model == other.model && self.auth == other.auth
+    }
+
+    /// A hosted API (Azure, Gemini): nothing to load, and every request is billed.
+    pub fn is_hosted(&self) -> bool {
+        self.auth.cloud()
+    }
+
+    /// This client asks its server to keep the model loaded (`[llm] server_keep_minutes`).
+    pub fn holds_server_model(&self) -> bool {
+        self.keep_alive.is_some() && !self.rejected.lock().unwrap_or_else(|p| p.into_inner()).contains(&"keep_alive")
+    }
+
+    /// Load the model on its server now, so the first real request does not wait for it.
+    pub async fn hold_server_model(&self) -> Result<()> {
+        let opts = ChatOpts { max_tokens: Some(1), ..Default::default() };
+        self.stream_chat_reply(&[Message::user("안녕")], &opts, &mut |_| {}).await.map(|_| ())
+    }
+
+    /// Ask the server to unload the model now (Ollama's `/api/generate` with `keep_alive: 0`). It does not load
+    /// a model that is not loaded. Other servers have no such route; that is not an error.
+    pub async fn release_server_model(&self) -> Result<()> {
+        if self.auth.cloud() { return Ok(()); }
+        let request = self.http.post(format!("{}/api/generate", self.root))
+            .json(&json!({ "model": self.model, "keep_alive": 0 }))
+            .timeout(Duration::from_secs(5));
+        let resp = self.auth.request(request)?.send().await.map_err(|source| LlmError::Unreachable { url: self.root.clone(), source })?;
+        match resp.status() {
+            s if s.is_success() || s == reqwest::StatusCode::NOT_FOUND => Ok(()),
+            s => Err(LlmError::Http { status: s.as_u16(), body: self.auth.redact(resp.text().await.unwrap_or_default()).chars().take(400).collect() }),
+        }
+    }
+
     /// `true` once llama-server reports the model loaded. Servers without a
     /// `/health` route (answering 404) are assumed to be ready.
     pub async fn health(&self) -> bool {
-        match self.http.get(format!("{}/health", self.root)).timeout(Duration::from_secs(2)).send().await {
+        // Hosted APIs have no llama health endpoint. The explicit Settings check verifies inference.
+        if self.auth.cloud() { return self.auth.authenticated(); }
+        let Ok(request) = self.auth.request(self.http.get(format!("{}/health", self.root)).timeout(Duration::from_secs(2))) else { return false; };
+        match request.send().await {
             Ok(r) => r.status().is_success() || r.status().as_u16() == 404,
             Err(_) => false,
         }
@@ -186,49 +243,83 @@ impl LlmClient {
             // answer with nothing; Ollama maps "none" to "no thinking".
             body["reasoning_effort"] = json!(effort);
         }
+        if let Some(keep) = &self.keep_alive {
+            // Each request restarts the server's countdown, so the model stays while you play and leaves after.
+            body["keep_alive"] = json!(keep);
+        }
+        self.auth.body(&mut body);
         body
     }
 
     /// Stream a chat completion. `on_delta` receives text as it is generated;
     /// the full text is returned at the end. Dropping the future cancels the
     /// request (the server stops generating when the connection closes).
+    /// A reply cut off at `max_tokens` is returned as it is; use [`Self::stream_chat_reply`] to tell.
     pub async fn stream_chat(&self, messages: &[Message], opts: &ChatOpts, on_delta: &mut (dyn FnMut(&str) + Send)) -> Result<String> {
-        self.stream_chat_inner(messages, opts, on_delta, false).await
+        self.stream_chat_reply(messages, opts, on_delta).await.map(|reply| reply.text)
+    }
+
+    /// Like [`Self::stream_chat`], but also says whether the reply stopped at the token limit.
+    pub async fn stream_chat_reply(&self, messages: &[Message], opts: &ChatOpts, on_delta: &mut (dyn FnMut(&str) + Send)) -> Result<Reply> {
+        self.stream_route(self.auth.chat_route(), &self.body(messages, opts), opts.log_timings, None, on_delta).await
     }
 
     pub(crate) async fn stream_warmup(&self, messages: &[Message]) -> Result<()> {
         let opts = ChatOpts { max_tokens: Some(1), ..Default::default() };
-        self.stream_chat_inner(messages, &opts, &mut |_| {}, true).await.map(|_| ())
+        self.stream_chat_reply(messages, &opts, &mut |_| {}).await.map(|_| ())
     }
 
-    async fn stream_chat_inner(&self, messages: &[Message], opts: &ChatOpts, on_delta: &mut (dyn FnMut(&str) + Send), warmup: bool) -> Result<String> {
+    /// The one streaming loop behind every request: chat completions and llama.cpp's native `/completion`
+    /// share the connect, header and per-chunk stall timeouts and the same idea of a finished reply.
+    pub(crate) async fn stream_route(
+        &self,
+        route: &str,
+        body: &Value,
+        log_timings: bool,
+        deadline: Option<Duration>,
+        on_delta: &mut (dyn FnMut(&str) + Send),
+    ) -> Result<Reply> {
         let _lease = self.model_lease().await?;
         let started = std::time::Instant::now();
-        let url = format!("{}/v1/chat/completions", self.root);
-        let request = self
-            .http
-            .post(&url)
-            .json(&self.body(messages, opts));
-        let request = match self.request_deadline { Some(deadline) => request.timeout(deadline), None => request };
-        let resp = tokio::time::timeout(self.idle_timeout, request.send())
-            .await
-            .map_err(|_| LlmError::Stalled(self.idle_timeout.as_secs()))?
-            .map_err(|source| LlmError::Unreachable { url: self.root.clone(), source })?;
-
-        let status = resp.status();
-        if opts.log_timings {
-            tracing::info!(headers_ms = started.elapsed().as_millis() as u64, "live model response");
-        }
-        if !status.is_success() {
-            let body = tokio::time::timeout(self.idle_timeout, resp.text()).await
+        let url = format!("{}{route}", self.root);
+        let mut body = body.clone();
+        let resp = loop {
+            if let Some(fields) = body.as_object_mut() {
+                for field in self.rejected.lock().unwrap_or_else(|p| p.into_inner()).iter() {
+                    fields.remove(*field);
+                }
+            }
+            let request = self.auth.request(self.http.post(&url).json(&body))?;
+            let request = match deadline.or(self.request_deadline) { Some(deadline) => request.timeout(deadline), None => request };
+            let resp = tokio::time::timeout(self.idle_timeout, request.send())
+                .await
+                .map_err(|_| LlmError::Stalled(self.idle_timeout.as_secs()))?
+                .map_err(|source| LlmError::Unreachable { url: self.root.clone(), source })?;
+            let status = resp.status();
+            if status.is_success() {
+                break resp;
+            }
+            let text = tokio::time::timeout(self.idle_timeout, resp.text()).await
                 .map_err(|_| LlmError::Stalled(self.idle_timeout.as_secs()))?
                 .unwrap_or_default();
-            return Err(LlmError::Http { status: status.as_u16(), body: body.chars().take(400).collect() });
+            // Hosted models refuse some optional fields (a reasoning model's temperature, Gemini 3's "no thinking",
+            // Ollama's keep_alive elsewhere): leave the named field out for this server and ask once more.
+            if status == reqwest::StatusCode::BAD_REQUEST && let Some(field) = rejected_field(&text, &body) {
+                tracing::info!(server = %self.root, field, "the server does not accept this field; sending without it");
+                self.rejected.lock().unwrap_or_else(|p| p.into_inner()).push(field);
+                continue;
+            }
+            return Err(LlmError::Http { status: status.as_u16(), body: self.auth.redact(text).chars().take(400).collect() });
+        };
+        if log_timings {
+            tracing::info!(headers_ms = started.elapsed().as_millis() as u64, "live model response");
         }
 
         let mut stream = resp.bytes_stream();
         let mut parser = SseParser::default();
-        let mut full = String::new();
+        let mut reply = Reply::default();
+        // Set once the server says why it stopped; a stream that just ends without it was cut short.
+        let mut finished = false;
         loop {
             let next = tokio::time::timeout(self.idle_timeout, stream.next())
                 .await
@@ -242,17 +333,18 @@ impl LlmClient {
                 match event {
                     SseEvent::Delta(text) => {
                         on_delta(&text);
-                        full.push_str(&text);
+                        reply.text.push_str(&text);
                     }
-                    SseEvent::Error(e) => return Err(LlmError::Api(e)),
-                    SseEvent::Finish(reason) => {
-                        // Warm-ups deliberately request one token and never produce reusable answers.
-                        if reason != "stop" && !(warmup && reason == "length") {
-                            return Err(LlmError::Api(format!("translation stopped before finishing ({reason}); try a shorter selection")));
-                        }
-                    }
+                    SseEvent::Error(e) => return Err(LlmError::Api(self.auth.redact(e))),
+                    SseEvent::Finish(reason) => match reason.as_str() {
+                        // The token cap is deliberate (live lines, deep dives…): keep the text, but say so.
+                        "length" => { reply.capped = true; finished = true; }
+                        "content_filter" => return Err(LlmError::Api("the server's content filter stopped the reply".into())),
+                        // "stop", and other servers' names for a natural end ("eos_token", "end_turn"…).
+                        _ => finished = true,
+                    },
                     SseEvent::Timings(t) => {
-                        if opts.log_timings {
+                        if log_timings {
                             tracing::info!(prompt_ms = t.get("prompt_ms").and_then(|v| v.as_f64()),
                                 decode_ms = t.get("predicted_ms").and_then(|v| v.as_f64()),
                                 decode_tokens = t.get("predicted_n").and_then(|v| v.as_u64()),
@@ -260,14 +352,22 @@ impl LlmClient {
                                 cache_tokens = t.get("cache_n").and_then(|v| v.as_u64()), "live model timings");
                         }
                     }
-                    SseEvent::Done => return Ok(full),
+                    SseEvent::Done => return Ok(reply),
                 }
             }
             if ended {
-                return Err(LlmError::Stream("response ended without its final [DONE] event".into()));
+                // Some servers (and llama.cpp's `/completion`) never send `[DONE]`; a stop reason is enough.
+                return if finished { Ok(reply) } else { Err(LlmError::Stream("the reply ended before the model finished".into())) };
             }
         }
     }
+}
+
+/// A streamed reply. `capped` means the server stopped at the token limit, so its end may be missing.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Reply {
+    pub text: String,
+    pub capped: bool,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -339,6 +439,15 @@ fn parse_line(line: &[u8]) -> Vec<SseEvent> {
             }
         }
     }
+    // llama.cpp's native `/completion` events: `content`, then a final `stop` with the reason in `stop_type`.
+    if let Some(content) = v.get("content").filter(|c| !c.is_null()) {
+        let Some(text) = content.as_str() else { return vec![SseEvent::Error("malformed completion content".into())] };
+        if !text.is_empty() { events.push(SseEvent::Delta(text.to_string())); }
+    }
+    if v.get("stop").and_then(Value::as_bool) == Some(true) {
+        let capped = v.get("truncated").and_then(Value::as_bool) == Some(true) || v.get("stop_type").and_then(Value::as_str) == Some("limit");
+        events.push(SseEvent::Finish(if capped { "length" } else { "stop" }.into()));
+    }
     if let Some(timings) = v.get("timings") { events.push(SseEvent::Timings(timings.clone())); }
     events
 }
@@ -360,6 +469,7 @@ pub mod testing {
     pub struct MockServer {
         pub url: String,
         pub requests: Arc<Mutex<Vec<(String, String)>>>,
+        pub headers: Arc<Mutex<Vec<String>>>,
     }
 
     /// One SSE `data:` event carrying a content delta.
@@ -379,17 +489,20 @@ pub mod testing {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
         let requests = Arc::new(Mutex::new(Vec::new()));
+        let headers = Arc::new(Mutex::new(Vec::new()));
         let handler = Arc::new(handler);
         let log = requests.clone();
+        let header_log = headers.clone();
         tokio::spawn(async move {
             loop {
                 let Ok((mut sock, _)) = listener.accept().await else { return };
                 let handler = handler.clone();
                 let log = log.clone();
+                let header_log = header_log.clone();
                 tokio::spawn(async move {
                     let mut buf = vec![0u8; 65536];
                     let mut total = 0;
-                    let (path, body) = loop {
+                    let (path, body, request_head) = loop {
                         let n = sock.read(&mut buf[total..]).await.unwrap_or(0);
                         total += n;
                         let text = String::from_utf8_lossy(&buf[..total]).to_string();
@@ -401,7 +514,7 @@ pub mod testing {
                                 .unwrap_or(0);
                             if total >= i + 4 + len {
                                 let path = head.split_whitespace().nth(1).unwrap_or("/").to_string();
-                                break (path, text[i + 4..i + 4 + len].to_string());
+                                break (path, text[i + 4..i + 4 + len].to_string(), head.to_string());
                             }
                         }
                         if n == 0 {
@@ -409,6 +522,7 @@ pub mod testing {
                         }
                     };
                     log.lock().unwrap().push((path.clone(), body.clone()));
+                    header_log.lock().unwrap().push(request_head);
                     let resp = handler(&path, &body);
                     let head = format!(
                         "HTTP/1.1 {} X\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n",
@@ -426,7 +540,7 @@ pub mod testing {
                 });
             }
         });
-        MockServer { url, requests }
+        MockServer { url, requests, headers }
     }
 }
 
@@ -602,11 +716,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn incomplete_malformed_capped_and_error_at_eof_streams_are_refused() {
+    async fn incomplete_malformed_filtered_and_error_at_eof_streams_are_refused() {
         for tail in [
             "",
             "data: not-json\n\ndata: [DONE]\n\n",
-            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n",
             "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"content_filter\"}]}\n\ndata: [DONE]\n\n",
             "data: {\"error\":{\"message\":\"failed at EOF\"}}",
             "data: {\"choices\":[{\"delta\":{\"content\":7}}]}\n\ndata: [DONE]\n\n",
@@ -623,9 +736,96 @@ mod tests {
         for reason in ["stop", "length"] {
             let server = spawn_mock(move |_, _| MockResponse { status: 200, chunks: vec![format!("data: {{\"choices\":[{{\"delta\":{{\"content\":\"Yes.\"}},\"finish_reason\":\"{reason}\"}}],\"timings\":{{\"predicted_ms\":1}}}}\n\ndata: [DONE]\n\n").into_bytes()], delay_ms: 0 }).await;
             let client = LlmClient::new(&server.url, &cfg());
-            let result = client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await;
-            if reason == "stop" { assert_eq!(result.unwrap(), "Yes."); } else { assert!(result.is_err()); }
+            let reply = client.stream_chat_reply(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap();
+            assert_eq!(reply, Reply { text: "Yes.".into(), capped: reason == "length" });
         }
+    }
+
+    #[tokio::test]
+    async fn a_reply_cut_off_at_the_token_limit_keeps_its_text_and_is_marked_capped() {
+        let server = spawn_mock(|_, _| MockResponse { status: 200, chunks: vec![sse_event("A long"), sse_event(" answer"), b"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\ndata: [DONE]\n\n".to_vec()], delay_ms: 0 }).await;
+        let client = LlmClient::new(&server.url, &cfg());
+        assert_eq!(client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap(), "A long answer");
+        let reply = client.stream_chat_reply(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap();
+        assert!(reply.capped);
+    }
+
+    #[tokio::test]
+    async fn servers_that_name_a_natural_end_differently_or_skip_the_done_marker_are_accepted() {
+        for tail in [
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"eos_token\"}]}\n\ndata: [DONE]\n\n",
+            "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"stop\"}]}\n\n",
+        ] {
+            let server = spawn_mock(move |_, _| MockResponse { status: 200, chunks: vec![sse_event("Yes."), tail.as_bytes().to_vec()], delay_ms: 0 }).await;
+            let reply = LlmClient::new(&server.url, &cfg()).stream_chat_reply(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap();
+            assert_eq!(reply, Reply { text: "Yes.".into(), capped: false }, "{tail:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_server_model_is_kept_only_when_asked_and_released_without_loading_it() {
+        let server = spawn_mock(|path, _| if path == "/api/generate" {
+            MockResponse { status: 200, chunks: vec![br#"{"done":true,"done_reason":"unload"}"#.to_vec()], delay_ms: 0 }
+        } else {
+            MockResponse { status: 200, chunks: sse_answer(&["Hi."]), delay_ms: 0 }
+        }).await;
+        let off = LlmConfig { endpoint: Some(server.url.clone()), ..cfg() };
+        LlmClient::from_config(&off).stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap();
+        let on = LlmConfig { endpoint: Some(server.url.clone()), server_keep_minutes: 20, model_name: "gemma".into(), ..cfg() };
+        let client = LlmClient::from_config(&on);
+        assert!(client.holds_server_model());
+        client.hold_server_model().await.unwrap();
+        client.release_server_model().await.unwrap();
+        let requests = server.requests.lock().unwrap();
+        assert!(!requests[0].1.contains("keep_alive"), "off sends nothing new: {}", requests[0].1);
+        assert!(requests[1].1.contains(r#""keep_alive":"20m""#), "{}", requests[1].1);
+        assert_eq!(requests[2].0, "/api/generate");
+        let release: Value = serde_json::from_str(&requests[2].1).unwrap();
+        assert_eq!(release, json!({ "model": "gemma", "keep_alive": 0 }), "no prompt, so an unloaded model is not loaded");
+        // The local llama-server never gets the field, whatever the setting says.
+        assert!(!LlmClient::from_config(&LlmConfig { server_keep_minutes: 20, ..cfg() }).holds_server_model());
+    }
+
+    #[tokio::test]
+    async fn a_refused_optional_field_is_dropped_once_and_remembered_but_other_errors_are_not_retried() {
+        let server = spawn_mock(|_, body| {
+            if body.contains("\"temperature\"") {
+                MockResponse { status: 400, chunks: vec![br#"{"error":{"message":"Unsupported parameter: 'temperature' is not supported with this model.","code":"unsupported_parameter"}}"#.to_vec()], delay_ms: 0 }
+            } else {
+                MockResponse { status: 200, chunks: sse_answer(&["Hi."]), delay_ms: 0 }
+            }
+        }).await;
+        let client = LlmClient::from_config(&LlmConfig { endpoint: Some(server.url.clone()), ..cfg() });
+        assert_eq!(client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.unwrap(), "Hi.");
+        assert_eq!(client.clone().stream_chat(&[Message::user("y")], &ChatOpts::default(), &mut |_| {}).await.unwrap(), "Hi.");
+        assert_eq!(server.requests.lock().unwrap().len(), 3, "one refusal, one retry, then no more refusals");
+
+        let failing = spawn_mock(|_, _| MockResponse { status: 400, chunks: vec![br#"{"error":{"message":"The model `nope` does not exist"}}"#.to_vec()], delay_ms: 0 }).await;
+        let client = LlmClient::from_config(&LlmConfig { endpoint: Some(failing.url.clone()), ..cfg() });
+        assert!(client.stream_chat(&[Message::user("x")], &ChatOpts::default(), &mut |_| {}).await.is_err());
+        assert_eq!(failing.requests.lock().unwrap().len(), 1, "an error about something else is not retried");
+    }
+
+    #[tokio::test]
+    async fn a_cloud_server_that_refuses_keep_alive_is_no_longer_held_or_released() {
+        let server = spawn_mock(|_, body| if body.contains("keep_alive") {
+            MockResponse { status: 400, chunks: vec![br#"{"error":{"message":"Unrecognized request argument supplied: keep_alive"}}"#.to_vec()], delay_ms: 0 }
+        } else {
+            MockResponse { status: 200, chunks: sse_answer(&["Hi."]), delay_ms: 0 }
+        }).await;
+        let client = LlmClient::from_config(&LlmConfig { endpoint: Some(server.url.clone()), server_keep_minutes: 15, ..cfg() });
+        assert!(client.holds_server_model());
+        client.hold_server_model().await.unwrap();
+        assert!(!client.holds_server_model());
+    }
+
+    #[test]
+    fn llama_native_completion_events_carry_text_and_say_whether_they_hit_the_limit() {
+        let mut parser = SseParser::default();
+        let events = parser.push(b"data: {\"content\":\"Up\",\"stop\":false}\n\ndata: {\"content\":\"\",\"stop\":true,\"stop_type\":\"eos\"}\n\n");
+        assert_eq!(events, vec![SseEvent::Delta("Up".into()), SseEvent::Finish("stop".into())]);
+        let events = parser.push(b"data: {\"content\":\"\",\"stop\":true,\"stop_type\":\"limit\"}\n\n");
+        assert_eq!(events, vec![SseEvent::Finish("length".into())]);
     }
 
     #[tokio::test]

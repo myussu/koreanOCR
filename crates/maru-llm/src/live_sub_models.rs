@@ -1,13 +1,8 @@
 //! Native candidate prompts and strict chat streaming for isolated live-model tests.
 
-use std::sync::LazyLock;
-
-use futures_util::StreamExt;
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::{LlmClient, LlmError, Message, Result};
-
-static HTTP: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
 pub(crate) fn sub_messages(source: &str, turns: &[(String, String)]) -> Vec<Message> {
     // The publisher trained these separate context blocks; no invented speaker or glossary.
@@ -35,64 +30,17 @@ pub(crate) fn lmt_messages(source: &str, turns: &[(String, String)]) -> Vec<Mess
     messages
 }
 
-#[derive(Default)]
-struct Parser {
-    buffer: Vec<u8>,
-    done: bool,
-}
-
-impl Parser {
-    fn push(&mut self, chunk: &[u8], delta: &mut (dyn FnMut(&str) + Send)) -> Result<()> {
-        self.buffer.extend_from_slice(chunk);
-        while let Some(end) = self.buffer.iter().position(|&b| b == b'\n') {
-            let line: Vec<_> = self.buffer.drain(..=end).collect();
-            self.line(&line, delta)?;
-        }
-        Ok(())
-    }
-
-    fn line(&mut self, line: &[u8], delta: &mut (dyn FnMut(&str) + Send)) -> Result<()> {
-        let line = String::from_utf8_lossy(line);
-        let Some(payload) = line.trim().strip_prefix("data:").map(str::trim) else { return Ok(()) };
-        if payload == "[DONE]" {
-            self.done = true;
-            return Ok(());
-        }
-        let value: Value = serde_json::from_str(payload).map_err(|e| LlmError::Stream(format!("invalid diagnostic chat event: {e}")))?;
-        if let Some(error) = value.get("error") { return Err(LlmError::Api(error.to_string())); }
-        if let Some(text) = value.pointer("/choices/0/delta/content").and_then(Value::as_str) { delta(text); }
-        if let Some(reason) = value.pointer("/choices/0/finish_reason").and_then(Value::as_str).filter(|r| *r != "stop") {
-            return Err(LlmError::Api(format!("diagnostic chat ended with {reason}; inspect the preserved stream")));
-        }
-        Ok(())
-    }
-}
-
 pub(crate) async fn stream(client: &LlmClient, source: &str, messages: &[Message], delta: &mut (dyn FnMut(&str) + Send)) -> Result<String> {
-    let root = client.root();
-    let response = HTTP.post(format!("{root}/v1/chat/completions")).json(&json!({
+    let body = json!({
         "model": client.model_name(), "messages": messages, "stream": true,
         "temperature": 0.0, "top_k": 1, "max_tokens": (source.chars().count() as u32 * 2 + 40).min(256),
         "cache_prompt": true, "chat_template_kwargs": { "enable_thinking": false },
         "stream_options": { "include_usage": true },
-    })).send().await.map_err(|source| LlmError::Unreachable { url: root.into(), source })?;
-    if !response.status().is_success() {
-        let status = response.status().as_u16();
-        let body = response.text().await.unwrap_or_default().chars().take(400).collect();
-        return Err(LlmError::Http { status, body });
-    }
-    let mut parser = Parser::default();
-    let mut chunks = response.bytes_stream();
-    let mut full = String::new();
-    let mut receive = |text: &str| { full.push_str(text); delta(text); };
-    while let Some(chunk) = chunks.next().await {
-        parser.push(&chunk.map_err(|e| LlmError::Stream(e.to_string()))?, &mut receive)?;
-        if parser.done { return Ok(full.trim().to_owned()); }
-    }
-    let rest = std::mem::take(&mut parser.buffer);
-    parser.line(&rest, &mut receive)?;
-    if !parser.done { return Err(LlmError::Stream("diagnostic chat ended without its final event".into())); }
-    Ok(full.trim().to_owned())
+    });
+    let reply = client.stream_route("/v1/chat/completions", &body, false, None, delta).await?;
+    // A benchmark scores a capped answer as a failure rather than as a short translation.
+    if reply.capped { return Err(LlmError::Api("diagnostic chat ended with length; inspect the preserved stream".into())); }
+    Ok(reply.text.trim().to_owned())
 }
 
 #[cfg(test)]
@@ -134,7 +82,7 @@ mod tests {
         assert_eq!(deltas, "English: 안녕");
         let requests = mock.requests.lock().unwrap();
         assert_eq!(requests[0].0, "/v1/chat/completions");
-        let body: Value = serde_json::from_str(&requests[0].1).unwrap();
+        let body: serde_json::Value = serde_json::from_str(&requests[0].1).unwrap();
         assert_eq!(body["model"], "test-alias");
         assert_eq!(body["temperature"], 0.0);
         assert_eq!(body["top_k"], 1);

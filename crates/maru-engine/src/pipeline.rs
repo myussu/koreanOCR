@@ -159,6 +159,7 @@ fn forward(em: &Emitter, collected: &Mutex<Cached>, side: Side, first_token: &At
             lock(collected).note = Some(n);
         }
         LlmChunk::Deep { .. } => {}
+        LlmChunk::Capped => lock(collected).capped = true,
     }
 }
 
@@ -239,8 +240,8 @@ pub(crate) fn effective_gloss_mode(inner: &Inner, profile: Option<&maru_core::co
 async fn snapshot_model(inner: &Inner, em: &Emitter, active: bool) -> Option<(LlmClient, bool)> {
     if active {
         let cfg = &inner.cfg.continuous.translation;
-        if let Some(endpoint) = &cfg.snapshot_endpoint {
-            let remote_cfg = maru_core::config::LlmConfig { endpoint: Some(endpoint.clone()), model_name: cfg.snapshot_model_name.clone(), ..inner.cfg.llm.clone() };
+        if cfg.snapshot_endpoint.is_some() {
+            let remote_cfg = inner.cfg.llm.for_snapshot_server(cfg);
             let remote = LlmClient::from_config(&remote_cfg).with_request_deadline(std::time::Duration::from_secs(remote_cfg.request_timeout_secs.max(1)));
             if remote.health().await { return Some((remote, false)); }
             em.send(Event::Note { id: em.id, text: "The snapshot server is unavailable. Using local translation and offline meanings; local Gemma will not load. Try again for richer analysis when the server is available.".into() });
@@ -395,7 +396,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
         }
     }
 
-    let needs_fallback = !used_native && !lock(&collected).is_useful() && special && inner.cfg.continuous.translation.snapshot_endpoint.is_some()
+    let needs_fallback = !used_native && !lock(&collected).is_shown() && special && inner.cfg.continuous.translation.snapshot_endpoint.is_some()
         && inner.cfg.continuous.translation.model != maru_core::live_model::LiveModel::Main && direction == Direction::KoToEn;
     if needs_fallback && let Some(client) = inner.live_llm.clone() {
         em.send(Event::Note { id, text: "The snapshot server could not complete the translation. Trying the live model; richer analysis remains unavailable.".into() });
@@ -405,9 +406,12 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
         if let Err(e) = result { em.error(Stage::Llm, e.to_string()); }
     }
     let result = std::mem::take(&mut *lock(&collected));
-    if !result.is_useful() {
+    if !result.is_shown() {
         em.error(Stage::Llm, "The model did not return a translation. Check that it is loaded and responding.");
     } else {
+        if result.capped {
+            em.send(Event::Note { id, text: "The model reached its length limit, so the end of this translation may be missing. Try a shorter selection.".into() });
+        }
         let main = result
             .translations
             .iter()
@@ -499,7 +503,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         }
         let result = std::mem::take(&mut *lock(&collected));
         let main = result.translations.first().map(|(_, t)| t.clone()).unwrap_or_default();
-        if !result.is_useful() {
+        if !result.is_shown() {
             timing.finish("empty_or_error");
             em.error(Stage::Llm, "The model did not return a translation for this line.");
             em.done();

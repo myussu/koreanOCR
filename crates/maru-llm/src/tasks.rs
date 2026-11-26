@@ -22,6 +22,8 @@ pub enum LlmChunk {
     Gloss(Gloss),
     Note(String),
     Deep { section: DeepSection, delta: String },
+    /// The translation stopped at the token limit: it is shown, but its end may be missing.
+    Capped,
 }
 
 pub struct KoEnRequest<'a> {
@@ -228,8 +230,8 @@ impl LlmClient {
     pub async fn translate_ko_en(&self, req: &KoEnRequest<'_>, sink: &mut (dyn FnMut(LlmChunk) + Send)) -> Result<String> {
         let messages = prompts::ko_en(req.text, req.ctx);
         let mut started = false;
-        let full = self
-            .stream_chat(&messages, &ChatOpts::default(), &mut |d| {
+        let reply = self
+            .stream_chat_reply(&messages, &ChatOpts::default(), &mut |d| {
                 // Drop leading whitespace so the panel does not start with a gap.
                 let d = if started { d } else { d.trim_start() };
                 if d.is_empty() {
@@ -239,8 +241,11 @@ impl LlmClient {
                 sink(LlmChunk::Text { variant: Variant::Primary, delta: d.to_string() });
             })
             .await?;
-        let text = clean_text(&full);
+        let text = clean_text(&reply.text);
         sink(LlmChunk::TextDone { variant: Variant::Primary, text: text.clone() });
+        if reply.capped {
+            sink(LlmChunk::Capped);
+        }
         Ok(text)
     }
 
@@ -251,8 +256,8 @@ impl LlmClient {
         let max_tokens = (req.text.chars().count() as u32 * 2 + 40).min(256);
         let opts = ChatOpts { max_tokens: Some(max_tokens), temperature: Some(0.1), log_timings: true, ..Default::default() };
         let mut started = false;
-        let full = self
-            .stream_chat(&messages, &opts, &mut |d| {
+        let reply = self
+            .stream_chat_reply(&messages, &opts, &mut |d| {
                 let d = if started { d } else { d.trim_start() };
                 if d.is_empty() {
                     return;
@@ -261,8 +266,11 @@ impl LlmClient {
                 sink(LlmChunk::Text { variant: Variant::Primary, delta: d.to_string() });
             })
             .await?;
-        let text = clean_text(&full);
+        let text = clean_text(&reply.text);
         sink(LlmChunk::TextDone { variant: Variant::Primary, text: text.clone() });
+        if reply.capped {
+            sink(LlmChunk::Capped);
+        }
         Ok(text)
     }
 
@@ -300,8 +308,11 @@ impl LlmClient {
     pub async fn translate_en_ko(&self, req: &EnKoRequest<'_>, sink: &mut (dyn FnMut(LlmChunk) + Send)) -> Result<()> {
         let messages = prompts::en_ko(req.text, req.register, req.ctx);
         let mut stream = EnKoStream::new();
-        self.stream_chat(&messages, &ChatOpts::default(), &mut |d| stream.feed(d, sink)).await?;
+        let reply = self.stream_chat_reply(&messages, &ChatOpts::default(), &mut |d| stream.feed(d, sink)).await?;
         stream.finish(sink);
+        if reply.capped {
+            sink(LlmChunk::Capped);
+        }
         let primary = EnKoSection::Text(Variant::from_register(req.register));
         if !stream.texts.iter().any(|(section, text)| *section == primary && !clean_text(text).is_empty()) {
             return Err(LlmError::Api("the model did not return the requested Korean register".into()));

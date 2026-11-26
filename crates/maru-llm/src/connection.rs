@@ -18,7 +18,15 @@ pub async fn test_connection(endpoint: &str, model_name: &str, reasoning_effort:
     check(endpoint, model_name, reasoning_effort, Duration::from_secs(60)).await
 }
 
+pub async fn test_authenticated_connection(endpoint: &str, model_name: &str, reasoning_effort: &str, provider: maru_core::external_servers::ServerProvider, api_key: Option<maru_core::external_servers::ServerKey>) -> Result<ConnectionReply, String> {
+    check_authenticated(endpoint, model_name, reasoning_effort, provider, api_key, Duration::from_secs(60)).await
+}
+
 async fn check(endpoint: &str, model_name: &str, reasoning_effort: &str, deadline: Duration) -> Result<ConnectionReply, String> {
+    check_authenticated(endpoint, model_name, reasoning_effort, Default::default(), None, deadline).await
+}
+
+async fn check_authenticated(endpoint: &str, model_name: &str, reasoning_effort: &str, provider: maru_core::external_servers::ServerProvider, api_key: Option<maru_core::external_servers::ServerKey>, deadline: Duration) -> Result<ConnectionReply, String> {
     let endpoint = crate::discovery::normalize(endpoint)?;
     let url = reqwest::Url::parse(&endpoint).map_err(|_| "Enter a complete server address, such as http://192.168.1.20:11434.".to_string())?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
@@ -27,9 +35,11 @@ async fn check(endpoint: &str, model_name: &str, reasoning_effort: &str, deadlin
     if model_name.trim().is_empty() {
         return Err("Enter the model name expected by the server.".into());
     }
+    maru_core::external_servers::validate_connection(&endpoint, model_name, provider, api_key.as_ref())?;
     let cfg = LlmConfig {
         endpoint: Some(endpoint.clone()), model_name: model_name.trim().into(),
         reasoning_effort: reasoning_effort.into(), request_timeout_secs: 60,
+        provider, api_key,
         ..Default::default()
     };
     // No runtime is attached: checking a draft must never start a local model.

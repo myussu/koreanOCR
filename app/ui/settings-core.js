@@ -1,11 +1,12 @@
 // What the settings page shows and how it edits it. Pure functions, no DOM, so they are tested.
 import { LIVE_FIELDS } from './settings-live-core.js';
+import { serverAuthFields } from './settings-servers-core.js';
 //
 // Each field names its place in config.toml by dotted path ("ui.font_size_px"). The page keeps only
 // what the user changed and sends that; the backend edits the file and says what needs a restart.
 
 /** Mirrors `maru_core::settings::applies_live`: shortcuts and the panel's look need no restart. */
-export const appliesLive = (path) => path.startsWith('hotkeys.') || path.startsWith('ui.');
+export const appliesLive = (path) => path.startsWith('hotkeys.') || path.startsWith('ui.') || path==='llm.servers';
 
 const opts = (...pairs) => pairs.map(([value, label]) => ({ value, label }));
 
@@ -104,7 +105,9 @@ export const SECTIONS = [
       { path: 'llm.model_path', label: 'Or a model file you already have', help: 'Wins over the download', type: 'text', nullable: true, placeholder: 'D:/models/model.gguf' },
       { path: 'llm.endpoint', label: 'Or a server that is already running', help: 'LM Studio, Ollama, a PC on your network. Enter an IP or hostname and use Detect server to find its port, or enter a full URL.', type: 'text', nullable: true, placeholder: '192.168.18.217 or http://127.0.0.1:1234/v1' },
       { path: 'llm.model_name', label: 'Model name that server expects', help: 'Only for servers that choose by name, such as Ollama: exactly what `ollama list` shows. llama-server ignores it', type: 'text', placeholder: 'maru' },
+      ...serverAuthFields('model'),
       { path: 'llm.reasoning_effort', label: 'Thinking, for that server', help: 'none stops thinking models (Qwen3, gpt-oss, …) from using the whole answer on reasoning; leave it empty if the server rejects the field', type: 'text', placeholder: 'none', advanced: true },
+      { path: 'llm.server_keep_minutes', label: 'Keep the model loaded on that server', help: 'Ollama: minutes the model stays loaded after the last request. Maru also loads it when it opens and when live subtitles start, and unloads it when they stop and when Maru quits, so the other computer gets its GPU back. 0 leaves this to the server (Ollama unloads after 5 minutes)', type: 'number', min: 0, max: 240, step: 5, unit: 'minutes' },
       { path: 'llm.parallel', label: 'Requests at once', help: 'Two lets translation and word meanings run together', type: 'number', min: 1, max: 4, step: 1 },
       { path: 'llm.ctx_size', label: 'Context per request', type: 'number', min: 512, max: 32768, step: 512, unit: 'tokens', advanced: true },
       { path: 'llm.gpu_layers', label: 'Layers on the GPU', help: 'all, auto or a number', type: 'text', advanced: true },

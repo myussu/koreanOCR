@@ -59,7 +59,7 @@ fn set(doc: &mut DocumentMut, path: &str, value: &Value) -> Result<()> {
         table.remove(leaf);
         return Ok(());
     }
-    let mut new = to_toml(value).ok_or_else(|| Error::Config(format!("{path}: unsupported value {value}")))?;
+    let mut new = to_toml(value, path == "llm.servers").ok_or_else(|| Error::Config(format!("{path}: unsupported value type")))?;
     // Replace in place: the key keeps the comments above it, and the value the one on its line.
     match table.get_mut(leaf) {
         Some(item) => {
@@ -75,7 +75,7 @@ fn set(doc: &mut DocumentMut, path: &str, value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn to_toml(value: &Value) -> Option<toml_edit::Value> {
+fn to_toml(value: &Value, tables: bool) -> Option<toml_edit::Value> {
     Some(match value {
         Value::Bool(b) => (*b).into(),
         Value::Number(n) => match n.as_i64() {
@@ -86,11 +86,19 @@ fn to_toml(value: &Value) -> Option<toml_edit::Value> {
         Value::Array(items) => {
             let mut array = toml_edit::Array::new();
             for item in items {
-                array.push(to_toml(item)?);
+                array.push(to_toml(item, tables)?);
             }
             array.into()
         }
-        Value::Null | Value::Object(_) => return None,
+        Value::Object(fields) => {
+            if !tables { return None; }
+            let mut table = toml_edit::InlineTable::new();
+            for (key, value) in fields {
+                if !value.is_null() { table.insert(key, to_toml(value, tables)?); }
+            }
+            table.into()
+        }
+        Value::Null => return None,
     })
 }
 
@@ -122,11 +130,21 @@ fn diff(prefix: &str, a: &Value, b: &Value, out: &mut Vec<String>) {
 
 /// Settings the running app picks up at once. Everything else is read when Maru starts.
 pub fn applies_live(path: &str) -> bool {
-    path.starts_with("hotkeys.") || path.starts_with("ui.")
+    path.starts_with("hotkeys.") || path.starts_with("ui.") || path == "llm.servers"
 }
 
 /// Range checks for what the page lets people type. Every problem is reported, not only the first.
 pub fn validate(cfg: &Config) -> Result<()> {
+    crate::external_servers::validate_saved(&cfg.llm.servers).map_err(Error::Config)?;
+    if let Some(endpoint) = &cfg.llm.endpoint
+        && (cfg.llm.provider == crate::external_servers::ServerProvider::Azure || cfg.llm.api_key.is_some()) {
+        crate::external_servers::validate_connection(endpoint, &cfg.llm.model_name, cfg.llm.provider, cfg.llm.api_key.as_ref()).map_err(Error::Config)?;
+    }
+    if let Some(endpoint) = &cfg.continuous.translation.snapshot_endpoint
+        && (cfg.continuous.translation.snapshot_provider == crate::external_servers::ServerProvider::Azure || cfg.continuous.translation.snapshot_api_key.is_some()) {
+        let live = &cfg.continuous.translation;
+        crate::external_servers::validate_connection(endpoint, &live.snapshot_model_name, live.snapshot_provider, live.snapshot_api_key.as_ref()).map_err(Error::Config)?;
+    }
     let mut problems = Vec::new();
     let mut check = |ok: bool, what: &str| {
         if !ok {

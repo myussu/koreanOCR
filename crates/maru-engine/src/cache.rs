@@ -32,12 +32,19 @@ pub struct Cached {
     pub note: Option<String>,
     pub translation_complete: bool,
     pub glosses_complete: bool,
+    /// The model stopped at its token limit: the answer is shown, but its end may be missing.
+    pub capped: bool,
 }
 
 impl Cached {
-    /// Partial text remains visible while streaming, but only a finished answer is reusable.
-    pub fn is_useful(&self) -> bool {
+    /// A finished answer with text in it, even one cut off at the token limit.
+    pub fn is_shown(&self) -> bool {
         self.translation_complete && self.translations.iter().any(|(_, t)| !t.trim().is_empty())
+    }
+
+    /// Partial text remains visible while streaming, but only a finished, uncut answer is reusable.
+    pub fn is_useful(&self) -> bool {
+        self.is_shown() && !self.capped
     }
 }
 
@@ -98,6 +105,16 @@ mod tests {
         let mut partial = value("Partial answer");
         partial.translation_complete = false;
         c.put(key("안녕", ""), partial);
+        assert!(c.is_empty());
+    }
+
+    #[test]
+    fn an_answer_cut_off_at_the_token_limit_is_shown_but_not_cached() {
+        let mut c = Cache::new(8);
+        let mut capped = value("A long answer that");
+        capped.capped = true;
+        assert!(capped.is_shown());
+        c.put(key("안녕", ""), capped);
         assert!(c.is_empty());
     }
 
