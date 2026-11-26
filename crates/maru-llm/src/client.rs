@@ -231,6 +231,11 @@ impl LlmClient {
         self.root == other.root && self.model == other.model && self.auth == other.auth
     }
 
+    /// The connection carries an API key.
+    pub fn has_key(&self) -> bool {
+        self.auth.authenticated()
+    }
+
     /// A hosted API (Azure, Gemini): nothing to load, and every request is billed.
     pub fn is_hosted(&self) -> bool {
         self.auth.cloud()

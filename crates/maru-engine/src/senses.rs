@@ -130,8 +130,12 @@ pub(crate) struct LineSense {
 
 pub(crate) struct LineSenses {
     pub words: Vec<LineSense>,
-    /// What to tell the person when a meaning needs checking.
+    /// What to tell the person: a meaning that needs checking, a connection that did not answer.
     pub note: Option<String>,
+    /// The connection that chose the senses; `None` when no model was needed, or none answered.
+    pub answered: Option<crate::routes::Answered>,
+    /// The connections that were asked before it and did not answer.
+    pub attempts: Vec<crate::routes::Attempt>,
 }
 
 /// How much of some lines' vocabulary the dictionary covers.
@@ -247,7 +251,8 @@ impl Engine {
     }
 }
 
-/// The model the cards sheet may ask, or why there is none.
+/// The model the cards sheet may ask, or why there is none. Only for an engine built without task routes
+/// (`routes.rs`): the capture model, as before `[tasks]`.
 async fn sheet_model(inner: &Inner) -> std::result::Result<maru_llm::LlmClient, String> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let em = crate::pipeline::Emitter::new(tx, 0);
@@ -264,20 +269,39 @@ async fn sheet_model(inner: &Inner) -> std::result::Result<maru_llm::LlmClient, 
     }
 }
 
-/// Each word's meaning in two languages. Words the dictionary lacks and no model answered for are left out: the
-/// caller falls back to what it had before.
-pub(crate) async fn line_senses(inner: &Inner, nikl: &Nikl, sentence: &str, eojeols: &[Eojeol]) -> LineSenses {
+/// Each word's meaning in two languages. Words with several senses, and words the dictionary lacks, are put to
+/// the card-meanings connection, then to this PC's model (`routes.rs`); `ask` narrows that to one connection.
+/// Words the dictionary lacks and no model answered for are left out: the caller falls back to what it had before.
+pub(crate) async fn line_senses(inner: &Inner, nikl: &Nikl, sentence: &str, eojeols: &[Eojeol], ask: &crate::routes::CardAsk) -> LineSenses {
     let cards: Vec<CardWord> = eojeols.iter().map(|e| card_word(nikl, e)).collect();
     let asked = questions(&cards);
     let mut answers: Vec<SenseAnswer> = Vec::new();
     let mut failure = None;
+    let (mut answered, mut attempts) = (None, Vec::new());
     if !asked.is_empty() {
-        match sheet_model(inner).await {
-            Err(why) => failure = Some(why),
-            Ok(llm) => {
-                let result = llm.choose_senses(&SenseRequest { sentence, words: &asked }, &mut |a| answers.push(a)).await;
-                failure = result.err().map(|e| e.to_string());
+        let routes = inner.routes();
+        if routes.card_meanings.is_empty() && ask.connection.is_none() {
+            match sheet_model(inner).await {
+                Err(why) => failure = Some(why),
+                Ok(llm) => {
+                    let result = llm.choose_senses(&SenseRequest { sentence, words: &asked }, &mut |a| answers.push(a)).await;
+                    failure = result.err().map(|e| e.to_string());
+                }
             }
+        } else {
+            let request = SenseRequest { sentence, words: &asked };
+            let request = &request;
+            let order = crate::routes::candidates(&routes, &routes.card_meanings, ask);
+            let outcome = crate::routes::ask_in_order(inner, order, |client| async move {
+                let mut got = Vec::new();
+                client.choose_senses(request, &mut |a| got.push(a)).await?;
+                Ok((!got.is_empty()).then_some(got))
+            })
+            .await;
+            failure = outcome.note("The dictionary was used.");
+            answers = outcome.value.unwrap_or_default();
+            answered = outcome.answered;
+            attempts = outcome.attempts;
         }
     }
     let decided = decide(&cards, &answers);
@@ -290,11 +314,21 @@ pub(crate) async fn line_senses(inner: &Inner, nikl: &Nikl, sentence: &str, eoje
             LineSense { index: d.index, en: d.en, es: d.es, source: d.source, options }
         })
         .collect();
-    let note = unchecked.then(|| {
-        let base = "Some meanings could not be chosen for this line: the dictionary's first sense is shown for them; check that each fits.";
-        failure.map_or(base.to_string(), |why| format!("{base} ({why})"))
-    });
-    LineSenses { words, note }
+    let routed = answered.is_some() || !attempts.is_empty();
+    let note = match (unchecked, routed) {
+        // A connection failed and another answered everything: say so, nothing needs checking.
+        (false, true) => failure,
+        (false, false) => None,
+        (true, true) => {
+            let base = "The dictionary's first sense is shown where no model chose one: check that each fits.";
+            Some(failure.map_or(base.to_string(), |why| format!("{why} {base}")))
+        }
+        (true, false) => {
+            let base = "Some meanings could not be chosen for this line: the dictionary's first sense is shown for them; check that each fits.";
+            Some(failure.map_or(base.to_string(), |why| format!("{base} ({why})")))
+        }
+    };
+    LineSenses { words, note, answered, attempts }
 }
 
 #[cfg(test)]

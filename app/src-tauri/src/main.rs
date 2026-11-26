@@ -138,6 +138,13 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let paths = Paths::discover();
+            // An older config gets "one model per task" written into it once; the file as it was is kept beside it.
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            match maru_core::tasks::migrate_file(&paths.config_file, now) {
+                Ok(Some(done)) => tracing::info!("config.toml now says which model each task uses; the file as it was is {}", done.backup.display()),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("config.toml could not be updated with a model per task ({e}); the older settings decide"),
+            }
             let cfg = Config::load(&paths.config_file).unwrap_or_else(|e| {
                 tracing::error!("{e}; using defaults");
                 Config::default()
@@ -239,6 +246,9 @@ fn main() {
             commands::history_star,
             commands::history_starred,
             mining::mine_sheet,
+            mining::mine_sentence_translation,
+            mining::task_status,
+            mining::task_test,
             mining::mine_add,
             mining::anki_fill_sounds,
             commands::status,

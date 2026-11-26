@@ -24,6 +24,8 @@ pub struct Config {
     pub continuous: ContinuousConfig,
     pub capture: CaptureConfig,
     pub tts: TtsConfig,
+    /// Which connection and model each task uses (`tasks.rs`). Without it the older settings decide.
+    pub tasks: crate::tasks::TasksConfig,
     #[serde(rename = "profile")]
     pub profiles: Vec<AppProfile>,
 }

@@ -149,6 +149,10 @@ pub fn save_settings(app: AppHandle, state: S, changes: Map<String, Value>) -> R
 
     let live_changed = patched.changed.iter().any(|p| applies_live(p));
     let mut warnings = Vec::new();
+    // The card connections, and any saved connection they name, take effect at once.
+    if patched.changed.iter().any(|p| p.starts_with("tasks.card_") || p == "llm.servers") {
+        state.engine().reroute_cards(&new);
+    }
     if live_changed {
         state.set_cfg(new.clone());
         if patched.changed.iter().any(|p| p.starts_with("hotkeys.")) {

@@ -302,6 +302,35 @@ enum ConfigCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Write "one model per task" ([tasks]) into an older config file. A copy of the file is kept beside it
+    /// first; a file that already has the table is left alone. The app does the same when it starts.
+    Migrate {
+        /// Show what would be written without changing the file.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Which connection and model each task uses.
+    Tasks,
+}
+
+/// The task table in words. Connection names and model names only: never an address or a key.
+fn print_tasks(tasks: &maru_core::tasks::TasksConfig) {
+    let route = |connection: &str, model: &str| match (connection.trim(), model.trim()) {
+        ("", _) => "none".to_string(),
+        (c, "") => c.to_string(),
+        (c, m) => format!("{c} ({m})"),
+    };
+    println!("  Live subtitles              {}", route(&tasks.live.connection, &tasks.live.model));
+    println!("  Captures (snapshot, scan)   {}", route(&tasks.capture.connection, &tasks.capture.model));
+    if !tasks.capture.while_live.trim().is_empty() {
+        println!("    while live subtitles run  {}", route(&tasks.capture.while_live, &tasks.capture.while_live_model));
+    }
+    let after = if tasks.card_meanings.connection.trim().eq_ignore_ascii_case(maru_core::tasks::LOCAL) { "then the dictionary" } else { "then this PC's model, then the dictionary" };
+    println!("  Card meanings               {}, {after}", route(&tasks.card_meanings.connection, &tasks.card_meanings.model));
+    println!("  Card sentence translation   {}", if tasks.card_sentence.connection.trim().is_empty() { "the translation the line already has".to_string() } else { route(&tasks.card_sentence.connection, &tasks.card_sentence.model) });
+    let voice = |v: &str| if v.trim().is_empty() { "the voice in [tts]".to_string() } else { v.trim().to_string() };
+    println!("  Voice while reading         {}", voice(&tasks.voice_reading.voice));
+    println!("  Voice for cards             {}", voice(&tasks.voice_cards.voice));
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -463,6 +492,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
         Command::Translate { text, register, no_llm, json } => {
             let text = read_text(&text)?;
             if no_llm {
+                cfg.route_by_older_fields();
                 cfg.llm.endpoint = None;
                 cfg.llm.model_path = None;
                 cfg.llm.hf_repo = None;
@@ -532,6 +562,9 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             // This times the language model, so nothing else may compete for the GPU while it runs.
             cfg.ocr.vision_reader = false;
             cfg.tts.enabled = false;
+            if endpoint.is_some() || model.is_some() {
+                cfg.route_by_older_fields();
+            }
             if let Some(url) = endpoint {
                 cfg.llm.override_endpoint(url);
             }
@@ -780,6 +813,26 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     cfg.save(&paths.config_file)?;
                     println!("Wrote {}\nLanguage model set to {} (edit [llm] to change it).", paths.config_file.display(), setup::RECOMMENDED_MODEL);
                 }
+                ConfigCommand::Migrate { dry_run } => {
+                    if cfg.tasks.version >= maru_core::tasks::VERSION {
+                        println!("{} already says which model each task uses; nothing to do.", paths.config_file.display());
+                    } else if dry_run {
+                        println!("Would write to {} (a copy is kept beside it first):", paths.config_file.display());
+                        print_tasks(&maru_core::tasks::derive(&cfg).tasks);
+                    } else {
+                        match maru_core::tasks::migrate_file(&paths.config_file, maru_srs::now_secs())? {
+                            Some(done) => {
+                                println!("Updated {}\nThe file as it was: {}", paths.config_file.display(), done.backup.display());
+                                for name in &done.named {
+                                    println!("The server that had no name is now the saved connection \"{name}\".");
+                                }
+                                print_tasks(&done.tasks);
+                            }
+                            None => println!("There is no config file at {}; defaults are in use.", paths.config_file.display()),
+                        }
+                    }
+                }
+                ConfigCommand::Tasks => print_tasks(&maru_core::tasks::effective(&cfg)),
             }
             Ok(0)
         }

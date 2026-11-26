@@ -130,12 +130,15 @@ fn diff(prefix: &str, a: &Value, b: &Value, out: &mut Vec<String>) {
 
 /// Settings the running app picks up at once. Everything else is read when Maru starts.
 pub fn applies_live(path: &str) -> bool {
-    path.starts_with("hotkeys.") || path.starts_with("ui.") || path == "llm.servers"
+    // The card connections are rebuilt in place (`Engine::reroute_cards`); captures and live subtitles hold
+    // models and servers, so theirs wait for a restart.
+    path.starts_with("hotkeys.") || path.starts_with("ui.") || path == "llm.servers" || path.starts_with("tasks.card_")
 }
 
 /// Range checks for what the page lets people type. Every problem is reported, not only the first.
 pub fn validate(cfg: &Config) -> Result<()> {
     crate::external_servers::validate_saved(&cfg.llm.servers).map_err(Error::Config)?;
+    crate::tasks::validate(cfg).map_err(Error::Config)?;
     if let Some(endpoint) = &cfg.llm.endpoint
         && (cfg.llm.provider == crate::external_servers::ServerProvider::Azure || cfg.llm.api_key.is_some()) {
         crate::external_servers::validate_connection(endpoint, &cfg.llm.model_name, cfg.llm.provider, cfg.llm.api_key.as_ref()).map_err(Error::Config)?;

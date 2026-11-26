@@ -500,7 +500,15 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         em.send(Event::TranslationDone { id, variant: Variant::Primary, text: main.clone() });
         (since_ms(appeared), main, false)
     } else {
-        let chosen = if model == maru_core::live_model::LiveModel::Main { await_llm(&inner, &em).await } else { inner.live_llm.clone() };
+        // Live subtitles with their own connection ask it directly; otherwise the capture model, once it is ready.
+        let own_route = inner.routes().live.as_ref().map(|r| r.client.clone());
+        let chosen = match model {
+            maru_core::live_model::LiveModel::Main => match own_route {
+                Some(client) => Some(client),
+                None => await_llm(&inner, &em).await,
+            },
+            _ => inner.live_llm.clone(),
+        };
         let Some(llm) = chosen else {
             em.error(Stage::Llm, "The live translation model is unavailable. Check its file in Settings.");
             timing.finish("model_unavailable");

@@ -2200,3 +2200,228 @@ async fn coverage_counts_the_words_the_dictionary_has_and_those_that_need_no_mod
     assert_eq!(c.lines_without_model, 1, "only the first line needs no model at all");
     assert!(build(Config::default(), None, None).engine.sense_coverage(&lines).is_err(), "without the dictionary there is nothing to measure");
 }
+
+// ───────────── one model per task: card meanings ask a connection, then this PC's model, then the dictionary ─────────────
+
+use maru_engine::routes::{CardAsk, Place, Route, Routes, Skipped, State};
+
+fn route_to(name: &str, url: &str) -> Route {
+    let place = if name == "local" { Place::ThisPc } else { Place::Hosted };
+    Route { connection: name.into(), model: format!("{name}-model"), place, client: LlmClient::new(url, &Config::default().llm) }
+}
+
+/// A hosted service whose account has nothing left, answering the way Gemini does.
+fn out_of_quota(_path: &str, _body: &str) -> MockResponse {
+    let body = br#"{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.","status":"RESOURCE_EXHAUSTED"}}"#;
+    MockResponse { status: 429, chunks: vec![body.to_vec()], delay_ms: 0 }
+}
+
+/// Nothing listens here: a server that is switched off.
+const NOWHERE: &str = "http://127.0.0.1:9";
+
+/// A cards sheet with the learner's dictionary whose meanings are asked of `order`; `home` is Anki (and the capture model).
+fn card_harness(home: MockServer, order: Vec<Route>) -> Harness {
+    let h = with_learners_dictionary(mining_harness(home));
+    h.engine.set_routes(Routes { card_meanings: order.clone(), all: order, ..Default::default() });
+    h
+}
+
+fn card_status(h: &Harness) -> maru_engine::routes::TaskStatus {
+    h.engine.task_status().into_iter().find(|s| s.task == maru_core::tasks::Task::CardMeanings).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_out_of_quota_is_named_in_plain_words_and_this_pcs_model_answers_instead() {
+    use maru_engine::senses::MeaningSource;
+    let gemini = spawn_mock(out_of_quota).await;
+    let local = spawn_mock(sense_server("0|2\n")).await;
+    let order = vec![route_to("Gemini", &gemini.url), route_to("local", &local.url)];
+    let h = card_harness(local, order);
+    assert_eq!(card_status(&h).state, State::Unknown, "nothing is known before the first request");
+
+    let sheet = h.engine.mine_sheet(SENTENCE, "I studied at school.", None).await.unwrap();
+    let me = sheet.words.iter().find(|w| w.key == "저").unwrap();
+    assert_eq!((me.meaning.as_str(), me.meaning_es.as_str(), me.source), ("that", "ese; aquel", Some(MeaningSource::Chosen)), "the fallback's choice is used");
+    let answered = sheet.answered.as_ref().expect("the sheet says who answered");
+    assert_eq!((answered.connection.as_str(), answered.model.as_str(), answered.place), ("local", "local-model", Place::ThisPc));
+    assert_eq!(sheet.attempts.iter().map(|a| (a.connection.as_str(), a.problem)).collect::<Vec<_>>(), [("Gemini", Skipped::Quota)]);
+    assert_eq!(sheet.note.as_deref(), Some("Gemini has no quota left. This PC's model answered instead."));
+    assert_eq!(gemini.requests.lock().unwrap().len(), 1, "asked once: a quota error is never retried");
+
+    let status = card_status(&h);
+    assert_eq!((status.connection.as_str(), status.state, status.message.as_str()), ("Gemini", State::Quota, "Gemini has no quota left."));
+    assert_eq!(status.fallbacks, ["This PC's model", "the dictionary"]);
+    assert_eq!(sheet.retry.iter().map(|r| r.connection.as_str()).collect::<Vec<_>>(), ["Gemini", "local"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn when_no_connection_answers_the_dictionary_is_used_and_the_sheet_says_who_failed_without_server_text() {
+    use maru_engine::senses::MeaningSource;
+    let gemini = spawn_mock(out_of_quota).await;
+    let h = card_harness(spawn_mock(ankiconnect).await, vec![route_to("Gemini", &gemini.url), route_to("NAS", NOWHERE)]);
+    let sheet = h.engine.mine_sheet(SENTENCE, "I studied at school.", None).await.unwrap();
+    let me = sheet.words.iter().find(|w| w.key == "저").unwrap();
+    assert_eq!((me.meaning.as_str(), me.source), ("I; me", Some(MeaningSource::FirstSense)));
+    assert!(sheet.answered.is_none());
+    assert_eq!(sheet.attempts.iter().map(|a| a.problem).collect::<Vec<_>>(), [Skipped::Quota, Skipped::Unreachable]);
+    let note = sheet.note.unwrap();
+    assert!(note.starts_with("Gemini has no quota left. NAS cannot be reached. The dictionary was used."), "{note}");
+    assert!(note.contains("check that each fits"), "{note}");
+    for raw in ["429", "RESOURCE_EXHAUSTED", "{", "HTTP", "127.0.0.1"] {
+        assert!(!note.contains(raw), "no server text in what the person reads: {note}");
+    }
+    assert!(sheet.words.iter().all(|w| !w.meaning.is_empty()), "every word still has a meaning to make a card from");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_can_be_asked_again_with_one_named_connection() {
+    let nas = spawn_mock(sense_server("0|2\n")).await;
+    let local = spawn_mock(sense_server("0|1\n")).await;
+    let order = vec![route_to("local", &local.url)];
+    let h = with_learners_dictionary(mining_harness(local));
+    h.engine.set_routes(Routes { card_meanings: order.clone(), all: vec![order[0].clone(), route_to("NAS", &nas.url)], ..Default::default() });
+    let first = h.engine.mine_sheet(SENTENCE, "", None).await.unwrap();
+    assert_eq!(first.answered.as_ref().map(|a| a.connection.as_str()), Some("local"));
+    assert_eq!(first.words.iter().find(|w| w.key == "저").unwrap().meaning, "I; me");
+
+    let again = h.engine.mine_sheet_with(SENTENCE, "", None, &CardAsk { connection: Some("nas".into()), after_live: false }).await.unwrap();
+    assert_eq!(again.answered.as_ref().map(|a| a.connection.as_str()), Some("NAS"));
+    assert_eq!(again.words.iter().find(|w| w.key == "저").unwrap().meaning, "that", "the other connection's choice");
+    assert!(again.attempts.is_empty() && again.note.is_none());
+    assert_eq!(nas.requests.lock().unwrap().len(), 1);
+
+    // A connection that is not there any more answers nothing; the dictionary stands in.
+    let gone = h.engine.mine_sheet_with(SENTENCE, "", None, &CardAsk { connection: Some("Removed".into()), after_live: false }).await.unwrap();
+    assert!(gone.answered.is_none() && gone.note.is_some());
+}
+
+/// This PC's model behind a runtime that has loaded nothing.
+fn unloaded_local(url: &str) -> Route {
+    let cfg = Config::default();
+    let (status, _) = tokio::sync::watch::channel(maru_llm::LlmStatus::Disabled);
+    let runtime = maru_llm::model_runtime::ModelRuntime::new(Some(cfg.llm.clone()), cfg.llm.clone(), maru_core::Paths::under(&std::env::temp_dir()), status);
+    Route { client: LlmClient::new(url, &cfg.llm).with_runtime(runtime, maru_llm::model_runtime::ModelRole::Main), ..route_to("local", url) }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn this_pcs_model_is_never_loaded_for_a_card_while_live_subtitles_run_and_the_sheet_offers_what_can_answer_now() {
+    use maru_engine::senses::MeaningSource;
+    let nas = spawn_mock(sense_server("0|2\n")).await;
+    let local = spawn_mock(sense_server("0|1\n")).await;
+    let order = vec![unloaded_local(&local.url)];
+    let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
+    h.engine.set_routes(Routes { card_meanings: order.clone(), all: vec![order[0].clone(), route_to("NAS", &nas.url)], ..Default::default() });
+    h.engine.set_live_active(true);
+
+    let sheet = h.engine.mine_sheet(SENTENCE, "", None).await.unwrap();
+    assert!(sheet.live_running);
+    assert_eq!(sheet.attempts.iter().map(|a| (a.connection.as_str(), a.problem)).collect::<Vec<_>>(), [("local", Skipped::LiveRunning)]);
+    assert!(local.requests.lock().unwrap().is_empty(), "nothing was sent to (or loaded on) this PC's model");
+    let me = sheet.words.iter().find(|w| w.key == "저").unwrap();
+    assert_eq!(me.source, Some(MeaningSource::FirstSense), "the dictionary stands in meanwhile");
+    assert!(sheet.note.as_deref().is_some_and(|n| n.starts_with("This PC's model is not loaded while live subtitles run.")), "{:?}", sheet.note);
+    let offers: Vec<(&str, bool)> = sheet.retry.iter().map(|r| (r.connection.as_str(), r.after_live)).collect();
+    assert_eq!(offers, [("local", true), ("NAS", false)], "another connection now, or this PC's model once live stops");
+
+    // Chosen from the offer: the other connection answers while live subtitles keep running.
+    let now = h.engine.mine_sheet_with(SENTENCE, "", None, &CardAsk { connection: Some("NAS".into()), after_live: false }).await.unwrap();
+    assert_eq!(now.answered.as_ref().map(|a| a.connection.as_str()), Some("NAS"));
+    assert_eq!(now.words.iter().find(|w| w.key == "저").unwrap().meaning, "that");
+    assert!(local.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_queued_until_live_subtitles_stop_is_answered_by_this_pcs_model_then() {
+    let local = spawn_mock(sense_server("0|2\n")).await;
+    let order = vec![route_to("local", &local.url)];
+    let h = card_harness(local, order);
+    h.engine.set_live_active(true);
+    let engine = h.engine.clone();
+    let waiting = tokio::spawn(async move { engine.mine_sheet_with(SENTENCE, "", None, &CardAsk { connection: None, after_live: true }).await });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!waiting.is_finished(), "the line waits while live subtitles run");
+    assert!(model_requests(&h).is_empty());
+    h.engine.set_live_active(false);
+    let sheet = tokio::time::timeout(Duration::from_secs(5), waiting).await.expect("answered once live stopped").unwrap().unwrap();
+    assert!(!sheet.live_running);
+    assert_eq!(sheet.answered.as_ref().map(|a| a.connection.as_str()), Some("local"));
+    assert_eq!(sheet.words.iter().find(|w| w.key == "저").unwrap().meaning, "that");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn card_meanings_have_their_own_connection_whether_live_subtitles_are_on_and_whatever_translates_them() {
+    // Live subtitles on a translation-only local model: before, the sheet got no meanings in context while they ran.
+    let cards = spawn_mock(sense_server("0|2\n")).await;
+    let live = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["live answer"]), delay_ms: 0 }).await;
+    let server = spawn_mock(ankiconnect).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    cfg.learning.anki.sync_after_add = false;
+    cfg.continuous.translation.model = maru_core::live_model::LiveModel::Lfm;
+    let live_llm = LlmClient::new(&live.url, &cfg.llm);
+    let h = with_learners_dictionary(build_with_live(cfg, None, Some(server), Some(live_llm)));
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("NAS", &cards.url)], all: vec![route_to("NAS", &cards.url)], ..Default::default() });
+    for on in [true, false] {
+        h.engine.set_live_active(on);
+        let sheet = h.engine.mine_sheet(SENTENCE, "", None).await.unwrap();
+        assert_eq!(sheet.answered.as_ref().map(|a| a.connection.as_str()), Some("NAS"), "live on: {on}");
+        assert_eq!(sheet.words.iter().find(|w| w.key == "저").unwrap().meaning, "that");
+        assert!(sheet.note.is_none(), "{:?}", sheet.note);
+    }
+    assert!(live.requests.lock().unwrap().is_empty(), "the live translator is never asked for meanings");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_subtitles_with_their_own_connection_ask_it_and_not_the_capture_model() {
+    let capture = spawn_mock(model).await;
+    let live = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["From the live connection."]), delay_ms: 0 }).await;
+    let cfg = Config::default();
+    let h = build(cfg.clone(), Some(LlmClient::new(&capture.url, &cfg.llm)), Some(capture));
+    h.engine.set_routes(Routes { live: Some(route_to("NAS", &live.url)), ..Default::default() });
+    let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    assert_eq!(text_of(&events, Variant::Primary), "From the live connection.");
+    assert_eq!(live.requests.lock().unwrap().len(), 1);
+    assert!(h.requests().is_empty(), "the capture model was not asked for the live line");
+
+    // A capture still goes to the capture model.
+    let events = collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+    assert_eq!(text_of(&events, Variant::Primary), "I studied at school.");
+    assert_eq!(live.requests.lock().unwrap().len(), 1);
+
+    let status = h.engine.task_status();
+    let live_status = status.iter().find(|s| s.task == maru_core::tasks::Task::Live).unwrap();
+    assert_eq!((live_status.connection.as_str(), live_status.model.as_str()), ("NAS", "NAS-model"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_test_button_reports_a_working_connection_one_out_of_quota_and_one_that_is_off() {
+    use maru_core::tasks::Task;
+    let working = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["안녕하세요"]), delay_ms: 0 }).await;
+    let h = card_harness(spawn_mock(ankiconnect).await, vec![route_to("NAS", &working.url)]);
+    let status = h.engine.test_task(Task::CardMeanings).await;
+    assert_eq!(status.state, State::Working);
+    assert!(status.message.starts_with("NAS answered in "), "{}", status.message);
+    assert_eq!(card_status(&h).state, State::Working, "remembered for the settings page");
+
+    let gemini = spawn_mock(out_of_quota).await;
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("Gemini", &gemini.url)], ..Default::default() });
+    let status = h.engine.test_task(Task::CardMeanings).await;
+    assert_eq!((status.state, status.message.as_str()), (State::Quota, "Gemini has no quota left."));
+
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("NAS", NOWHERE)], ..Default::default() });
+    let status = h.engine.test_task(Task::CardMeanings).await;
+    assert_eq!((status.state, status.message.as_str()), (State::Unreachable, "NAS cannot be reached."));
+
+    // The sentence translation makes no request until a connection is chosen for it.
+    let sentence = h.engine.test_task(Task::CardSentence).await;
+    assert_eq!(sentence.state, State::Off);
+
+    // This PC's model is not loaded by the button while live subtitles run.
+    let local = spawn_mock(model).await;
+    h.engine.set_routes(Routes { card_meanings: vec![unloaded_local(&local.url)], ..Default::default() });
+    h.engine.set_live_active(true);
+    let status = h.engine.test_task(Task::CardMeanings).await;
+    assert_eq!(status.state, State::NotLoaded);
+    assert!(local.requests.lock().unwrap().is_empty());
+}

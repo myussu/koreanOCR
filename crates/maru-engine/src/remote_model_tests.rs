@@ -473,3 +473,71 @@ async fn real_pp_ocr_reads_on_directml_and_a_device_that_cannot_load_falls_back_
         assert!(texts.join(" ").contains("여기"), "{device} read {texts:?}");
     }
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_older_config_keeps_its_capture_server_and_gets_card_meanings_on_this_pcs_model_without_loading_it() {
+    use crate::routes::{Place, State};
+    use maru_core::tasks::Task;
+    let server = spawn_mock(model).await;
+    let home = Home::new();
+    let mut cfg = config(&server.url);
+    cfg.continuous.translation.model = LiveModel::Main;
+    cfg.llm.hf_repo = Some("someone/gemma-GGUF:Q4".into());
+    let services = boot(Paths::under(home.path()), cfg, BootOptions { defer_models: true, ..Default::default() }).await;
+    let status = services.engine.task_status();
+    let of = |task: Task| status.iter().find(|s| s.task == task).unwrap();
+
+    // Captures and live subtitles: the server the file named, now under its host name.
+    assert_eq!((of(Task::Capture).connection.as_str(), of(Task::Capture).model.as_str()), ("127.0.0.1", "nas-gemma"));
+    assert_eq!(of(Task::Capture).place, Some(Place::ThisPc), "the scripted server is on this machine");
+    assert_eq!(of(Task::Live).connection, "127.0.0.1");
+    assert_eq!(services.engine.config().llm.endpoint.as_deref(), Some(server.url.as_str()));
+
+    // Card meanings: this PC's model, known but not started; then the dictionary.
+    let cards = of(Task::CardMeanings);
+    assert_eq!((cards.connection.as_str(), cards.model.as_str(), cards.state), ("local", "someone/gemma-GGUF:Q4", State::NotLoaded));
+    assert_eq!(cards.fallbacks, ["the dictionary"]);
+    assert_eq!(of(Task::CardSentence).state, State::Off);
+    assert!(!services.llm_server_running(), "naming this PC's model for cards loads nothing at start-up");
+    assert!(services.notes.iter().any(|n| n.starts_with("Card meanings: This PC's model")), "{:?}", services.notes);
+
+    // A capture still goes to the server.
+    let events = collect(services.engine.deep_dive(request()).1).await;
+    assert!(events.iter().any(|e| matches!(e, Event::DeepDelta { .. })), "{events:?}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_task_table_can_put_live_subtitles_on_a_server_and_captures_on_this_pcs_model() {
+    use maru_core::external_servers::SavedServer;
+    use maru_core::tasks::{CaptureRoute, Task, TaskRoute, TasksConfig, VERSION};
+    let server = spawn_mock(model).await;
+    let home = Home::new();
+    let mut cfg = config(&server.url);
+    cfg.continuous.translation.model = LiveModel::Main;
+    cfg.continuous.translation.snapshot_endpoint = None;
+    cfg.llm.hf_repo = Some("someone/gemma-GGUF:Q4".into());
+    cfg.llm.servers = vec![SavedServer { name: "NAS".into(), endpoint: server.url.clone(), model_name: "nas-gemma".into(), provider: Default::default(), api_key: None }];
+    cfg.tasks = TasksConfig {
+        version: VERSION,
+        live: TaskRoute { connection: "NAS".into(), model: String::new() },
+        capture: CaptureRoute { connection: "local".into(), ..Default::default() },
+        card_meanings: TaskRoute { connection: "NAS".into(), model: String::new() },
+        ..Default::default()
+    };
+    let services = boot(Paths::under(home.path()), cfg, BootOptions { defer_models: true, ..Default::default() }).await;
+    let status = services.engine.task_status();
+    let of = |task: Task| status.iter().find(|s| s.task == task).unwrap();
+    assert_eq!(of(Task::Capture).connection, "local");
+    assert_eq!(services.engine.config().llm.endpoint, None, "the older address in the file no longer decides");
+    assert_eq!((of(Task::Live).connection.as_str(), of(Task::Live).model.as_str()), ("NAS", "nas-gemma"));
+    assert_eq!(of(Task::CardMeanings).connection, "NAS");
+    assert_eq!(of(Task::CardMeanings).fallbacks, ["This PC's model", "the dictionary"]);
+
+    // A live line is translated by the server although captures are local.
+    let mut capture = Capture::typed("학교에 갑니다.");
+    capture.source = maru_core::CaptureSource::Continuous;
+    let line = crate::LiveLine { capture, appeared: std::time::Instant::now(), ready_ms: 0, ocr_ms: 0 };
+    let events = collect(services.engine.translate_live(line).1).await;
+    assert!(events.iter().any(|e| matches!(e, Event::TranslationDone { .. })), "{events:?}");
+    assert!(!services.llm_server_running(), "this PC's model was not started for it");
+}

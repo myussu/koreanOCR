@@ -142,6 +142,18 @@ pub(crate) struct Inner {
     pub(crate) pending_stars: Mutex<crate::live_star::PendingStars>,
     pub live_counts: Arc<crate::live_lane::Counters>,
     pub live_queue: std::sync::OnceLock<mpsc::UnboundedSender<crate::live_lane::Job>>,
+    /// Which model answers the tasks that have their own route (`routes.rs`); replaced when Settings change them.
+    pub(crate) routes: Mutex<Arc<crate::routes::Routes>>,
+    /// What happened the last time each connection was asked, for the settings' status.
+    pub(crate) route_health: Mutex<crate::routes::HealthMap>,
+}
+
+impl Inner {
+    /// The model that translates live lines when no translation-only local model does: the live route when
+    /// live subtitles have their own connection (`routes.rs`), else the capture model.
+    pub(crate) fn live_main(&self) -> Option<LlmClient> {
+        self.routes().live.as_ref().map(|r| r.client.clone()).or_else(|| self.llm.clone())
+    }
 }
 
 pub(crate) fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -199,6 +211,8 @@ impl Engine {
             pending_stars: Mutex::new(Default::default()),
             live_counts: Arc::new(crate::live_lane::Counters::default()),
             live_queue: std::sync::OnceLock::new(),
+            routes: Mutex::new(Arc::default()),
+            route_health: Mutex::new(Default::default()),
             scan_task: Mutex::new(None),
             scan_scope: Mutex::new((0, String::new())),
             cache: Mutex::new(Cache::new(256)),
@@ -234,7 +248,7 @@ impl Engine {
     pub fn set_live_active(&self, active: bool) {
         let before = self.inner.live_active.swap(active, Ordering::AcqRel);
         if !active && let Some(task) = lock(&self.inner.live_load_task).take() { task.abort(); }
-        if active && !before && let Some(client) = self.inner.live_llm.clone().or_else(|| self.inner.llm.clone()).filter(|c| c.has_runtime()) {
+        if active && !before && let Some(client) = self.inner.live_llm.clone().or_else(|| self.inner.live_main()).filter(|c| c.has_runtime()) {
             let task = self.inner.runtime.spawn(async move {
                 if let Err(e) = client.ensure_loaded().await { tracing::warn!("live model could not load: {e}"); }
             });
@@ -247,6 +261,8 @@ impl Engine {
         }
     }
     pub fn live_work(&self) -> (usize, usize) { self.inner.live_counts.counts() }
+    /// Live subtitles are running (the watcher is on).
+    pub fn live_active(&self) -> bool { self.inner.live_active.load(Ordering::Acquire) }
     pub fn loaded_translation_role(&self) -> Option<maru_llm::model_runtime::ModelRole> {
         self.inner.live_llm.as_ref().and_then(|c| c.loaded_role())
     }
