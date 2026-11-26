@@ -644,8 +644,8 @@ The different kinds of remembered data have different lifetimes:
 
 ## What is verified
 
-**Checked automatically** (about 465 tests: `cargo test --workspace`, `cargo test --manifest-path app/src-tauri/Cargo.toml`,
-`node --test app/ui/test/*.test.mjs`; CI runs them on Windows and Linux, plus clippy with warnings denied):
+**Checked automatically** (about 1,000 tests: `cargo test --workspace`, `cargo test --manifest-path app/src-tauri/Cargo.toml`,
+`node --test app/ui/test/*.test.mjs` and the browser extension's; CI runs them on Windows and Linux, plus clippy with warnings denied):
 
 * Korean pronunciation and romanization rules, 어절 grouping, dictionary import, FSRS-6 (replays the reference
   implementation's own test vector), vocabulary, Anki (against a **fake** AnkiConnect).

@@ -170,7 +170,7 @@ async function status() {
     h('h4', { text: 'Shortcuts' }),
     h('table', {}, row('Translate selection', h('kbd', { text: k.translate })), row('Pick a region', h('kbd', { text: k.region })), row('Hover mode', h('kbd', { text: k.hover })), row('Continuous mode', h('kbd', { text: k.continuous })), row('Continuous: choose area', h('kbd', { text: k.continuous_area })), row('Label all Korean text on screen', h('kbd', { text: k.scan })), row('Translate and read aloud', h('kbd', { text: k.speak })), row('History', h('kbd', { text: k.history })), row('Star the live subtitle line', h('kbd', { text: k.star || '—' })), row('Dismiss panel', h('kbd', { text: k.dismiss }))),
     h('h4', { text: 'Notes' }),
-    s.notes.map((n) => h('p', { class: 'status', text: n })),
+    ...s.notes.map((n) => h('p', { class: 'status', text: n })),
   ];
 }
 

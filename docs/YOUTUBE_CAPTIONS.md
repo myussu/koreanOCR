@@ -208,39 +208,4 @@ the reload arrow on the extension's card.
 
 ## Manual test entry
 
-For `docs/MANUAL_TESTS.md`, as the next free number.
-
-### M-45 YouTube captions from the browser extension
-
-**Needs:** Chrome or Edge with the unpacked extension (`extension/youtube-captions`), Maru with `[captions] enabled`,
-a translation model, and YouTube videos of four kinds: Korean captions uploaded by the author; only auto-generated
-Korean; captions but no Korean; Korean burned into the picture with no caption track.
-
-**Why it is unverified:** the receiver and the extension's logic are unit-tested, but the extension has never been
-loaded in a browser and has never met YouTube. The page fields it reads are not a public API, and YouTube often
-refuses caption requests that its own player did not make.
-
-1. Settings → Live subtitles → switch on "Take YouTube captions from the browser" → Save. **Expect** a 32-character
-   code in "Code for the browser extension" and a restart banner. Restart. **Expect** Status → "YouTube captions: ON ·
-   port 18098 on this PC · 0 lines taken". `maru-app.log` must not contain the code.
-2. Load the extension, paste the code, Test the connection. **Expect** "Maru answered: the code is right." Change one
-   character of the code: **expect** "Maru refused the code." Quit Maru: **expect** "Maru is not listening on that port."
-3. Play a video with author-uploaded Korean captions. **Expect** the popup to count lines, and History to list each
-   line once as `live · youtube` with a translation, in the order spoken, with the text exactly as the captions show it.
-   Note whether the captions had to be turned on (CC) first.
-4. Wind back, jump ahead, drag the seek bar, pause, play at 2× speed. **Expect** no line twice, no line that was not
-   played, none while dragging.
-5. Click through to another video without reloading the page. **Expect** the new video's lines, none of the old one's.
-6. A video with only auto-generated Korean: **expect** nothing sent and the popup saying so; with the switch on,
-   lines arrive. A video with captions but no Korean, and one with burned-in Korean only: **expect** "No Korean
-   captions on this video", nothing sent, and live subtitles (OCR) working over the same video as before.
-7. A video with an advertisement first: **expect** no lines during the advertisement.
-8. Star a caption line with the shortcut while the video plays, and from History. Make cards from one. **Expect** the
-   star in History → Starred and the tag `maru::youtube` on the cards.
-9. From any web page's console: `fetch('http://127.0.0.1:18098/captions/v1/hello', {method: 'POST', headers: {'X-Maru-Token': '<the code>'}})`.
-   **Expect** it to fail (the page's origin is refused); Status counts one more refused request.
-10. Another program already on the port: **expect** Status to say captions are not listening and why, and Maru
-    otherwise unaffected.
-
-**Record:** browser and version, the video kinds tried (not their addresses if private), whether the direct caption
-request or the player's own was needed, and any popup message that did not match what happened.
+The steps are M-45 in [MANUAL_TESTS.md](MANUAL_TESTS.md).
