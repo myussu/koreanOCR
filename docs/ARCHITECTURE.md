@@ -123,6 +123,7 @@ Rules that keep it that way (and that tests and reviews rely on):
 | `app/src-tauri` | the overlay shell: windows, hotkeys, tray, background loops, Tauri commands |
 | `app/ui` | plain ES modules, no build step: panel, picker, hub (history/review/status/settings), scan overlay, live band |
 | `docs/` | this file, `MANUAL_TESTS.md`, `config.example.toml` (every option, documented) |
+| `extension/youtube-captions` | the browser extension that sends a video's Korean captions to Maru (§4.7a); not part of any build |
 | `.github/workflows/` | `ci.yml` (Windows build + tests + node tests; Linux clippy + tests), `tts-server.yml` (builds the speech server) |
 | `old/` | the original Python prototype, kept for reference only |
 
@@ -208,7 +209,7 @@ vectors), `anki.rs` (AnkiConnect). Engine side: `anki_flow.rs` (deck suggestions
 `Engine::{save_word, set_known, review_word, due_words…}`. A word is queued for review after the second lookup
 (`auto_save_after_lookups`); words held long enough **fade** from the panel (`known_stability_days`, or Anki's interval
 read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
-* **Commands:** `anki_overview`, `anki_add`, `anki_add_example`, `anki_sync`, `anki_check`, `anki_due`, `save_word`, `set_known`, `review_word`, `due_words`, `recent_words`, `word_contexts`, `mine_sheet`, `mine_add`, `anki_fill_sounds`; History: `history_star`, `history_starred`.
+* **Commands:** `anki_overview`, `anki_add`, `anki_add_example`, `anki_sync`, `anki_check`, `anki_due`, `save_word`, `set_known`, `review_word`, `due_words`, `recent_words`, `word_contexts`, `mine_sheet`, `mine_add`, `mine_queue`, `mine_sentence_translation`, `anki_fill_sounds`; History: `history_star`, `history_starred`.
 * **UI:** `anki.js` (pure rules for the Add-to-Anki popover), `panel.js`, `hub.js` (Review tab), Settings → Anki.
 * **Config:** `[learning]`, `[learning.anki]`, per-program decks/tags in `[[profile]]`.
 * **Tests:** FSRS vectors, `anki.rs` against a fake AnkiConnect, `anki_flow.rs`, `anki.test.mjs`.
@@ -247,6 +248,44 @@ read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
   comparison tools: `Engine::card_words` / `maru dict senses` (a line's words and senses), `maru bench --cards` (each
   connection decides them), `tools/rerank_senses.py` (a CPU reranker instead of a model) and
   `tools/build_card_review.py` (the blind review page and its separate key; `tools/test_card_review.py`).
+* **What the dictionary gives a card** (run 2; `maru-engine/src/romanized.rs`, `senses.rs`, `maru-llm/src/senses.rs`).
+  *Romanized equivalents:* 3,280 of the dictionary's 67,653 senses (2,448 of 48,353 entries) have an English "equivalent"
+  that is only the headword in Latin letters (녀석 → "nyeoseok", the 수 of 할 수 있다 → "su"; `maru dict romanized`
+  counts them). `romanized::usable_english` never lets one be a meaning: real words beside it stay (44 senses), the gloss at
+  the start of the definition stands in ("red chili paste: …", 521), a word Spanish spells the same is kept as borrowed
+  (radio, hotel, and dish names: 406), and the rest (2,309) are left without English. `senses::card_senses` drops a sense
+  without English, so such a word reaches the model like one the dictionary lacks. The match is exact against four
+  spellings (as written, as pronounced, syllable by syllable, without a linking ㅅ); capitalised equivalents are names.
+  *More than eight senses:* the first request still shows eight (`MAX_SENSES`); when the model answers "none of these"
+  for a word that has more, `senses::choose` sends a second request with that word's next sixteen (`MORE_SENSES`,
+  `second_questions`, `resolve`), and a second "none" keeps the model's own words. No reranker.
+  *A corrected dictionary form:* with `learning.anki.correct_forms` the prompt gains one rule
+  (`sense_system_with_forms`) and an answer may end in `|=form` (`parse_correction`); `MineWord::corrected` carries it
+  and the sheet shows both forms with a button (`mine-core.js::formChoice`); the card keeps the analyser's form until
+  pressed. It is off by default and a separate prompt, so the request measured in run 1's blind review is unchanged.
+  `maru bench --cards … [--forms]` runs the same two steps (`Chosen::{requests, later, corrected}` are in its records).
+  Tests: `romanized.rs`, `senses.rs` (both crates), `tests/pipeline.rs` (`a_bare_romanization_is_never_a_card_meaning`,
+  `a_word_with_more_than_eight_senses…`, `a_dictionary_form_the_model_corrects…`), `mine.test.mjs`. Review tools outside the
+  app: `tools/nikl_stats.py` (the dictionary statistics), `tools/build_kiwi_review.py` (a page to mark Kiwi's lemmas
+  right or wrong, grouped as standard text, dialect and broken OCR). Measured on the 50 review lines: docs/reports/run-2.md.
+* **Two decks, the program as a tag, the queue, and asking again** (run 2). Word cards go to `learning.anki.deck` and the
+  sentence card to `learning.anki.sentence_deck` (empty = the same): `MineSheet::{word_deck, sentence_deck}`,
+  `MineLine::sentence_deck` (absent in older requests = the words' deck), `mine_add`'s `sentence_deck`. The program a card
+  came from is the tag `maru::<program>` (`anki_flow::app_tag`; it was `app::<program>`; cards made before keep theirs)
+  and no longer a suggested deck: `suggest_decks(…, per_app)` puts the configured deck first unless
+  `learning.anki.suggest_app_decks` is on. **Queue:** `AnkiClient::new_cards(deck)` counts, with one search
+  (`"deck:…" is:new -is:suspended`), the new cards waiting in a deck and its subdecks; `Engine::card_queue` returns that
+  for both decks with Maru's own per-day numbers (`new_words_per_day` 3, `new_sentences_per_day` 1: AnkiConnect cannot see
+  a deck's limit overrides, so Anki's limits are neither read nor derived), and `mining::comes_up` / `mine-core.js::comesUp`
+  say in how many days the cards being added would come up (`queueLines`; `mine_queue` recounts when a deck is typed).
+  **Who answered:** the sheet shows `answeredText` and a "Retry with …" button per connection (`retryChoices`, `askFor` →
+  `mine_sheet(…, ask)`; `redraft` keeps ticks, decks and typed meanings), and "Translate again with …" for the sentence
+  (`mine_sentence_translation`). **Spanish from the panel:** `finish_anki_add` calls `Engine::sense_es_in`: one dictionary
+  sense gives its Spanish; several senses and the sentence the word was seen in go to the card-meanings connection (one
+  short `choose_senses` request) and the chosen sense's Spanish is used; nobody answering leaves the field empty.
+  Tests: `tests/pipeline.rs` (`the_sheet_names_a_deck_for_words…`, `word_cards_and_the_sentence_card_go_to_their_own_decks…`,
+  `by_default_a_program_is_not_offered_as_a_deck…`, `a_word_with_several_senses_added_from_the_panel…`), `mining.rs`
+  (`comes_up`), `mine.test.mjs`; real Anki: `maru-engine/tests/real_anki.rs::two_decks_and_the_queue` (M-43).
 * **Sound added later** (`maru-srs/src/anki_sounds.rs`, `Engine::{anki_silent_notes, anki_add_sounds}`, shell
   `mining::anki_fill_sounds`): an add whose speech is off or fails still adds the card and says so (`SOUND_LATER`).
   `silent_notes` searches Anki for Maru notes with an empty `WordAudio`, or an empty `SentenceAudio` beside a filled
@@ -512,6 +551,28 @@ it is wiring only in `commands.rs`. Reader warm-up moves its lease into the bloc
 an unfinished request. Cancellation resets lifecycle state before awaiting stop; no false Ready is retained.
 Tests: `model_control_tests.rs`, `deferred_models.rs`, `model_runtime.rs`, `launcher.test.mjs`; M-23 covers real UI/game checks.
 
+### 4.7a YouTube captions as text (browser extension → `[captions]`)
+Design note: [YOUTUBE_CAPTIONS.md](YOUTUBE_CAPTIONS.md). **Not verified against YouTube or in a browser** (M-45).
+* **Extension** (`extension/youtube-captions/`, Manifest V3, no build step): `page-bridge.js` (page world) reads the player's
+  caption tracks; `content.js` picks the Korean track the author uploaded (never a translated one; auto-generated only with
+  the popup's switch), fetches its cues and follows the video's time; `background.js` posts each line to
+  `http://127.0.0.1:<port>/captions/v1/line` with the code; `popup.html/js` holds the code, port and switch. Every decision
+  is a pure function in `captions-core.js` (a plain script on `globalThis.MaruCaptions`, because content scripts cannot `import`).
+* **Receiver** (`maru-engine/src/captions.rs`): a small hand-written HTTP/1.1 listener on 127.0.0.1 (`listen`), refusing in
+  this order a foreign `Host`, another path, an `Origin` that is not an extension's, another method, a wrong code
+  (`same_token`), a missing or oversized length; then `accept` applies the line rules (empty, no Hangul, translated,
+  duplicate cue). It yields `CaptionLine`s; `Engine::translate_caption` sends one through `translate_live` with
+  `CaptureSource::Caption` and the program `youtube`. `pipeline::live` skips its two OCR repairs for that source (stray-mark
+  trimming, merging with a similar recent line); everything else (cache, history, `history.db`, stars, cards) is the live lane's.
+* **Shell** (`app/src-tauri/src/captions.rs`): writes the code when the switch is saved (`add_code_when_switched_on`, called
+  from `save_settings`) or at launch for a hand-edited file (`write_code_if_missing`), starts the listener at launch
+  (`start`), forwards lines, sets `AppState::live_shown` so the star shortcut means the newest caption, and answers
+  `captions_status` for the Status tab (`app/ui/captions-core.js::captionsLine`). No band is drawn for a caption line.
+* **Config:** `[captions]` (`enabled`, `port`, `token`, `allowed_origin`; `maru-core/src/captions.rs`), all with defaults, read at start.
+* **Tests:** `maru-engine/src/captions.rs` (real local socket), `tests/pipeline.rs` (`…caption…`), `maru-core/src/captions.rs`,
+  `app/src-tauri/src/captions.rs`, `app/ui/test/captions.test.mjs`, `extension/youtube-captions/test/captions-core.test.mjs`.
+  `cargo run -p maru-engine --example captions_listen -- <code>` prints received lines without starting Maru.
+
 ### 4.8 Speech (TTS)
 `maru-tts` (`Tts`: split into sentences → disk cache → provider → remember). Providers: the local `tts-server`
 (qwentts.cpp running Qwen3-TTS, built by `.github/workflows/tts-server.yml`, supervised by `local.rs`, started by
@@ -529,6 +590,21 @@ overlong take is regenerated). Qwen3-TTS was measured returning 6–22 s for one
 Interactive boot defers the local voice through `deferred_models.rs`. Speech, the Settings voice test, and requested
 Anki audio call `Services::ensure_speech` before using it. Remote speech keeps its existing health check.
 
+**A voice per task** (`maru-core::tasks::{VoiceRoute, voice_config}`, `maru-engine/src/voices.rs`, `Services::voices`).
+`[tasks.voice_reading]` and `[tasks.voice_cards]` each name a speaker and, optionally, another OpenAI-style speech server
+(`endpoint`, `model`); with nothing set both are the voice of `[tts]`, as before. Reading aloud (`tts_clip`, the speak
+hotkey) uses the reading voice; card sound (`commands::spoken`: Make cards, the panel's add, "fill the sounds") uses the
+card voice. A voice on another server holds no lease (`Services::voice_lease`). When reading goes to another server and
+cards use the voice on this PC, that model is loaded by the first card's sound (it already loaded on first use) and
+`Services::release_card_voice` unloads it after `mine_add`, `anki_add` and `anki_fill_sounds`; when both tasks share
+the voice, nothing is unloaded behind the reader. `tts_test` takes `task` (`reading` / `cards`) so Settings → Voice
+tests each. The key in `[tts]` is never sent to the other server. **Not built:** Maru does not start the other server
+(for Supertonic 3 that is `python tools/supertonic_server.py --port 18097`, a Python package the owner installs), so
+the reading voice is `[tts]` until an address is entered; a reading server that does not answer is an error, with no
+fall-back to the GPU voice. The card voice's model and size are whatever `[tts]` says, unchanged. Tests:
+`tasks.rs::a_voice_task_speaks…`, `voices.rs` (two voices, one voice, speech off). Unloading after cards runs through
+the real `tts-server` only: M-46.
+
 ### 4.9 Settings
 `settings::get_settings` / `save_settings` (app shell) → `maru_core::settings::patch`: applies only what changed to the *text* of
 `config.toml` with `toml_edit` (comments and unknown keys survive), re-parses, validates (`settings::validate`), and reports
@@ -536,6 +612,27 @@ which changes need a restart (`applies_live`: hotkeys and `ui.*` only). Saving c
 read-again keys, for syntax and duplicates, and refuses a language-model or snapshot server address without a scheme. The page is described by `app/ui/settings-core.js` (a
 schema of fields by dotted config path) and drawn by `settings.js`. **Adding a setting means touching `config.rs`,
 `config.example.toml`, `settings-core.js` and, if it validates, `settings.rs`** (§8).
+
+**The page is organised by flow** (run 2). `settings-core.js` is the schema: sections Live subtitles, Captures, Making cards,
+Voice, Connections, Shortcuts, with every field's one-sentence `help`, the features that use it (`uses`, also what the search
+matches) and whether it is `advanced` (shown on the Advanced page under its section's name). Three kinds of control
+(`controlKind`): `choice` cards (also `route` / `route_optional`, whose cards are the connections), a `switch`, and typed
+fields; there are no drop-downs or sliders. `settings-flow-core.js` holds the decisions that are not about one field: where a
+connection runs (`placeOf`, mirroring `routes::place_of`), the cards of a task (`routeChoices`), the status dot
+(`stateDot`), the overview's four steps with what each uses now (`flowSteps`, from the `status` and `task_status`
+commands), and the list of connections (`connectionProblem`, `saveConnection` — a rename follows into the tasks —,
+`removeConnection` — refused while a task uses it —, `usedBy`). `settings.js` draws: the overview, a section with its
+"in use now" line and Test button per task (`task_test`), the connection editor (the only place an address, model or key is
+typed; it reuses `settings-discovery.js` and the `connection_check` command, which answers with a state and one plain
+sentence from `maru-llm::connection::CheckFailure::plain`), one restart banner (`pendingSummary`) instead of a mark per row.
+`get_settings` shows the effective task table; `save_settings` writes the table first when a task is edited in a file that
+has none. A link can open a section, a search or a connection's editor (`hub.html?settings=cards#settings`, `&q=`,
+`&connection=NAS`), which is how the pages are photographed with the demo data in `hub.js`. Tests: `settings.test.mjs`
+(the sections, labels without internal names, one sentence of help, uses, the three controls, search by feature),
+`settings-flow.test.mjs`, `settings-live.test.mjs`, `settings-connection.test.mjs`. The model's own error text is no longer
+shown in the panel either: `maru_llm::problem::plain` (used by `pipeline.rs`) says what kind of refusal it was.
+The paragraphs below describe pieces that page still uses (discovery, the bounded connection check) and the earlier layout
+of saved connections, whose storage (`[llm].servers`) is unchanged.
 
 The settings page adds categories, search, model cards, and a guard against losing unsaved edits on navigation/restart.
 Both external-server sections include a draft connection check: `server_check.rs` calls the engine-exported
@@ -630,6 +727,65 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
 * **Tests:** `client.rs` (wire format, release body), `remote_model_tests.rs` (hold once, no release between areas, release
   after stop, nothing at 0). Real server, game and other GPU users (Immich): M-34.
 
+### 4.9c One model per task (`[tasks]`)
+
+* **What it is:** `maru-core/src/tasks.rs`. `[tasks]` names, for live subtitles, captures (snapshot, region, scan, deep
+  dive), card meanings and the card's sentence translation, a connection (`local` = the model this PC runs, or the name
+  of a saved connection in `[llm].servers`) and optionally a model; plus a voice for reading and for cards. Before it,
+  card meanings silently used the "snapshot" model, which itself changed while live subtitles ran.
+* **Older files:** `derive` reads a file without the table as the routing it already had (`[llm] endpoint` → captures;
+  `[continuous.translation] model` → live; `snapshot_*` → captures while live is on), with **card meanings on this PC's
+  model** (the result of run 1's blind review) and the sentence translation left as the line has it. A server that was
+  only an address is saved under its host name. `migrate` writes that table into the text with `settings::patch`
+  (comments, order and the older keys stay), `migrate_file` first copies the file beside itself as
+  `config.toml.before-tasks-<UTC stamp>.bak`; both do nothing once `version = 1`. The app calls it at start-up
+  (`main.rs`), `maru config migrate [--dry-run]` from the command line; `maru config tasks` prints the table.
+* **How the engine reads it:** `tasks::apply` writes the capture connection back into the fields the capture and live
+  paths always read (`cfg.llm.endpoint/provider/api_key/model_name`, the snapshot server, the live model), so those
+  paths are unchanged; applying a derived table gives back exactly the older settings (tested). What that shape cannot
+  say goes to `maru-engine/src/routes.rs`: `Routes.live` (live subtitles on another connection than captures: asked in
+  `pipeline::live`, preloaded by `set_live_active`, held by `server_hold`, prepared by `model_controls`) and the card
+  routes. `bootstrap.rs` builds this PC's model client even when captures go to a server (one `ModelRuntime` owns it and
+  a translation-only live model, so only one of them is ever in memory). Command-line overrides (`--endpoint`,
+  `--no-llm`) call `Config::route_by_older_fields` first.
+* **Cards:** `routes::ask_in_order` asks the chosen connection, then this PC's model; `senses::line_senses` falls back to
+  the dictionary's first sense. Each failure is classified by `maru-llm/src/problem.rs` (`no_key`, `quota`,
+  `unreachable`, `failed`) into one plain sentence without status codes or server text; a quota error is never retried.
+  `MineSheet` gains `answered` (who gave the meanings), `attempts`, `retry` (connections to ask again with) and
+  `live_running`. **This PC's model is never loaded for a card while live subtitles run** (`Skipped::LiveRunning`,
+  nothing is sent): the sheet offers another connection now (`CardAsk.connection`) or the same request once live stops
+  (`CardAsk.after_live`, which waits). `Engine::card_sentence` translates a line for its card the same way.
+* **Status:** `Engine::task_status` (connection, model, where it runs, the last known state, the fallbacks) and
+  `Engine::test_task` (one short fixed question; it loads this PC's model except beside live subtitles). States:
+  `working`, `no_key`, `quota`, `unreachable`, `failed`, `unknown`, `not_loaded`, `off`.
+* **Commands:** `task_status`, `task_test(task)`, `mine_sentence_translation(sentence, app, ask?)`; `mine_sheet` takes an
+  optional `ask`. `tasks.card_*` and `llm.servers` apply without a restart (`Engine::reroute_cards`); the live and
+  capture connections hold models and servers and wait for one.
+* **Tests:** `tasks.rs` (derive, apply, the round trip, migration, backup, idempotence, a rewritten file, command-line
+  overrides), `problem.rs`, `routes.rs`, `tests/pipeline.rs` (quota → plain message and fallback, every connection
+  failing → dictionary, retry with a named connection, live running, queued until live stops, a translation-only live
+  model, live on its own connection, the Test button), `remote_model_tests.rs` (start-up from an older file and from a
+  task table). Real connections and the real config: M-42.
+
+### 4.9d Anthropic's own API, and measurements that leave no trace
+
+* **Provider `anthropic`** (`maru-core::external_servers::ServerProvider::Anthropic`, `maru-llm/src/anthropic.rs`): a
+  connection saved with it talks to `POST /v1/messages` (`x-api-key`, `anthropic-version`). The request puts the system
+  prompt in a block of its own marked `cache_control: ephemeral` and sends no sampling parameter (this API version refuses
+  them); `anthropic::events` turns the typed stream events into the client's (`text_delta` → text, `message_delta` → the
+  stop reason and the token count, `max_tokens` → a capped reply, `refusal` and `error` → an error). Thinking is switched
+  off for short answers by the same `auth::ClaudeThinking` steps as on the compatible endpoint (`disabled`, then
+  `between_tools` when the model's 400 names it). `LlmClient::tokens_used().cached_input` reports what the server read
+  from its prompt cache. **A connection saved as `openai` with Anthropic's address keeps using the OpenAI-compatible
+  endpoint**, unchanged. `maru … --connection "Claude+native=model"` asks such a connection through the Messages API
+  for one run, which is how the two were compared. Measured (run 2, 20 lines × 2 passes): no latency difference, and no
+  cache reads, because Maru's system prompts are shorter than the smallest cacheable prompt (512 tokens on the current
+  models). Tests: `anthropic.rs` (request shape, events, headers and route against the scripted server, the thinking
+  retry, missing key / 401 / 429 / 529 told apart), `settings-flow.test.mjs`. Real service: M-44.
+* **`BootOptions::read_only`** (additive): the saved history, the reading areas and the screen labels are neither opened
+  nor written; a run's lines stay in memory. `maru bench` boots with it, so a benchmark never adds to `history.db`.
+  Test: `remote_model_tests.rs::a_read_only_run_translates_live_lines_without_writing…`.
+
 ### 4.10 Setup wizard and installers (`maru setup`)
 * `maru-engine::hardware`: reads `nvidia-smi` and one PowerShell/CIM probe (GPUs, driver CUDA version, memory, free disk);
   parsers are separate from process calls and tested with real command output.
@@ -701,6 +857,10 @@ model), a `hint` for the prompts, `register`, `gloss_mode`, and Anki deck/tags.
 | `anki_flow.rs` | deck suggestions, tags, add flow |
 | `hybrid_ocr.rs` · `vlm_ocr.rs` · `vision.rs` · `respace.rs` | OCR second opinion and repair |
 | `hardware.rs` · `plan.rs` | what this PC has · what to install on it |
+| `routes.rs` | one model per task: the live route, the card routes with their fallbacks, per-task status and test |
+| `romanized.rs` | dictionary "equivalents" that are only the headword in Latin letters, and what a card shows instead |
+
+| `captions.rs` | caption lines from the browser extension: the loopback listener, its request and line rules, the code |
 | `resource_targets.rs` · `resource_monitor.rs` | owned process identities, demand-driven platform samples and bounded local resource sessions |
 
 ## 6. Contracts
@@ -719,6 +879,7 @@ request and drop events of older ids, which is how superseded requests are cance
 | scan correction | additive `ScanCorrection` (old item and replacement number) → `ScanItems` → `ScanLabel`? → `ScanLabelsFinished` → `Done`, under the scan's id |
 | scan separation | additive `ScanSeparated` (removed item and reserved next-item boundary) → `ScanItems` (original pieces with fresh IDs) → label/completion events → `Done`, under the scan's id |
 | live line | the translate events, without `Breakdown`/`Gloss` |
+| caption line | as a live line; `Started.capture.source` is `caption` (additive `CaptureSource::Caption`, last variant) and its program is `youtube` |
 
 Rules for changing events: **add variants, do not repurpose or reorder existing ones**; every consumer must tolerate a variant it
 does not know (the overlay ignores unknown `type`s); update `Event::id`, the round-trip test in `event.rs`, `app/ui` consumers and
@@ -787,6 +948,13 @@ Card meanings in two languages are additive: `MineWord` (`meaning_es`, `source`,
 sense_coverage}`. No setting is added: the feature is on when `nikl.db` exists. `mine_sheet` / `mine_add` keep their names
 and arguments.
 
+`[tasks]` is additive (§4.9c): `Config::tasks` defaults to version 0, which means "the older settings decide"; no older
+key is renamed or repurposed, and a file without the table behaves as before except that card meanings ask this PC's
+model. `EngineParts` is unchanged: routes are set with `Engine::set_routes` (an engine without them, as in most tests,
+asks the capture model for card meanings as before). Additive: `Engine::{set_routes, reroute_cards, task_status,
+test_task, card_retry_options, card_sentence, mine_sheet_with, live_active}`, `MineSheet::{answered, attempts, retry,
+live_running}`, `LlmClient::has_key`, `maru_llm::problem`.
+
 ### 6.3 Shell ↔ pages
 * **Saved reading areas:** additive `reading_status`, `reading_create(name,areaId?)`, `reading_select(areaId)`,
   `reading_rename(areaId,name)`, `reading_remove(areaId)`, `reading_read`, `reading_auto(enabled)`,
@@ -829,6 +997,11 @@ and arguments.
 * **Resource commands:** `resource_status` returns cached readings with optional values/timestamps, enable/recording state,
   log path, queue counts and diagnostics; `resource_enable(enabled)` pauses/resumes, `resource_record(enabled)` starts/stops
   recording. These commands do not change persistent config. `resources` is an additive hub tab / launcher action ID.
+* **Tasks and connections (run 2):** `task_status` → `[{task, connection, model, place, state, message, fallbacks}]`;
+  `task_test(task)` → one of those after asking; `connection_check(name, endpoint, modelName, reasoningEffort?, provider?,
+  apiKey?)` → `{state, message, endpoint}` with `state` one of `working`, `no_key`, `quota`, `unreachable`, `failed`,
+  `input`; `mine_sentence_translation(sentence, app, ask?)`; `mine_sheet(…, ask?)` with `ask = {connection?, after_live?}`.
+  `status` adds `learner_dictionary`. All additive.
 * **Connection check:** `test_model_connection(endpoint, modelName, reasoningEffort)` returns `{endpoint, reply, took_ms}`
   or a plain-language error for a fixed-text external request. Results remain transient in Settings; no persistence is added.
   It accepts additive optional `provider` and `apiKey` arguments; legacy callers remain unauthenticated OpenAI-compatible.
@@ -849,6 +1022,8 @@ feedback adds no setting or database field; normal translation cache/history ret
 |---|---|---|
 | `config.toml` (config dir) | `maru-core::config`, `settings.rs` | every setting; comments are preserved on edit |
 | `config.toml` saved servers | `maru-core::external_servers`, settings | `[llm].servers` named connections and their plaintext keys; active main/snapshot provider/key fields are independent; no new database |
+| `config.toml` `[tasks]` and `config.toml.before-tasks-<stamp>.bak` (config dir) | `maru-core::tasks` | which connection and model each task uses; written once into an older file, after a copy of that file is saved beside it |
+| `config.toml` `[captions]` | `maru-core::captions`, `app/src-tauri/captions.rs` | the switch, port and the plaintext code the browser extension must send (written by Maru when first switched on); caption lines themselves are `live_lines` rows of `history.db` with the program `youtube` |
 | `launcher-position.json` | `app/src-tauri/launcher.rs` | collapsed floating window top-left in physical pixels; clamped to an available monitor on startup |
 | `history.db` | `maru-engine::history_store` | additive `live_lines`: each live subtitle line once (session, times, game executable, Korean, translation, timings, `starred`, `mined`); starred rows are kept for study, no images; `mined` is added to older files at open |
 | `reading-areas.db` | `maru-engine::reading_store` | additive `reading_areas`: names and game/executable metadata, normalized client rectangle, reference size and selected area per executable; no captured text or images |

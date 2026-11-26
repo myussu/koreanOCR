@@ -24,6 +24,10 @@ pub struct Config {
     pub continuous: ContinuousConfig,
     pub capture: CaptureConfig,
     pub tts: TtsConfig,
+    /// Which connection and model each task uses (`tasks.rs`). Without it the older settings decide.
+    pub tasks: crate::tasks::TasksConfig,
+    /// Captions sent by the browser extension (`captions.rs`). Off unless switched on.
+    pub captions: crate::captions::CaptionsConfig,
     #[serde(rename = "profile")]
     pub profiles: Vec<AppProfile>,
 }
@@ -337,6 +341,18 @@ pub struct AnkiConfig {
     pub auto_tags: bool,
     /// How often to read your progress back from Anki (minutes; 0 = only at start-up).
     pub refresh_minutes: u32,
+    /// The deck sentence cards go to. Empty: the same deck as word cards.
+    pub sentence_deck: String,
+    /// New word cards you study a day. Maru's own number, used only to say when the cards you add would come up:
+    /// AnkiConnect cannot see a deck's limit overrides, so Anki's limits are neither read nor changed.
+    pub new_words_per_day: u32,
+    /// The same for sentence cards.
+    pub new_sentences_per_day: u32,
+    /// Offer a deck per program (`Korean::Games::<name>`) when adding. Off: the program is only a tag.
+    pub suggest_app_decks: bool,
+    /// Let the model that chooses card meanings also correct a word's dictionary form (dialect, misread text); the
+    /// sheet then shows both forms. Off by default: it changes the prompt, and with it which senses a small model picks.
+    pub correct_forms: bool,
 }
 
 impl Default for AnkiConfig {
@@ -355,6 +371,11 @@ impl Default for AnkiConfig {
             tags: vec!["maru".into()],
             auto_tags: true,
             refresh_minutes: 30,
+            sentence_deck: String::new(),
+            new_words_per_day: 3,
+            new_sentences_per_day: 1,
+            suggest_app_decks: false,
+            correct_forms: false,
         }
     }
 }

@@ -1466,7 +1466,7 @@ async fn a_mined_word_card_shows_this_line_and_the_chosen_meaning_and_the_line_b
     // A newer sentence for the word must not take the place of the line being mined.
     let later = maru_srs::now_secs() + 100;
     h.vocab.record_lookup(&maru_srs::LookupInfo { key: "학교".into(), surface: "학교".into(), context: Some(maru_srs::Context { sentence: "학교에 가요".into(), ..Default::default() }), ..Default::default() }, later).unwrap();
-    let line = MineLine { sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: Some("game.exe".into()), deck: "Korean::Games".into(), reverse: maru_core::config::ReverseMode::Subdeck };
+    let line = MineLine { sentence_deck: None, sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: Some("game.exe".into()), deck: "Korean::Games".into(), reverse: maru_core::config::ReverseMode::Subdeck };
     let choice = MineChoice { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), level: Some("TOPIK 1".into()), meaning: "school (where I studied)".into(), meaning_es: String::new() };
     let permit = h.engine.begin_mine_word(&line, &choice).await.unwrap();
     assert!(matches!(h.engine.finish_mine_word(permit, &line, &choice, None, None).await.unwrap(), AnkiAdded::Added { .. }));
@@ -1490,7 +1490,7 @@ async fn a_mined_word_card_shows_this_line_and_the_chosen_meaning_and_the_line_b
 async fn a_word_without_a_meaning_is_refused_before_anything_reaches_anki() {
     use maru_engine::mining::{MineChoice, MineLine};
     let h = mining_harness(spawn_mock(ankiconnect).await);
-    let line = MineLine { sentence: SENTENCE.into(), translation: String::new(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
+    let line = MineLine { sentence_deck: None, sentence: SENTENCE.into(), translation: String::new(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
     let choice = MineChoice { key: "공부하다".into(), surface: "공부했어요".into(), pos: String::new(), level: None, meaning: "  ".into(), meaning_es: String::new() };
     let err = h.engine.begin_mine_word(&line, &choice).await.err().expect("refused").to_string();
     assert!(err.contains("needs a meaning"), "{err}");
@@ -1594,6 +1594,7 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
     cfg.learning.anki.enabled = true;
     cfg.learning.anki.note_type = "Basic".into(); // an old config: it is replaced by our own note type
     cfg.learning.anki.url = anki.url.clone();
+    cfg.learning.anki.suggest_app_decks = true; // decks per program are an option now; off by default
     let h = build(cfg, None, None);
     h.vocab.record_lookup(&maru_srs::LookupInfo { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), meaning: Some("school".into()), level: Some("TOPIK 1".into()), context: None }, 100).unwrap();
 
@@ -1601,7 +1602,7 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
     assert!(before.connected && before.existing.is_none());
     assert_eq!(before.suggestions.first().map(|s| s.deck.as_str()), Some("Korean::Hades"), "named after the program the first time");
     assert!(before.suggestions.iter().any(|s| s.deck == "Korean" && s.exists));
-    assert!(before.tags.contains(&"app::hades".to_string()) && before.tags.contains(&"topik-1".to_string()), "{:?}", before.tags);
+    assert!(before.tags.contains(&"maru::hades".to_string()) && before.tags.contains(&"topik-1".to_string()), "{:?}", before.tags);
 
     let opts = AnkiAddOptions { meaning_es: None, context: None, key: "학교".into(), deck: " Korean :: Games ".into(), tags: before.tags.clone(), reverse: before.reverse, app: Some("hades.exe".into()), word_audio: None, sentence_audio: None };
     let added = h.engine.anki_add(opts).await.unwrap();
@@ -2162,7 +2163,7 @@ async fn a_sense_number_the_word_does_not_have_or_no_model_at_all_leaves_the_fir
 async fn a_card_made_from_the_sheet_carries_the_spanish_meaning_and_the_sentence_card_lists_both() {
     use maru_engine::mining::{MineChoice, MineLine};
     let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
-    let line = MineLine { sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
+    let line = MineLine { sentence_deck: None, sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
     let choice = MineChoice { key: "저".into(), surface: "저는".into(), pos: "pronoun".into(), level: None, meaning: "I; me".into(), meaning_es: " yo ".into() };
     let permit = h.engine.begin_mine_word(&line, &choice).await.unwrap();
     h.engine.finish_mine_word(permit, &line, &choice, None, None).await.unwrap();
@@ -2199,4 +2200,532 @@ async fn coverage_counts_the_words_the_dictionary_has_and_those_that_need_no_mod
     assert_eq!((c.distinct, c.distinct_found, c.distinct_one_sense), (4, 3, 2), "{c:?}");
     assert_eq!(c.lines_without_model, 1, "only the first line needs no model at all");
     assert!(build(Config::default(), None, None).engine.sense_coverage(&lines).is_err(), "without the dictionary there is nothing to measure");
+}
+
+// ───────────── one model per task: card meanings ask a connection, then this PC's model, then the dictionary ─────────────
+
+use maru_engine::routes::{CardAsk, Place, Route, Routes, Skipped, State};
+
+fn route_to(name: &str, url: &str) -> Route {
+    let place = if name == "local" { Place::ThisPc } else { Place::Hosted };
+    Route { connection: name.into(), model: format!("{name}-model"), place, client: LlmClient::new(url, &Config::default().llm) }
+}
+
+/// A hosted service whose account has nothing left, answering the way Gemini does.
+fn out_of_quota(_path: &str, _body: &str) -> MockResponse {
+    let body = br#"{"error":{"code":429,"message":"You exceeded your current quota, please check your plan and billing details.","status":"RESOURCE_EXHAUSTED"}}"#;
+    MockResponse { status: 429, chunks: vec![body.to_vec()], delay_ms: 0 }
+}
+
+/// Nothing listens here: a server that is switched off.
+const NOWHERE: &str = "http://127.0.0.1:9";
+
+/// A cards sheet with the learner's dictionary whose meanings are asked of `order`; `home` is Anki (and the capture model).
+fn card_harness(home: MockServer, order: Vec<Route>) -> Harness {
+    let h = with_learners_dictionary(mining_harness(home));
+    h.engine.set_routes(Routes { card_meanings: order.clone(), all: order, ..Default::default() });
+    h
+}
+
+fn card_status(h: &Harness) -> maru_engine::routes::TaskStatus {
+    h.engine.task_status().into_iter().find(|s| s.task == maru_core::tasks::Task::CardMeanings).unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_out_of_quota_is_named_in_plain_words_and_this_pcs_model_answers_instead() {
+    use maru_engine::senses::MeaningSource;
+    let gemini = spawn_mock(out_of_quota).await;
+    let local = spawn_mock(sense_server("0|2\n")).await;
+    let order = vec![route_to("Gemini", &gemini.url), route_to("local", &local.url)];
+    let h = card_harness(local, order);
+    assert_eq!(card_status(&h).state, State::Unknown, "nothing is known before the first request");
+
+    let sheet = h.engine.mine_sheet(SENTENCE, "I studied at school.", None).await.unwrap();
+    let me = sheet.words.iter().find(|w| w.key == "저").unwrap();
+    assert_eq!((me.meaning.as_str(), me.meaning_es.as_str(), me.source), ("that", "ese; aquel", Some(MeaningSource::Chosen)), "the fallback's choice is used");
+    let answered = sheet.answered.as_ref().expect("the sheet says who answered");
+    assert_eq!((answered.connection.as_str(), answered.model.as_str(), answered.place), ("local", "local-model", Place::ThisPc));
+    assert_eq!(sheet.attempts.iter().map(|a| (a.connection.as_str(), a.problem)).collect::<Vec<_>>(), [("Gemini", Skipped::Quota)]);
+    assert_eq!(sheet.note.as_deref(), Some("Gemini has no quota left. This PC's model answered instead."));
+    assert_eq!(gemini.requests.lock().unwrap().len(), 1, "asked once: a quota error is never retried");
+
+    let status = card_status(&h);
+    assert_eq!((status.connection.as_str(), status.state, status.message.as_str()), ("Gemini", State::Quota, "Gemini has no quota left."));
+    assert_eq!(status.fallbacks, ["This PC's model", "the dictionary"]);
+    assert_eq!(sheet.retry.iter().map(|r| r.connection.as_str()).collect::<Vec<_>>(), ["Gemini", "local"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn when_no_connection_answers_the_dictionary_is_used_and_the_sheet_says_who_failed_without_server_text() {
+    use maru_engine::senses::MeaningSource;
+    let gemini = spawn_mock(out_of_quota).await;
+    let h = card_harness(spawn_mock(ankiconnect).await, vec![route_to("Gemini", &gemini.url), route_to("NAS", NOWHERE)]);
+    let sheet = h.engine.mine_sheet(SENTENCE, "I studied at school.", None).await.unwrap();
+    let me = sheet.words.iter().find(|w| w.key == "저").unwrap();
+    assert_eq!((me.meaning.as_str(), me.source), ("I; me", Some(MeaningSource::FirstSense)));
+    assert!(sheet.answered.is_none());
+    assert_eq!(sheet.attempts.iter().map(|a| a.problem).collect::<Vec<_>>(), [Skipped::Quota, Skipped::Unreachable]);
+    let note = sheet.note.unwrap();
+    assert!(note.starts_with("Gemini has no quota left. NAS cannot be reached. The dictionary was used."), "{note}");
+    assert!(note.contains("check that each fits"), "{note}");
+    for raw in ["429", "RESOURCE_EXHAUSTED", "{", "HTTP", "127.0.0.1"] {
+        assert!(!note.contains(raw), "no server text in what the person reads: {note}");
+    }
+    assert!(sheet.words.iter().all(|w| !w.meaning.is_empty()), "every word still has a meaning to make a card from");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_can_be_asked_again_with_one_named_connection() {
+    let nas = spawn_mock(sense_server("0|2\n")).await;
+    let local = spawn_mock(sense_server("0|1\n")).await;
+    let order = vec![route_to("local", &local.url)];
+    let h = with_learners_dictionary(mining_harness(local));
+    h.engine.set_routes(Routes { card_meanings: order.clone(), all: vec![order[0].clone(), route_to("NAS", &nas.url)], ..Default::default() });
+    let first = h.engine.mine_sheet(SENTENCE, "", None).await.unwrap();
+    assert_eq!(first.answered.as_ref().map(|a| a.connection.as_str()), Some("local"));
+    assert_eq!(first.words.iter().find(|w| w.key == "저").unwrap().meaning, "I; me");
+
+    let again = h.engine.mine_sheet_with(SENTENCE, "", None, &CardAsk { connection: Some("nas".into()), after_live: false }).await.unwrap();
+    assert_eq!(again.answered.as_ref().map(|a| a.connection.as_str()), Some("NAS"));
+    assert_eq!(again.words.iter().find(|w| w.key == "저").unwrap().meaning, "that", "the other connection's choice");
+    assert!(again.attempts.is_empty() && again.note.is_none());
+    assert_eq!(nas.requests.lock().unwrap().len(), 1);
+
+    // A connection that is not there any more answers nothing; the dictionary stands in.
+    let gone = h.engine.mine_sheet_with(SENTENCE, "", None, &CardAsk { connection: Some("Removed".into()), after_live: false }).await.unwrap();
+    assert!(gone.answered.is_none() && gone.note.is_some());
+}
+
+/// This PC's model behind a runtime that has loaded nothing.
+fn unloaded_local(url: &str) -> Route {
+    let cfg = Config::default();
+    let (status, _) = tokio::sync::watch::channel(maru_llm::LlmStatus::Disabled);
+    let runtime = maru_llm::model_runtime::ModelRuntime::new(Some(cfg.llm.clone()), cfg.llm.clone(), maru_core::Paths::under(&std::env::temp_dir()), status);
+    Route { client: LlmClient::new(url, &cfg.llm).with_runtime(runtime, maru_llm::model_runtime::ModelRole::Main), ..route_to("local", url) }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn this_pcs_model_is_never_loaded_for_a_card_while_live_subtitles_run_and_the_sheet_offers_what_can_answer_now() {
+    use maru_engine::senses::MeaningSource;
+    let nas = spawn_mock(sense_server("0|2\n")).await;
+    let local = spawn_mock(sense_server("0|1\n")).await;
+    let order = vec![unloaded_local(&local.url)];
+    let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
+    h.engine.set_routes(Routes { card_meanings: order.clone(), all: vec![order[0].clone(), route_to("NAS", &nas.url)], ..Default::default() });
+    h.engine.set_live_active(true);
+
+    let sheet = h.engine.mine_sheet(SENTENCE, "", None).await.unwrap();
+    assert!(sheet.live_running);
+    assert_eq!(sheet.attempts.iter().map(|a| (a.connection.as_str(), a.problem)).collect::<Vec<_>>(), [("local", Skipped::LiveRunning)]);
+    assert!(local.requests.lock().unwrap().is_empty(), "nothing was sent to (or loaded on) this PC's model");
+    let me = sheet.words.iter().find(|w| w.key == "저").unwrap();
+    assert_eq!(me.source, Some(MeaningSource::FirstSense), "the dictionary stands in meanwhile");
+    assert!(sheet.note.as_deref().is_some_and(|n| n.starts_with("This PC's model is not loaded while live subtitles run.")), "{:?}", sheet.note);
+    let offers: Vec<(&str, bool)> = sheet.retry.iter().map(|r| (r.connection.as_str(), r.after_live)).collect();
+    assert_eq!(offers, [("local", true), ("NAS", false)], "another connection now, or this PC's model once live stops");
+
+    // Chosen from the offer: the other connection answers while live subtitles keep running.
+    let now = h.engine.mine_sheet_with(SENTENCE, "", None, &CardAsk { connection: Some("NAS".into()), after_live: false }).await.unwrap();
+    assert_eq!(now.answered.as_ref().map(|a| a.connection.as_str()), Some("NAS"));
+    assert_eq!(now.words.iter().find(|w| w.key == "저").unwrap().meaning, "that");
+    assert!(local.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_queued_until_live_subtitles_stop_is_answered_by_this_pcs_model_then() {
+    let local = spawn_mock(sense_server("0|2\n")).await;
+    let order = vec![route_to("local", &local.url)];
+    let h = card_harness(local, order);
+    h.engine.set_live_active(true);
+    let engine = h.engine.clone();
+    let waiting = tokio::spawn(async move { engine.mine_sheet_with(SENTENCE, "", None, &CardAsk { connection: None, after_live: true }).await });
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    assert!(!waiting.is_finished(), "the line waits while live subtitles run");
+    assert!(model_requests(&h).is_empty());
+    h.engine.set_live_active(false);
+    let sheet = tokio::time::timeout(Duration::from_secs(5), waiting).await.expect("answered once live stopped").unwrap().unwrap();
+    assert!(!sheet.live_running);
+    assert_eq!(sheet.answered.as_ref().map(|a| a.connection.as_str()), Some("local"));
+    assert_eq!(sheet.words.iter().find(|w| w.key == "저").unwrap().meaning, "that");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn card_meanings_have_their_own_connection_whether_live_subtitles_are_on_and_whatever_translates_them() {
+    // Live subtitles on a translation-only local model: before, the sheet got no meanings in context while they ran.
+    let cards = spawn_mock(sense_server("0|2\n")).await;
+    let live = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["live answer"]), delay_ms: 0 }).await;
+    let server = spawn_mock(ankiconnect).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    cfg.learning.anki.sync_after_add = false;
+    cfg.continuous.translation.model = maru_core::live_model::LiveModel::Lfm;
+    let live_llm = LlmClient::new(&live.url, &cfg.llm);
+    let h = with_learners_dictionary(build_with_live(cfg, None, Some(server), Some(live_llm)));
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("NAS", &cards.url)], all: vec![route_to("NAS", &cards.url)], ..Default::default() });
+    for on in [true, false] {
+        h.engine.set_live_active(on);
+        let sheet = h.engine.mine_sheet(SENTENCE, "", None).await.unwrap();
+        assert_eq!(sheet.answered.as_ref().map(|a| a.connection.as_str()), Some("NAS"), "live on: {on}");
+        assert_eq!(sheet.words.iter().find(|w| w.key == "저").unwrap().meaning, "that");
+        assert!(sheet.note.is_none(), "{:?}", sheet.note);
+    }
+    assert!(live.requests.lock().unwrap().is_empty(), "the live translator is never asked for meanings");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn live_subtitles_with_their_own_connection_ask_it_and_not_the_capture_model() {
+    let capture = spawn_mock(model).await;
+    let live = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["From the live connection."]), delay_ms: 0 }).await;
+    let cfg = Config::default();
+    let h = build(cfg.clone(), Some(LlmClient::new(&capture.url, &cfg.llm)), Some(capture));
+    h.engine.set_routes(Routes { live: Some(route_to("NAS", &live.url)), ..Default::default() });
+    let events = collect(h.engine.translate_live(live_line(SENTENCE)).1).await;
+    assert_eq!(text_of(&events, Variant::Primary), "From the live connection.");
+    assert_eq!(live.requests.lock().unwrap().len(), 1);
+    assert!(h.requests().is_empty(), "the capture model was not asked for the live line");
+
+    // A capture still goes to the capture model.
+    let events = collect(h.engine.translate(Capture::typed(SENTENCE)).1).await;
+    assert_eq!(text_of(&events, Variant::Primary), "I studied at school.");
+    assert_eq!(live.requests.lock().unwrap().len(), 1);
+
+    let status = h.engine.task_status();
+    let live_status = status.iter().find(|s| s.task == maru_core::tasks::Task::Live).unwrap();
+    assert_eq!((live_status.connection.as_str(), live_status.model.as_str()), ("NAS", "NAS-model"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_test_button_reports_a_working_connection_one_out_of_quota_and_one_that_is_off() {
+    use maru_core::tasks::Task;
+    let working = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["안녕하세요"]), delay_ms: 0 }).await;
+    let h = card_harness(spawn_mock(ankiconnect).await, vec![route_to("NAS", &working.url)]);
+    let status = h.engine.test_task(Task::CardMeanings).await;
+    assert_eq!(status.state, State::Working);
+    assert!(status.message.starts_with("NAS answered in "), "{}", status.message);
+    assert_eq!(card_status(&h).state, State::Working, "remembered for the settings page");
+
+    let gemini = spawn_mock(out_of_quota).await;
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("Gemini", &gemini.url)], ..Default::default() });
+    let status = h.engine.test_task(Task::CardMeanings).await;
+    assert_eq!((status.state, status.message.as_str()), (State::Quota, "Gemini has no quota left."));
+
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("NAS", NOWHERE)], ..Default::default() });
+    let status = h.engine.test_task(Task::CardMeanings).await;
+    assert_eq!((status.state, status.message.as_str()), (State::Unreachable, "NAS cannot be reached."));
+
+    // The sentence translation makes no request until a connection is chosen for it.
+    let sentence = h.engine.test_task(Task::CardSentence).await;
+    assert_eq!(sentence.state, State::Off);
+
+    // This PC's model is not loaded by the button while live subtitles run.
+    let local = spawn_mock(model).await;
+    h.engine.set_routes(Routes { card_meanings: vec![unloaded_local(&local.url)], ..Default::default() });
+    h.engine.set_live_active(true);
+    let status = h.engine.test_task(Task::CardMeanings).await;
+    assert_eq!(status.state, State::NotLoaded);
+    assert!(local.requests.lock().unwrap().is_empty());
+}
+
+// ───────────── Make cards: two decks, the program as a tag, the queue, Spanish from the panel ─────────────
+
+/// AnkiConnect with new cards already waiting: 12 in the word deck, 5 in the sentence deck.
+fn anki_with_queues(path: &str, body: &str) -> MockResponse {
+    let req: serde_json::Value = serde_json::from_str(body).unwrap_or_default();
+    if req["action"] == "findCards" {
+        // The client escapes the colons of a deck name for Anki's search.
+        let query = req["params"]["query"].as_str().unwrap_or_default().replace('\\', "");
+        let waiting = if query.contains("is:new") && query.contains("deck:Korean::Words") { 12 } else if query.contains("is:new") && query.contains("deck:Korean::Sentences") { 5 } else { 0 };
+        let cards: Vec<u64> = (0..waiting).collect();
+        return MockResponse { status: 200, chunks: vec![serde_json::json!({ "result": cards, "error": null }).to_string().into_bytes()], delay_ms: 0 };
+    }
+    ankiconnect(path, body)
+}
+
+async fn two_deck_harness(handler: impl Fn(&str, &str) -> MockResponse + Send + Sync + 'static) -> Harness {
+    let server = spawn_mock(handler).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    cfg.learning.anki.sync_after_add = false;
+    cfg.learning.anki.deck = "Korean::Words".into();
+    cfg.learning.anki.sentence_deck = "Korean::Sentences".into();
+    cfg.learning.anki.reverse = maru_core::config::ReverseMode::Off;
+    with_learners_dictionary(build(cfg, None, Some(server)))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_sheet_names_a_deck_for_words_and_one_for_sentences_and_counts_the_new_cards_waiting_in_each() {
+    let h = two_deck_harness(anki_with_queues).await;
+    let sheet = h.engine.mine_sheet("학교에서 공부했어요", "I studied at school.", Some("eldenring.exe")).await.unwrap();
+    assert_eq!((sheet.word_deck.as_str(), sheet.sentence_deck.as_str()), ("Korean::Words", "Korean::Sentences"));
+    let queue = sheet.queue.expect("Anki answered, so the queue is known");
+    assert_eq!((queue.words.deck.as_str(), queue.words.waiting, queue.words.per_day), ("Korean::Words", 12, 3));
+    assert_eq!((queue.sentences.deck.as_str(), queue.sentences.waiting, queue.sentences.per_day), ("Korean::Sentences", 5, 1));
+    assert_eq!(maru_engine::mining::comes_up(queue.words.waiting, 2, queue.words.per_day), Some((4, 4)), "two words behind twelve at three a day");
+    assert_eq!(maru_engine::mining::comes_up(queue.sentences.waiting, 1, queue.sentences.per_day), Some((5, 5)));
+
+    // The program is not a deck any more: the configured deck comes first and nothing is named after the game.
+    assert_eq!(sheet.suggestions.first().map(|s| s.deck.as_str()), Some("Korean::Words"));
+    assert!(sheet.suggestions.iter().all(|s| !s.deck.contains("Eldenring")), "{:?}", sheet.suggestions);
+
+    // Only reads: the count is a search, and no deck, note or card was created or changed for it.
+    let actions: Vec<String> = h.requests().iter().filter_map(|b| serde_json::from_str::<serde_json::Value>(b).ok()).filter_map(|v| v["action"].as_str().map(str::to_owned)).collect();
+    assert!(actions.iter().all(|a| ["version", "deckNames", "findNotes", "findCards", "notesInfo", "cardsInfo", "modelNames", "modelFieldNames", "modelStyling"].contains(&a.as_str())), "{actions:?}");
+    let searches: Vec<String> = h.requests().iter().filter(|b| b.contains("is:new")).cloned().collect();
+    assert!(searches.iter().all(|b| b.contains("-is:suspended")), "suspended cards do not wait: {searches:?}");
+
+    // With an empty sentence deck, sentences go where words go.
+    let server = spawn_mock(anki_with_queues).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    cfg.learning.anki.deck = "Korean::Words".into();
+    let sheet = build(cfg, None, Some(server)).engine.mine_sheet("학교에서 공부했어요", "", None).await.unwrap();
+    assert_eq!(sheet.sentence_deck, "Korean::Words");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn word_cards_and_the_sentence_card_go_to_their_own_decks_and_the_program_is_a_tag() {
+    use maru_engine::mining::{MineChoice, MineLine, MinedSentence};
+    let h = two_deck_harness(ankiconnect).await;
+    let line = MineLine { sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: Some("eldenring.exe".into()), deck: "Korean::Words".into(), reverse: maru_core::config::ReverseMode::Off, sentence_deck: Some("Korean::Sentences".into()) };
+    let word = MineChoice { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), level: None, meaning: "school".into(), meaning_es: "escuela".into() };
+    let permit = h.engine.begin_mine_word(&line, &word).await.unwrap();
+    h.engine.finish_mine_word(permit, &line, &word, None, None).await.unwrap();
+    assert_eq!(h.engine.mine_sentence(&line, std::slice::from_ref(&word), None).await.unwrap(), MinedSentence::Added { deck: "Korean::Sentences".into() });
+
+    let notes = added_notes(&h);
+    assert_eq!(notes.len(), 2);
+    let (word_note, sentence_note) = (&notes[0], &notes[1]);
+    assert_eq!(sentence_note["deckName"], "Korean::Sentences");
+    for note in [word_note, sentence_note] {
+        let tags: Vec<&str> = note["tags"].as_array().unwrap().iter().filter_map(|t| t.as_str()).collect();
+        assert!(tags.contains(&"maru::eldenring"), "the program is a tag: {tags:?}");
+        assert!(!tags.iter().any(|t| t.starts_with("app::")), "the older tag is not written any more: {tags:?}");
+        assert!(!note["deckName"].as_str().unwrap_or_default().contains("Eldenring"), "and never a subdeck");
+    }
+    // A line without its own sentence deck keeps the words' deck, as before.
+    let same = MineLine { sentence: "학교에 갑니다".into(), sentence_deck: None, ..line.clone() };
+    assert_eq!(h.engine.mine_sentence(&same, &[], None).await.unwrap(), MinedSentence::Added { deck: "Korean::Words".into() });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn by_default_a_program_is_not_offered_as_a_deck_and_its_tag_is_maru_its_name() {
+    let anki = spawn_mock(ankiconnect).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = anki.url.clone();
+    let h = build(cfg, None, None);
+    h.vocab.record_lookup(&maru_srs::LookupInfo { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), meaning: Some("school".into()), level: Some("TOPIK 1".into()), context: None }, 100).unwrap();
+    let overview = h.engine.anki_overview("학교", Some("hades.exe")).await.unwrap();
+    assert_eq!(overview.suggestions.first().map(|s| (s.deck.as_str(), s.reason.as_str())), Some(("Korean", "your deck for word cards")));
+    assert!(overview.suggestions.iter().all(|s| !s.deck.contains("Hades")), "{:?}", overview.suggestions);
+    assert!(overview.tags.contains(&"maru::hades".to_string()) && !overview.tags.iter().any(|t| t.starts_with("app::")), "{:?}", overview.tags);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_word_with_several_senses_added_from_the_panel_gets_the_spanish_of_the_sense_that_fits_its_sentence() {
+    use maru_engine::anki_flow::AnkiAddOptions;
+    // 저 has two senses; asked with the sentence it was seen in, the connection names the second.
+    let cards = spawn_mock(sense_server("0|2\n")).await;
+    let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("local", &cards.url)], all: vec![route_to("local", &cards.url)], ..Default::default() });
+    let context = maru_srs::Context { sentence: "저 사람은 학생이에요".into(), translation: Some("That person is a student.".into()), app: None, screenshot: None };
+    h.vocab.record_lookup(&maru_srs::LookupInfo { key: "저".into(), surface: "저".into(), pos: "pronoun".into(), meaning: Some("that".into()), level: None, context: Some(context) }, 100).unwrap();
+    let opts = AnkiAddOptions { meaning_es: None, context: None, key: "저".into(), deck: "Korean".into(), tags: vec![], reverse: maru_core::config::ReverseMode::Off, app: None, word_audio: None, sentence_audio: None };
+    h.engine.anki_add(opts.clone()).await.unwrap();
+    let note = added_notes(&h).pop().unwrap();
+    assert_eq!(note["fields"]["MeaningEs"], "ese; aquel", "the sense chosen for the sentence, not the first one");
+    let asked = cards.requests.lock().unwrap().iter().map(|(_, b)| b.clone()).collect::<Vec<_>>();
+    assert_eq!(asked.len(), 1, "one short request");
+    assert!(asked[0].contains("저 사람은 학생이에요") && asked[0].contains("1) I; me") && asked[0].contains("2) that"), "{}", asked[0]);
+
+    // Nobody can choose (the connection is off): the Spanish stays empty rather than guessing the first sense.
+    let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("NAS", NOWHERE)], ..Default::default() });
+    let context = maru_srs::Context { sentence: "저 사람은 학생이에요".into(), translation: None, app: None, screenshot: None };
+    h.vocab.record_lookup(&maru_srs::LookupInfo { key: "저".into(), surface: "저".into(), pos: "pronoun".into(), meaning: Some("that".into()), level: None, context: Some(context) }, 100).unwrap();
+    h.engine.anki_add(opts).await.unwrap();
+    assert_eq!(added_notes(&h).pop().unwrap()["fields"]["MeaningEs"], "");
+}
+
+// ───────────── the dictionary on cards: romanized equivalents, words with many senses, a corrected form ─────────────
+
+/// A learner's dictionary with a romanized equivalent that has a gloss (국), one that has nothing else (녀석),
+/// and a word with twelve senses (일).
+fn tricky_dictionary() -> Arc<maru_dict::Nikl> {
+    let many: Vec<String> = (1..=12).map(|k| format!(r#"{{"en":"sense {k}","es":"acepción {k}"}}"#)).collect();
+    let file = format!(
+        "{}\n{}\n{}\n{}\n",
+        r#"{"w":"국","h":0,"p":"명사","l":"초급","s":[{"en":"guk","es":"guk, sopa","end":"soup: A dish made by boiling meat."}]}"#,
+        r#"{"w":"녀석","h":0,"p":"의존 명사","l":"","s":[{"en":"nyeoseok","end":"A bound noun used to refer to a man."}]}"#,
+        format_args!(r#"{{"w":"일","h":0,"p":"명사","l":"초급","s":[{}]}}"#, many.join(",")),
+        r#"{"w":"학교","h":0,"p":"명사","l":"초급","s":[{"en":"school","es":"escuela"}]}"#,
+    );
+    let nikl = maru_dict::Nikl::open_in_memory().unwrap();
+    nikl.import_jsonl(Cursor::new(file)).unwrap();
+    Arc::new(nikl)
+}
+
+/// The model and AnkiConnect on one server; the model answers a card request with what `answer` gives for its body.
+fn card_server(answer: impl Fn(&str) -> &'static str + Send + Sync + 'static) -> impl Fn(&str, &str) -> MockResponse + Send + Sync + 'static {
+    move |path, body| {
+        if !path.contains("chat/completions") {
+            return ankiconnect(path, body);
+        }
+        MockResponse { status: 200, chunks: sse_answer(&[answer(body)]), delay_ms: 0 }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bare_romanization_is_never_a_card_meaning() {
+    use maru_engine::senses::MeaningSource;
+    let h = mining_harness(spawn_mock(card_server(|_| "1|0|guy|tipo\n")).await);
+    h.engine.set_learner_dictionary(tricky_dictionary());
+    let sheet = h.engine.mine_sheet("국 녀석", "", None).await.unwrap();
+    let word = |key: &str| sheet.words.iter().find(|w| w.key == key).unwrap_or_else(|| panic!("{key} in {:?}", sheet.words));
+
+    // 국 → "guk" in the dictionary, with "soup:" at the start of the definition: the gloss, and the Spanish without "guk".
+    assert_eq!((word("국").meaning.as_str(), word("국").meaning_es.as_str(), word("국").source), ("soup", "sopa", Some(MeaningSource::OneSense)));
+    // 녀석 → only "nyeoseok": nothing usable, so a model words it like a word the dictionary lacks.
+    assert_eq!((word("녀석").meaning.as_str(), word("녀석").meaning_es.as_str(), word("녀석").source), ("guy", "tipo", Some(MeaningSource::Model)));
+    for w in &sheet.words {
+        assert!(!["guk", "nyeoseok"].contains(&w.meaning.as_str()) && !w.dictionary.iter().any(|d| d == "guk" || d == "nyeoseok"), "{w:?}");
+    }
+    let asked = model_requests(&h);
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].contains("녀석") && !asked[0].contains("nyeoseok") && !asked[0].contains("guk"), "the romanization is not offered to the model either: {}", asked[0]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_word_with_more_than_eight_senses_gets_a_second_request_when_the_model_says_none_of_the_first_fits() {
+    use maru_engine::senses::MeaningSource;
+    // First request shows senses 1 to 8 of 일: "none fits". The second shows 9 to 12 and gets the third of them.
+    let h = mining_harness(spawn_mock(card_server(|body| if body.contains("1) sense 9") { "0|3\n" } else { "0|0|work|trabajo\n" })).await);
+    h.engine.set_learner_dictionary(tricky_dictionary());
+    let sheet = h.engine.mine_sheet("일", "", None).await.unwrap();
+    let work = &sheet.words[0];
+    assert_eq!((work.meaning.as_str(), work.meaning_es.as_str(), work.source), ("sense 11", "acepción 11", Some(MeaningSource::Chosen)));
+    assert_eq!(work.senses.len(), 12, "every sense can still be picked by hand");
+    let asked = model_requests(&h);
+    assert_eq!(asked.len(), 2, "one more request, only for this word");
+    assert!(asked[0].contains("8) sense 8") && !asked[0].contains("sense 9"), "{}", asked[0]);
+    assert!(asked[1].contains("1) sense 9") && asked[1].contains("4) sense 12") && !asked[1].contains("sense 8"), "{}", asked[1]);
+
+    // A model that picks one of the first eight costs one request, as before.
+    let h = mining_harness(spawn_mock(card_server(|_| "0|5\n")).await);
+    h.engine.set_learner_dictionary(tricky_dictionary());
+    let sheet = h.engine.mine_sheet("일", "", None).await.unwrap();
+    assert_eq!(sheet.words[0].meaning, "sense 5");
+    assert_eq!(model_requests(&h).len(), 1);
+
+    // "None" twice: the model's own words stay.
+    let h = mining_harness(spawn_mock(card_server(|_| "0|0|work|trabajo\n")).await);
+    h.engine.set_learner_dictionary(tricky_dictionary());
+    let sheet = h.engine.mine_sheet("일", "", None).await.unwrap();
+    assert_eq!((sheet.words[0].meaning.as_str(), sheet.words[0].source), ("work", Some(MeaningSource::Model)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dictionary_form_the_model_corrects_is_shown_beside_the_analysers_and_nothing_is_changed_for_you() {
+    // The analyser read 학교; the model says the word in the line is really 학원. Asked for with a setting.
+    let server = spawn_mock(card_server(|_| "0|0|academy|academia|=학원\n")).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    cfg.learning.anki.sync_after_add = false;
+    cfg.learning.anki.correct_forms = true;
+    let llm = LlmClient::new(&server.url, &cfg.llm);
+    let h = build(cfg, Some(llm), Some(server));
+    let nikl = maru_dict::Nikl::open_in_memory().unwrap();
+    nikl.import_jsonl(Cursor::new(r#"{"w":"학교","h":0,"p":"명사","l":"","s":[{"en":"school","es":"escuela"},{"en":"school building","es":"edificio"}]}"#)).unwrap();
+    h.engine.set_learner_dictionary(Arc::new(nikl));
+    let sheet = h.engine.mine_sheet("학교", "", None).await.unwrap();
+    let word = &sheet.words[0];
+    assert_eq!(word.key, "학교", "the card's word stays the analyser's until you choose otherwise");
+    assert_eq!(word.corrected.as_deref(), Some("학원"));
+    assert_eq!((word.meaning.as_str(), word.meaning_es.as_str()), ("academy", "academia"), "the meaning belongs to the corrected form");
+    assert_eq!(model_requests(&h).len(), 1, "a corrected word is not asked about again");
+    assert!(model_requests(&h)[0].contains("=form"), "the request asked the model for forms");
+
+    // Without the setting (the default) the request is the one measured in run 1, and a form in the answer is ignored.
+    let h = mining_harness(spawn_mock(card_server(|_| "0|0|academy|academia|=학원\n")).await);
+    let nikl = maru_dict::Nikl::open_in_memory().unwrap();
+    nikl.import_jsonl(Cursor::new(r#"{"w":"학교","h":0,"p":"명사","l":"","s":[{"en":"school","es":"escuela"},{"en":"school building","es":"edificio"}]}"#)).unwrap();
+    h.engine.set_learner_dictionary(Arc::new(nikl));
+    let sheet = h.engine.mine_sheet("학교", "", None).await.unwrap();
+    assert!(sheet.words[0].corrected.is_none() && sheet.words[0].meaning == "academy");
+    assert!(!model_requests(&h)[0].contains("=form"));
+}
+
+// ───────────── captions from the browser extension ─────────────
+
+fn caption(text: &str) -> maru_engine::captions::CaptionLine {
+    maru_engine::captions::CaptionLine { text: text.into(), video: "dQw4w9WgXcQ".into(), title: "한국어 수업".into(), start_ms: None, auto_generated: false, received: std::time::Instant::now() }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caption_line_is_translated_like_a_live_line_and_listed_as_coming_from_youtube() {
+    let h = harness().await;
+    let events = collect(h.engine.translate_caption(caption(SENTENCE)).1).await;
+
+    let started = events.iter().find_map(|e| if let Event::Started { capture, .. } = e { Some(capture.clone()) } else { None }).expect("a started event");
+    assert_eq!(started.source, CaptureSource::Caption, "the source says it was not read from the screen");
+    assert_eq!(started.app, Some(AppInfo { exe: "youtube".into(), title: "한국어 수업".into() }));
+    assert_eq!(text_of(&events, Variant::Primary), "I studied at school.");
+    assert!(!names(&events).iter().any(|n| matches!(*n, "breakdown" | "gloss")), "translation only, as in the live lane: {:?}", names(&events));
+    assert_eq!(h.requests().len(), 1);
+    assert!(!h.requests()[0].contains("read from the screen by OCR"), "the model is not told to expect misread letters");
+
+    let history = h.engine.history();
+    assert_eq!(history.len(), 1);
+    assert!(history[0].live && history[0].source == SENTENCE && history[0].translation == "I studied at school.");
+    assert_eq!(history[0].app.as_deref(), Some("youtube"));
+    // The program is what a card made from the line is tagged with.
+    let tags = maru_engine::mining::sentence_tags(&Config::default().learning.anki, history[0].app.as_deref(), None, 1_760_000_000);
+    assert_eq!(tags, ["maru", "sentence", "maru::youtube", "added::2025-10"]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caption_keeps_its_exact_text_and_a_line_one_syllable_apart_is_another_line() {
+    let h = harness().await;
+    // Read from pixels, `BTS` and `OK` at the ends would be dropped as stray marks, and the second sentence taken
+    // for the first one misread; in a caption every letter is what the author wrote.
+    let lines = ["BTS 정국이 왔어요 OK", "이것은 물이에요", "이것은 불이에요"];
+    for line in lines {
+        collect(h.engine.translate_caption(caption(line)).1).await;
+    }
+    assert_eq!(h.engine.history().iter().map(|i| i.source.as_str()).collect::<Vec<_>>(), lines);
+    assert_eq!(h.requests().len(), 3, "each one is translated");
+    assert!(h.requests()[0].contains("BTS 정국이 왔어요 OK"));
+
+    // The same two sentences read from the screen stay one line, as before.
+    let h = harness().await;
+    collect(h.engine.translate_live(live_line("이것은 물이에요")).1).await;
+    collect(h.engine.translate_live(live_line("이것은 불이에요")).1).await;
+    assert_eq!(h.engine.history().len(), 1);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_caption_line_is_saved_and_starred_like_any_live_line() {
+    let path = std::env::temp_dir().join(format!("maru-caption-history-{}.db", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    {
+        let h = harness().await;
+        h.engine.open_history(&path).unwrap();
+        let (id, rx) = h.engine.translate_caption(caption(SENTENCE));
+        collect(rx).await;
+        assert!(h.engine.star_live_line(id).unwrap().starred);
+        // A line that is not Korean is skipped without a request, as in the live lane.
+        let events = collect(h.engine.translate_caption(caption("Thanks for watching!")).1).await;
+        assert!(!names(&events).contains(&"started"));
+        assert_eq!(h.requests().len(), 1);
+    }
+    let h = harness().await;
+    h.engine.open_history(&path).unwrap();
+    let starred = h.engine.starred_lines().unwrap();
+    assert_eq!(starred.iter().map(|i| (i.source.as_str(), i.app.as_deref())).collect::<Vec<_>>(), [(SENTENCE, Some("youtube"))]);
+    drop(h);
+    let _ = std::fs::remove_file(path);
 }

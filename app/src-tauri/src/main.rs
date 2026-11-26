@@ -24,6 +24,7 @@ mod input_session;
 mod picker_session;
 mod reading_feedback;
 mod mining;
+mod captions;
 
 use std::sync::{Arc, Mutex};
 
@@ -138,6 +139,15 @@ fn main() {
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(|app| {
             let paths = Paths::discover();
+            // An older config gets "one model per task" written into it once; the file as it was is kept beside it.
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64);
+            match maru_core::tasks::migrate_file(&paths.config_file, now) {
+                Ok(Some(done)) => tracing::info!("config.toml now says which model each task uses; the file as it was is {}", done.backup.display()),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("config.toml could not be updated with a model per task ({e}); the older settings decide"),
+            }
+            // YouTube captions switched on in the file by hand: the code the extension must send is written before the settings are read.
+            captions::write_code_if_missing(&paths.config_file);
             let cfg = Config::load(&paths.config_file).unwrap_or_else(|e| {
                 tracing::error!("{e}; using defaults");
                 Config::default()
@@ -172,6 +182,7 @@ fn main() {
             watch::spawn_scan_hits(app.handle().clone(), state.clone());
             reading::spawn(app.handle().clone(), state.clone());
             reading_feedback::spawn(app.handle().clone(),state.clone());
+            captions::start(app.handle(), state.clone());
             // A model on another computer is loaded now rather than at the first subtitle ([llm] server_keep_minutes).
             state.engine().hold_server_models(false);
             app.manage(state);
@@ -239,6 +250,10 @@ fn main() {
             commands::history_star,
             commands::history_starred,
             mining::mine_sheet,
+            mining::mine_sentence_translation,
+            mining::mine_queue,
+            mining::task_status,
+            mining::task_test,
             mining::mine_add,
             mining::anki_fill_sounds,
             commands::status,
@@ -264,6 +279,7 @@ fn main() {
             commands::tts_reading,
             settings::get_settings,
             server_check::test_model_connection,
+            server_check::connection_check,
             server_check::discovery_networks,
             server_check::discovery_start,
             server_check::discovery_status,
@@ -279,6 +295,7 @@ fn main() {
             resources::resource_status,
             resources::resource_record,
             resources::resource_enable,
+            captions::captions_status,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Maru application");

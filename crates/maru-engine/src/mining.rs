@@ -10,7 +10,7 @@ use maru_srs::anki_sentence::{SentenceAdded, SentenceRequest, SentenceWord};
 use maru_srs::{Context, LookupInfo, Media, now_secs, tag_of};
 use serde::{Deserialize, Serialize};
 
-use crate::anki_flow::{AnkiAddOptions, AnkiAddPermit, AnkiAdded, DeckSuggestion, app_display_name, slug, suggest_decks, tags_for, year_month};
+use crate::anki_flow::{AnkiAddOptions, AnkiAddPermit, AnkiAdded, DeckSuggestion, app_display_name, suggest_decks, tags_for, year_month};
 use crate::engine::{Engine, EngineError, Result};
 
 /// A word of the line, as the mining sheet offers it.
@@ -34,6 +34,9 @@ pub struct MineWord {
     pub source: Option<crate::senses::MeaningSource>,
     /// The learner's dictionary's senses for the word, to choose another one.
     pub senses: Vec<crate::senses::SenseChoice>,
+    /// The dictionary form the model says the word really has in this line, when it differs from `key` (the
+    /// analyser's): the sheet shows both and you choose.
+    pub corrected: Option<String>,
     pub in_context: bool,
     pub known: bool,
     pub in_anki: bool,
@@ -60,6 +63,42 @@ pub struct MineSheet {
     pub note: Option<String>,
     /// The learner's dictionary's attribution, shown with its meanings.
     pub credit: Option<String>,
+    /// The connection that gave the meanings; `None` when no model was needed, or none answered (the dictionary).
+    pub answered: Option<crate::routes::Answered>,
+    /// The connections asked before it that did not answer, each with a plain sentence.
+    pub attempts: Vec<crate::routes::Attempt>,
+    /// The connections this line can be asked again with ("Retry with …").
+    pub retry: Vec<crate::routes::RetryOption>,
+    /// Live subtitles were running: this PC's model is not loaded beside them.
+    pub live_running: bool,
+    /// Where word cards go unless another deck is typed (`learning.anki.deck`).
+    pub word_deck: String,
+    /// Where the sentence card goes (`learning.anki.sentence_deck`, else the word deck).
+    pub sentence_deck: String,
+    /// How many new cards already wait in those two decks; `None` when Anki could not be asked.
+    pub queue: Option<CardQueue>,
+}
+
+/// New cards already waiting in a deck, and how many of them you study a day (Maru's own number).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct DeckQueue {
+    pub deck: String,
+    pub waiting: usize,
+    pub per_day: u32,
+}
+
+/// The queues of the two decks a line's cards go to.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CardQueue {
+    pub words: DeckQueue,
+    pub sentences: DeckQueue,
+}
+
+/// In how many days the first and the last of `adding` new cards come up, when `waiting` others are ahead of
+/// them and `per_day` are studied a day: `(0, 0)` is today. `None` when nothing is being added.
+pub fn comes_up(waiting: usize, adding: usize, per_day: u32) -> Option<(usize, usize)> {
+    let per_day = per_day.max(1) as usize;
+    (adding > 0).then(|| (waiting / per_day, (waiting + adding - 1) / per_day))
 }
 
 /// The line being mined and where its cards go.
@@ -70,6 +109,9 @@ pub struct MineLine {
     pub app: Option<String>,
     pub deck: String,
     pub reverse: ReverseMode,
+    /// The deck of the sentence card; absent or empty: the same deck as the words.
+    #[serde(default)]
+    pub sentence_deck: Option<String>,
 }
 
 /// A word picked on the sheet, with the meaning as you left it.
@@ -86,6 +128,16 @@ pub struct MineChoice {
     pub meaning_es: String,
 }
 
+/// A line translated again for its card.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CardSentence {
+    /// `None`: no connection is chosen for it (the card keeps the line's translation), or none answered.
+    pub translation: Option<String>,
+    pub answered: Option<crate::routes::Answered>,
+    pub attempts: Vec<crate::routes::Attempt>,
+    pub note: Option<String>,
+}
+
 /// What adding the sentence card did.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(tag = "result", rename_all = "snake_case")]
@@ -97,6 +149,16 @@ pub enum MinedSentence {
 impl Engine {
     /// The words of a line with their meaning in it, and what Anki already has.
     pub async fn mine_sheet(&self, sentence: &str, translation: &str, app: Option<&str>) -> Result<MineSheet> {
+        self.mine_sheet_with(sentence, translation, app, &Default::default()).await
+    }
+
+    /// As [`Engine::mine_sheet`], asking for the meanings the way `ask` says: one named connection instead of
+    /// the task's order, or only once live subtitles have stopped.
+    pub async fn mine_sheet_with(&self, sentence: &str, translation: &str, app: Option<&str>, ask: &crate::routes::CardAsk) -> Result<MineSheet> {
+        if ask.after_live {
+            crate::routes::until_live_stops(&self.inner).await;
+        }
+        let live_running = self.live_active();
         let sentence = sentence.trim().to_string();
         if sentence.is_empty() {
             return Err(EngineError::Other("There is no line to make cards from.".into()));
@@ -116,14 +178,14 @@ impl Engine {
 
         let profile = app.and_then(|a| self.inner.cfg.profile_for(a));
         // With the learner's dictionary the meanings are its senses; without it, the model's words as before.
-        let (glosses, senses, note) = match self.inner.nikl.get() {
+        let (glosses, senses, note, answered, attempts) = match self.inner.nikl.get() {
             Some(nikl) => {
-                let found = crate::senses::line_senses(&self.inner, nikl, &sentence, &eojeols).await;
-                (Vec::new(), found.words, found.note)
+                let found = crate::senses::line_senses(&self.inner, nikl, &sentence, &eojeols, ask).await;
+                (Vec::new(), found.words, found.note, found.answered, found.attempts)
             }
             None => {
-                let (glosses, note) = self.line_meanings(&sentence, &eojeols, profile).await;
-                (glosses, Vec::new(), note)
+                let (glosses, note, answered, attempts) = self.line_meanings(&sentence, &eojeols, profile, ask).await;
+                (glosses, Vec::new(), note, answered, attempts)
             }
         };
 
@@ -149,6 +211,7 @@ impl Engine {
                     meaning_es: sense.map(|s| s.es.clone()).unwrap_or_default(),
                     source: sense.map(|s| s.source),
                     senses: sense.map(|s| s.options.clone()).unwrap_or_default(),
+                    corrected: sense.and_then(|s| s.corrected.clone()),
                     known: e.state == WordState::Known,
                     in_anki: false,
                     pick: false,
@@ -156,6 +219,9 @@ impl Engine {
             })
             .collect();
 
+        let word_deck = crate::anki_flow::clean_deck(&cfg.deck);
+        let sentence_deck = Some(crate::anki_flow::clean_deck(&cfg.sentence_deck)).filter(|d| !d.is_empty()).unwrap_or_else(|| word_deck.clone());
+        let mut queue = None;
         let (mut decks, mut anki_error, mut sentence_in_anki) = (Vec::new(), None, false);
         match self.anki_client() {
             Err(e) => anki_error = Some(e.to_string()),
@@ -167,6 +233,7 @@ impl Engine {
                         w.in_anki = anki.find(&w.key).await.ok().flatten().is_some();
                     }
                     sentence_in_anki = anki.find_sentence(&sentence).await.ok().flatten().is_some();
+                    queue = self.card_queue(&word_deck, &sentence_deck).await.ok();
                 }
             },
         }
@@ -181,7 +248,7 @@ impl Engine {
             app: app.map(str::to_owned),
             app_name: app.map(|a| app_display_name(a, profile)).filter(|n| !n.is_empty()),
             words,
-            suggestions: suggest_decks(&cfg.deck, app, profile, remembered.as_deref(), &recent, &decks),
+            suggestions: suggest_decks(&cfg.deck, app, profile, remembered.as_deref(), &recent, &decks, cfg.suggest_app_decks),
             decks,
             reverse: cfg.reverse,
             audio: cfg.audio,
@@ -189,54 +256,125 @@ impl Engine {
             anki_error,
             note,
             credit: self.learner_dictionary_credit().map(str::to_owned),
+            answered,
+            attempts,
+            retry: self.card_retry_options(),
+            live_running,
+            word_deck,
+            sentence_deck,
+            queue,
         })
     }
 
-    /// Each word's meaning in this line, by its index, from the snapshot model; with a note when there are none.
+    /// Each word's meaning in this line, by its index, in the model's own words (no learner's dictionary): from
+    /// the card-meanings connection and then this PC's model, with a note when a connection or all of them failed.
     async fn line_meanings(
         &self,
         sentence: &str,
         eojeols: &[maru_core::Eojeol],
         profile: Option<&maru_core::config::AppProfile>,
-    ) -> (Vec<(usize, String)>, Option<String>) {
+        ask: &crate::routes::CardAsk,
+    ) -> (Vec<(usize, String)>, Option<String>, Option<crate::routes::Answered>, Vec<crate::routes::Attempt>) {
         let words = crate::pipeline::gloss_words(eojeols, false);
         if words.is_empty() {
-            return (Vec::new(), None);
+            return (Vec::new(), None, None, Vec::new());
         }
         let inner = &self.inner;
-        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let em = crate::pipeline::Emitter::new(tx, 0);
-        let live = inner.live_active.load(std::sync::atomic::Ordering::Acquire);
         let offline = "Meanings are the dictionary's: check that each one fits the line.";
-        let Some((llm, native)) = crate::pipeline::snapshot_model(inner, &em, live).await else {
-            let why = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|e| match e {
-                maru_core::Event::Error { message, .. } => Some(message),
-                _ => None,
-            });
-            return (Vec::new(), Some(why.map_or(offline.to_string(), |w| format!("{offline} ({w})"))));
-        };
-        if native {
-            return (Vec::new(), Some(format!("{offline} The live translation model gives no word meanings; turn live subtitles off for meanings in context.")));
-        }
         let ctx = PromptContext {
             hint: profile.and_then(|p| p.hint.clone()),
             glossary: profile.map(|p| p.glossary.clone()).unwrap_or_default(),
             ..Default::default()
         };
-        let mut found = Vec::new();
-        let result = llm
-            .glosses(&GlossRequest { sentence, words: &words, ctx: &ctx }, &mut |chunk| {
-                if let LlmChunk::Gloss(g) = chunk
-                    && words.iter().any(|w| w.index == g.index)
-                {
-                    found.push((g.index, g.meaning));
-                }
-            })
-            .await;
-        match result {
-            Err(e) if found.is_empty() => (Vec::new(), Some(format!("{offline} ({e})"))),
-            _ => (found, None),
+        let request = GlossRequest { sentence, words: &words, ctx: &ctx };
+        let request = &request;
+        let ask_one = |llm: maru_llm::LlmClient| async move {
+            let mut found = Vec::new();
+            let result = llm
+                .glosses(request, &mut |chunk| {
+                    if let LlmChunk::Gloss(g) = chunk
+                        && request.words.iter().any(|w| w.index == g.index)
+                    {
+                        found.push((g.index, g.meaning));
+                    }
+                })
+                .await;
+            match result {
+                Err(e) if found.is_empty() => Err(e),
+                _ => Ok((!found.is_empty()).then_some(found)),
+            }
+        };
+        let routes = inner.routes();
+        if !routes.card_meanings.is_empty() || ask.connection.is_some() {
+            let order = crate::routes::candidates(&routes, &routes.card_meanings, ask);
+            let outcome = crate::routes::ask_in_order(inner, order, ask_one).await;
+            let note = match &outcome.value {
+                Some(_) => outcome.note(""),
+                None => Some(outcome.note(offline).unwrap_or_else(|| offline.to_string())),
+            };
+            return (outcome.value.unwrap_or_default(), note, outcome.answered, outcome.attempts);
         }
+        // An engine built without task routes: the capture model, as before `[tasks]`.
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let em = crate::pipeline::Emitter::new(tx, 0);
+        let live = inner.live_active.load(std::sync::atomic::Ordering::Acquire);
+        let Some((llm, native)) = crate::pipeline::snapshot_model(inner, &em, live).await else {
+            let why = std::iter::from_fn(|| rx.try_recv().ok()).find_map(|e| match e {
+                maru_core::Event::Error { message, .. } => Some(message),
+                _ => None,
+            });
+            return (Vec::new(), Some(why.map_or(offline.to_string(), |w| format!("{offline} ({w})"))), None, Vec::new());
+        };
+        if native {
+            return (Vec::new(), Some(format!("{offline} The live translation model gives no word meanings; turn live subtitles off for meanings in context.")), None, Vec::new());
+        }
+        match ask_one(llm).await {
+            Err(e) => (Vec::new(), Some(format!("{offline} ({e})")), None, Vec::new()),
+            Ok(found) => (found.unwrap_or_default(), None, None, Vec::new()),
+        }
+    }
+
+    /// How many new cards already wait in the deck for words and the deck for sentences (only reads Anki). Per-day
+    /// numbers are Maru's own settings: AnkiConnect cannot see a deck's limit overrides, so they are not derived.
+    pub async fn card_queue(&self, word_deck: &str, sentence_deck: &str) -> Result<CardQueue> {
+        let anki = self.anki_client()?;
+        let cfg = &self.inner.cfg.learning.anki;
+        let count = |deck: String, per_day: u32| async move {
+            let waiting = if deck.is_empty() { 0 } else { anki.new_cards(&deck).await.map_err(|e| EngineError::Other(e.to_string()))? };
+            Ok::<DeckQueue, EngineError>(DeckQueue { deck, waiting, per_day: per_day.max(1) })
+        };
+        Ok(CardQueue {
+            words: count(crate::anki_flow::clean_deck(word_deck), cfg.new_words_per_day).await?,
+            sentences: count(crate::anki_flow::clean_deck(sentence_deck), cfg.new_sentences_per_day).await?,
+        })
+    }
+
+    /// Translate a line for its sentence card with the card-sentence connection, then this PC's model; `ask` names
+    /// one connection instead. With no connection chosen for the task and none named, nothing is asked.
+    pub async fn card_sentence(&self, sentence: &str, app: Option<&str>, ask: &crate::routes::CardAsk) -> CardSentence {
+        if ask.after_live {
+            crate::routes::until_live_stops(&self.inner).await;
+        }
+        let routes = self.inner.routes();
+        let order = crate::routes::candidates(&routes, &routes.card_sentence, ask);
+        if order.is_empty() {
+            return CardSentence { translation: None, answered: None, attempts: Vec::new(), note: None };
+        }
+        let profile = app.and_then(|a| self.inner.cfg.profile_for(a));
+        let ctx = PromptContext {
+            hint: profile.and_then(|p| p.hint.clone()),
+            glossary: profile.map(|p| p.glossary.clone()).unwrap_or_default(),
+            ..Default::default()
+        };
+        let request = maru_llm::LiveRequest { text: sentence.trim(), ctx: &ctx, turns: &[] };
+        let request = &request;
+        let outcome = crate::routes::ask_in_order(&self.inner, order, |client| async move {
+            let text = client.translate_live(request, &mut |_| {}).await?;
+            Ok(Some(text.trim().to_string()).filter(|t| !t.is_empty()))
+        })
+        .await;
+        let note = outcome.note("The line keeps the translation it had.");
+        CardSentence { translation: outcome.value, answered: outcome.answered, attempts: outcome.attempts, note }
     }
 
     /// Record the word as met in this line, with the meaning you chose, and reserve its Anki add.
@@ -280,7 +418,7 @@ impl Engine {
     /// The line as a sentence card, listing the words picked from it.
     pub async fn mine_sentence(&self, line: &MineLine, words: &[MineChoice], audio: Option<Media>) -> Result<MinedSentence> {
         let anki = self.anki_client()?;
-        let deck = crate::anki_flow::clean_deck(&line.deck);
+        let deck = crate::anki_flow::clean_deck(line.sentence_deck.as_deref().filter(|d| !d.trim().is_empty()).unwrap_or(&line.deck));
         if deck.is_empty() {
             return Err(EngineError::Other("choose a deck first".into()));
         }
@@ -329,7 +467,7 @@ pub fn sentence_tags(cfg: &maru_core::config::AnkiConfig, app: Option<&str>, pro
     if cfg.auto_tags {
         tags.push("sentence".into());
         if let Some(name) = app.map(|a| app_display_name(a, profile)).filter(|n| !n.is_empty()) {
-            tags.push(format!("app::{}", slug(&name)));
+            tags.push(crate::anki_flow::app_tag(&name));
         }
         tags.push(format!("added::{}", year_month(now)));
     }
@@ -347,9 +485,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn new_cards_come_up_behind_the_ones_already_waiting_at_the_daily_number() {
+        assert_eq!(comes_up(0, 1, 3), Some((0, 0)), "nothing waiting: today");
+        assert_eq!(comes_up(0, 4, 3), Some((0, 1)), "the fourth is tomorrow's");
+        assert_eq!(comes_up(12, 4, 3), Some((4, 5)), "twelve ahead at three a day: in four days, the last in five");
+        assert_eq!(comes_up(5, 1, 1), Some((5, 5)));
+        assert_eq!(comes_up(7, 0, 3), None, "nothing to add, nothing to say");
+        assert_eq!(comes_up(2, 2, 0), Some((2, 3)), "a daily number of zero counts as one");
+    }
+
+    #[test]
     fn a_sentence_card_is_tagged_as_a_sentence_from_its_program_and_month() {
         let cfg = maru_core::config::AnkiConfig::default();
-        assert_eq!(sentence_tags(&cfg, Some("eldenring.exe"), None, 1_760_000_000), ["maru", "sentence", "app::eldenring", "added::2025-10"]);
+        assert_eq!(sentence_tags(&cfg, Some("eldenring.exe"), None, 1_760_000_000), ["maru", "sentence", "maru::eldenring", "added::2025-10"]);
         let plain = maru_core::config::AnkiConfig { auto_tags: false, ..cfg };
         assert_eq!(sentence_tags(&plain, Some("x.exe"), None, 0), ["maru"]);
     }

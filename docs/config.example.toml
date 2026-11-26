@@ -43,7 +43,8 @@ hf_repo = "unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL"
 # ...or an already-running OpenAI-compatible server (LM Studio, a LAN box):
 # endpoint = "http://127.0.0.1:1234/v1"
 # model_name = "qwen3:8b"     # servers that choose by name (Ollama: exactly what `ollama list` shows)
-# provider = "openai"         # default: OpenAI-compatible/NAS servers; "azure" = Azure OpenAI v1; "gemini" = Google Gemini
+# provider = "openai"         # default: OpenAI-compatible/NAS servers; "azure" = Azure OpenAI v1; "gemini" = Google Gemini;
+#                              # "anthropic" = Anthropic's own Messages API (address https://api.anthropic.com, key required)
 #                              # (endpoint = "https://generativelanguage.googleapis.com/v1beta/openai", model e.g. gemini-2.5-flash)
 # api_key = "..."             # optional Bearer key; Azure and Gemini require theirs (stored locally in plain text)
 # Named registrations are shared by both Settings server selectors. Selection copies endpoint/model/provider/key
@@ -84,13 +85,20 @@ auto_save_after_lookups = 2  # queue a word for review on the 2nd lookup
 # word and sentence, and reads your progress back so words you hold for weeks fade. Your AnkiWeb
 # login stays in Anki; Maru only asks Anki to sync.
 enabled = false
-deck = "Korean"             # suggested first; per program, a deck named after it is offered too
+deck = "Korean"             # where word cards go unless you type another deck when adding
+# sentence_deck = "Korean::Sentences"   # where sentence cards go; unset = the same deck as words
+new_words_per_day = 3       # new word cards you study a day: only used to say when the cards you add would come up
+new_sentences_per_day = 1   # (Anki's own limits are neither read nor changed; AnkiConnect cannot see a deck's overrides)
+suggest_app_decks = false   # true also offers a deck per program (Korean::<program>); false: the program is only a tag
+correct_forms = false       # true lets the card-meanings model correct a word's dictionary form (dialect, misread text);
+                            # the sheet shows both. Off: it changes the prompt, and with it what a small model chooses
+                            # (run 2: Gemma 12B corrected nothing; Claude Sonnet corrected 25 forms on 50 lines).
 reverse = "subdeck"         # the English -> Korean card: subdeck (<deck>::Reverse) | same_deck | off
 sentence_note_type = "Maru Korean Sentence"  # History → Make cards: the line as a one-card note (no reverse)
 audio = true                # attach the spoken word and sentence (needs [tts])
 sync_after_add = true       # ask Anki to sync with AnkiWeb a few seconds after adding
 tags = ["maru"]             # on every card
-auto_tags = true            # + level (topik-1), pos::verb, app::<program>, added::<year-month>
+auto_tags = true            # + level (topik-1), pos::verb, maru::<program>, added::<year-month>
 refresh_minutes = 30        # read card intervals back from Anki (0 = only at start-up)
 # Settings → Anki → Refresh progress also reads intervals explicitly, including missing/suspended cards.
 # Local saved words remain separate from tracked Anki membership; unfinished note setup can be retried.
@@ -143,6 +151,44 @@ snapshot_model_name = "maru"   # exact model name, e.g. from ollama list
 # No server: live translator + offline meanings, without loading local Gemma.
 # Live off: snapshots return to the normal [llm] setup on demand.
 
+# One model per task. "local" is the model this PC runs ([llm] hf_repo / model_path); any other name is a
+# connection saved under [llm] servers. Maru writes this table into an older file the first time the new version
+# starts (a copy of the file is kept beside it as config.toml.before-tasks-<date>.bak; `maru config migrate` does
+# the same from the command line, `maru config tasks` prints it). Once it has a version, the [llm] endpoint /
+# provider / api_key / model_name keys and [continuous.translation] snapshot_* above are no longer read.
+[tasks]
+version = 1
+
+[tasks.live]                  # live subtitles
+connection = "local"
+model = ""                    # "" = the connection's own model; with "local": "" or main | hy_mt2 | milmmt | hy_mt2_small | lfm
+
+[tasks.capture]               # snapshot, region, screen scan, deep dive (hover asks no model)
+connection = "local"
+model = ""
+while_live = ""               # a saved connection to use instead while live subtitles are on; "" = the same one
+while_live_model = ""
+
+[tasks.card_meanings]         # Make cards: the meaning of each word in the line
+connection = "local"          # asked first; then this PC's model; then the dictionary's first sense.
+model = ""                    # This PC's model is never loaded for a card while live subtitles run: the sheet
+                              # offers another connection now, or the same request once they stop.
+
+[tasks.card_sentence]         # Make cards: the sentence card's translation
+connection = ""               # "" = keep the translation the line already has
+model = ""
+
+[tasks.voice_reading]         # the voice while reading or playing
+voice = ""                    # the speaker; "" = the one in [tts] (with `endpoint`: that server's own choice, e.g. "F1")
+endpoint = ""                 # another OpenAI-style speech server for reading, e.g. "http://127.0.0.1:18097" for
+                              # `python tools/supertonic_server.py --port 18097`; "" = the voice in [tts].
+                              # With it, the voice of [tts] on this PC loads only to make card sound and is
+                              # unloaded when the cards are made.
+model = ""                    # the model name sent to `endpoint`, e.g. "supertonic-3"; "" = the one in [tts]
+
+[tasks.voice_cards]           # the voice on Anki cards (same three keys)
+voice = ""
+
 # Per-application behaviour. `exe` is the program's file name.
 [[profile]]
 name = "RPG"
@@ -175,3 +221,13 @@ run_in_lite = false   # keep the local voice off in game mode so the game has th
 # exe = ["eldenring.exe"]
 # anki_deck = "Korean::Games::Elden Ring"
 # anki_tags = ["game"]
+
+[captions]
+# YouTube captions as text (docs/YOUTUBE_CAPTIONS.md): the browser extension in extension/youtube-captions sends the
+# Korean caption track a video's author uploaded, line by line, to this PC only (127.0.0.1). The lines go to History
+# like live subtitles, from the program "youtube". Off by default; save and restart.
+enabled = false
+port = 18098                  # where the extension sends; change it only if another program uses this port
+# token = "..."               # the code the extension must send. Maru writes one here the first time this is switched
+#                             # on (Settings shows it to copy); delete the line to get a new one.
+# allowed_origin = "chrome-extension://<the id the extension's popup shows>"   # optional: only that extension may send

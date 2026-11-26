@@ -86,6 +86,13 @@ enum Command {
         /// With --connection: also write the table and every line's result into this folder.
         #[arg(long, value_name = "DIR", requires = "connection")]
         out: Option<PathBuf>,
+        /// With --cards: also let each model correct a word's dictionary form (`learning.anki.correct_forms`).
+        #[arg(long, requires = "cards")]
+        forms: bool,
+        /// With --live --connection: send each line by itself, with no earlier lines as context (how the sentence
+        /// of a card is translated), for comparing whole-sentence translations.
+        #[arg(long, requires = "connection")]
+        alone: bool,
         /// Instead of timing translations: let each --connection decide the card meanings of the lines in this file
         /// (made by `maru dict senses`) and write every decision into --out, for a blind review. `dictionary` as a
         /// connection is the dictionary's first sense with no model.
@@ -255,6 +262,9 @@ enum DictCommand {
     Nikl { file: PathBuf },
     /// How much of some lines' words the learner's dictionary covers (a text file, one Korean line per line).
     Coverage { file: PathBuf },
+    /// How many of the learner's dictionary's English equivalents are only the headword in Latin letters ("su",
+    /// "nyeoseok"), and what a card shows instead.
+    Romanized,
     /// The words to learn in each line with their dictionary senses, as the cards sheet finds them: the tasks file
     /// for `maru bench --cards`.
     Senses {
@@ -302,6 +312,35 @@ enum ConfigCommand {
         #[arg(long)]
         force: bool,
     },
+    /// Write "one model per task" ([tasks]) into an older config file. A copy of the file is kept beside it
+    /// first; a file that already has the table is left alone. The app does the same when it starts.
+    Migrate {
+        /// Show what would be written without changing the file.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Which connection and model each task uses.
+    Tasks,
+}
+
+/// The task table in words. Connection names and model names only: never an address or a key.
+fn print_tasks(tasks: &maru_core::tasks::TasksConfig) {
+    let route = |connection: &str, model: &str| match (connection.trim(), model.trim()) {
+        ("", _) => "none".to_string(),
+        (c, "") => c.to_string(),
+        (c, m) => format!("{c} ({m})"),
+    };
+    println!("  Live subtitles              {}", route(&tasks.live.connection, &tasks.live.model));
+    println!("  Captures (snapshot, scan)   {}", route(&tasks.capture.connection, &tasks.capture.model));
+    if !tasks.capture.while_live.trim().is_empty() {
+        println!("    while live subtitles run  {}", route(&tasks.capture.while_live, &tasks.capture.while_live_model));
+    }
+    let after = if tasks.card_meanings.connection.trim().eq_ignore_ascii_case(maru_core::tasks::LOCAL) { "then the dictionary" } else { "then this PC's model, then the dictionary" };
+    println!("  Card meanings               {}, {after}", route(&tasks.card_meanings.connection, &tasks.card_meanings.model));
+    println!("  Card sentence translation   {}", if tasks.card_sentence.connection.trim().is_empty() { "the translation the line already has".to_string() } else { route(&tasks.card_sentence.connection, &tasks.card_sentence.model) });
+    let voice = |v: &str| if v.trim().is_empty() { "the voice in [tts]".to_string() } else { v.trim().to_string() };
+    println!("  Voice while reading         {}", voice(&tasks.voice_reading.voice));
+    println!("  Voice for cards             {}", voice(&tasks.voice_cards.voice));
 }
 
 #[derive(Clone, Copy, clap::ValueEnum)]
@@ -463,6 +502,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
         Command::Translate { text, register, no_llm, json } => {
             let text = read_text(&text)?;
             if no_llm {
+                cfg.route_by_older_fields();
                 cfg.llm.endpoint = None;
                 cfg.llm.model_path = None;
                 cfg.llm.hf_repo = None;
@@ -506,10 +546,13 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 Ok(0)
             }
         },
-        Command::Bench { file, runs, live, endpoint, model, connection, out, cards } => {
+        Command::Bench { file, runs, live, endpoint, model, connection, out, cards, alone, forms } => {
+            if alone {
+                cfg.continuous.context_lines = 0;
+            }
             if let (Some(tasks), Some(out)) = (&cards, &out) {
                 let targets: Vec<connections::Target> = connection.iter().map(|c| connections::Target::parse(c)).collect();
-                connections::bench_cards(&cfg, &paths, &targets, tasks, out).await?;
+                connections::bench_cards(&cfg, &paths, &targets, tasks, out, forms).await?;
                 return Ok(0);
             }
             if !connection.is_empty() && !live {
@@ -532,13 +575,17 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             // This times the language model, so nothing else may compete for the GPU while it runs.
             cfg.ocr.vision_reader = false;
             cfg.tts.enabled = false;
+            if endpoint.is_some() || model.is_some() {
+                cfg.route_by_older_fields();
+            }
             if let Some(url) = endpoint {
                 cfg.llm.override_endpoint(url);
             }
             if let Some(name) = model {
                 cfg.llm.model_name = name;
             }
-            let mut s = services(&paths, cfg, true).await;
+            // A benchmark must leave no trace in the history its lines would otherwise be saved to.
+            let mut s = boot(paths.clone(), cfg, BootOptions { start_llm: true, read_only: true, ..Default::default() }).await;
             if live {
                 tools::bench_live(&mut s, sentences, runs.max(1)).await?;
             } else {
@@ -711,6 +758,20 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             println!("Lines whose cards need no model request at all: {} of {} ({:.0}%).", c.lines_without_model, c.lines, share(c.lines_without_model, c.lines));
             Ok(0)
         }
+        Command::Dict(DictCommand::Romanized) => {
+            if !paths.nikl_db().exists() {
+                bail!("the learner's dictionary is not installed (maru dict nikl <file>)");
+            }
+            let c = maru_engine::romanized::count(&maru_dict::Nikl::open(&paths.nikl_db())?)?;
+            println!("{} entries, {} senses.", c.entries, c.senses);
+            println!("English equivalent with the headword in Latin letters: {} senses in {} entries.", c.affected_senses, c.affected_entries);
+            println!("  real English words beside it, kept:            {}", c.kept_other_words);
+            println!("  replaced by the gloss in the definition:        {}", c.from_definition);
+            println!("  kept as a word both languages borrowed:         {}", c.borrowed);
+            println!("  left without English (a model words the card):  {}", c.nothing);
+            println!("Entries left with no English at all: {}.", c.entries_without_english);
+            Ok(0)
+        }
         Command::Dict(DictCommand::Senses { file, out }) => {
             let text = std::fs::read_to_string(&file).with_context(|| format!("opening {}", file.display()))?;
             let lines: Vec<String> = text.lines().map(str::to_owned).collect();
@@ -738,7 +799,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         _ => println!("Learner's dictionary (한국어기초사전): not installed (maru dict nikl <file>)"),
                     }
                 }
-                DictCommand::Nikl { .. } | DictCommand::Coverage { .. } | DictCommand::Senses { .. } => unreachable!("handled above"),
+                DictCommand::Nikl { .. } | DictCommand::Coverage { .. } | DictCommand::Senses { .. } | DictCommand::Romanized => unreachable!("handled above"),
             }
             Ok(0)
         }
@@ -780,6 +841,26 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     cfg.save(&paths.config_file)?;
                     println!("Wrote {}\nLanguage model set to {} (edit [llm] to change it).", paths.config_file.display(), setup::RECOMMENDED_MODEL);
                 }
+                ConfigCommand::Migrate { dry_run } => {
+                    if cfg.tasks.version >= maru_core::tasks::VERSION {
+                        println!("{} already says which model each task uses; nothing to do.", paths.config_file.display());
+                    } else if dry_run {
+                        println!("Would write to {} (a copy is kept beside it first):", paths.config_file.display());
+                        print_tasks(&maru_core::tasks::derive(&cfg).tasks);
+                    } else {
+                        match maru_core::tasks::migrate_file(&paths.config_file, maru_srs::now_secs())? {
+                            Some(done) => {
+                                println!("Updated {}\nThe file as it was: {}", paths.config_file.display(), done.backup.display());
+                                for name in &done.named {
+                                    println!("The server that had no name is now the saved connection \"{name}\".");
+                                }
+                                print_tasks(&done.tasks);
+                            }
+                            None => println!("There is no config file at {}; defaults are in use.", paths.config_file.display()),
+                        }
+                    }
+                }
+                ConfigCommand::Tasks => print_tasks(&maru_core::tasks::effective(&cfg)),
             }
             Ok(0)
         }

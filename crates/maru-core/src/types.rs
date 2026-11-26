@@ -105,6 +105,8 @@ pub enum CaptureSource {
     Continuous,
     /// Typed or pasted into Maru itself.
     Typed,
+    /// A caption line sent by the browser extension: the video's own text, never read from pixels.
+    Caption,
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]

@@ -98,6 +98,7 @@ struct TokenCounter {
     replies: std::sync::atomic::AtomicU64,
     input: std::sync::atomic::AtomicU64,
     output: std::sync::atomic::AtomicU64,
+    cached: std::sync::atomic::AtomicU64,
 }
 
 /// Tokens a server said it used, summed over the replies that carried a count.
@@ -108,6 +109,8 @@ pub struct TokenUse {
     pub input: u64,
     /// Everything generated, thinking included where the server counts it.
     pub output: u64,
+    /// Of `input`, the tokens the server read from its prompt cache (Anthropic's Messages API reports this).
+    pub cached_input: u64,
 }
 
 /// Fields Maru can leave out when a server refuses them: sampling, thinking, Ollama's keep-alive, usage reports.
@@ -158,7 +161,7 @@ impl LlmClient {
     /// What the server reported since this client was made.
     pub fn tokens_used(&self) -> TokenUse {
         use std::sync::atomic::Ordering::Relaxed;
-        TokenUse { replies: self.used.replies.load(Relaxed), input: self.used.input.load(Relaxed), output: self.used.output.load(Relaxed) }
+        TokenUse { replies: self.used.replies.load(Relaxed), input: self.used.input.load(Relaxed), output: self.used.output.load(Relaxed), cached_input: self.used.cached.load(Relaxed) }
     }
 
     /// The model this client asks for.
@@ -231,6 +234,11 @@ impl LlmClient {
         self.root == other.root && self.model == other.model && self.auth == other.auth
     }
 
+    /// The connection carries an API key.
+    pub fn has_key(&self) -> bool {
+        self.auth.authenticated()
+    }
+
     /// A hosted API (Azure, Gemini): nothing to load, and every request is billed.
     pub fn is_hosted(&self) -> bool {
         self.auth.cloud()
@@ -287,6 +295,9 @@ impl LlmClient {
     }
 
     fn body(&self, messages: &[Message], opts: &ChatOpts) -> Value {
+        if self.auth.native_anthropic() {
+            return crate::anthropic::body(&self.model, messages, opts.max_tokens.unwrap_or(self.max_tokens), &opts.stop);
+        }
         let mut body = json!({
             "model": self.model,
             "messages": messages,
@@ -442,6 +453,9 @@ impl LlmClient {
                         }
                     }
                     SseEvent::Usage { input, output } => usage = Some((input, output)),
+                    SseEvent::Cached(tokens) => {
+                        self.used.cached.fetch_add(tokens, std::sync::atomic::Ordering::Relaxed);
+                    }
                     SseEvent::Done => {
                         count(usage);
                         return Ok(reply);
@@ -473,12 +487,16 @@ pub enum SseEvent {
     Finish(String),
     /// Token counts for the whole reply (the last chunk of a stream asked for with `stream_options.include_usage`).
     Usage { input: u64, output: u64 },
+    /// Input tokens the server read from its prompt cache for this reply.
+    Cached(u64),
 }
 
-/// Incremental `text/event-stream` parser for chat-completion chunks.
+/// Incremental `text/event-stream` parser for chat-completion chunks (and Anthropic's message events).
 #[derive(Debug, Default)]
 pub struct SseParser {
     buf: Vec<u8>,
+    /// Anthropic reports the input tokens when a message starts and the output tokens when it ends.
+    anthropic_input: u64,
 }
 
 impl SseParser {
@@ -488,18 +506,18 @@ impl SseParser {
         // Split on raw bytes: a network chunk may end inside a multi-byte character.
         while let Some(i) = self.buf.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = self.buf.drain(..=i).collect();
-            events.extend(parse_line(&line));
+            events.extend(parse_line(&line, &mut self.anthropic_input));
         }
         events
     }
 
     pub fn finish(&mut self) -> Vec<SseEvent> {
         let rest = std::mem::take(&mut self.buf);
-        parse_line(&rest)
+        parse_line(&rest, &mut self.anthropic_input)
     }
 }
 
-fn parse_line(line: &[u8]) -> Vec<SseEvent> {
+fn parse_line(line: &[u8], anthropic_input: &mut u64) -> Vec<SseEvent> {
     let line = match std::str::from_utf8(line) {
         Ok(line) => line,
         Err(_) => return vec![SseEvent::Error("invalid UTF-8 in a model response event".into())],
@@ -516,6 +534,9 @@ fn parse_line(line: &[u8]) -> Vec<SseEvent> {
     if let Some(err) = v.get("error") {
         let msg = err.get("message").and_then(Value::as_str).or_else(|| err.as_str()).unwrap_or("unknown error");
         return vec![SseEvent::Error(msg.to_string())];
+    }
+    if let Some(events) = crate::anthropic::events(&v, anthropic_input) {
+        return events;
     }
     let mut events = Vec::new();
     if let Some(choices) = v.get("choices") {
@@ -952,7 +973,7 @@ data: {\"choices\":[{\"delta\":{\"content\":\".\"},\"finish_reason\":\"stop\"}],
         }
         assert!(server.requests.lock().unwrap()[1].1.contains(r#""stream_options":{"include_usage":true}"#));
         // 22 output tokens: the total says more was generated (thinking) than the visible completion.
-        assert_eq!(counting.tokens_used(), TokenUse { replies: 2, input: 60, output: 44 });
+        assert_eq!(counting.tokens_used(), TokenUse { replies: 2, input: 60, output: 44, cached_input: 0 });
         assert_eq!(counting.clone().tokens_used().replies, 2, "clones share the count");
     }
 

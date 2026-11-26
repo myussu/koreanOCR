@@ -10,12 +10,14 @@
 pub mod client;
 pub mod connection;
 mod auth;
+pub mod anthropic;
 pub mod discovery;
 pub mod demux;
 pub mod live_bench;
 mod live_completion;
 mod live_sub_models;
 pub mod prompts;
+pub mod problem;
 pub mod senses;
 pub mod server;
 pub mod tasks;

@@ -329,7 +329,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
                 em.send(Event::Note { id, text: "Using the live translation model. Word breakdown and dictionary meanings are available offline; richer model analysis is available with a snapshot server or after live subtitles are turned off.".into() });
                 let result = llm.translate_selected_live(inner.cfg.continuous.translation.model, &LiveRequest { text: &text, ctx: &ctx, turns: &[] }, &mut |c| forward(&em, &collected, Side::Source, &first_token, llm_started, c)).await;
                 lock(&collected).translation_complete = result.is_ok();
-                if let Err(e) = result { em.error(Stage::Llm, e.to_string()); }
+                if let Err(e) = result { em.error(Stage::Llm, maru_llm::problem::plain(&e)); }
             } else {
                 let translate_fut = async {
                     let r = llm
@@ -339,7 +339,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
                         .await;
                     lock(&collected).translation_complete = r.is_ok();
                     if let Err(e) = r {
-                        em.error(Stage::Llm, e.to_string());
+                        em.error(Stage::Llm, maru_llm::problem::plain(&e));
                     }
                 };
                 tokio::join!(translate_fut, run_glosses(&llm, &em, &collected, Side::Source, &text, &gloss_list, &ctx));
@@ -380,7 +380,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
                 drop(lock(&primary_tx).take());
                 lock(&collected).translation_complete = r.is_ok();
                 if let Err(e) = r {
-                    em.error(Stage::Llm, e.to_string());
+                    em.error(Stage::Llm, maru_llm::problem::plain(&e));
                 }
             };
             // As soon as the requested register is written, break the Korean down and
@@ -403,7 +403,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
         let first = AtomicBool::new(false);
         let result = client.translate_selected_live(inner.cfg.continuous.translation.model, &LiveRequest { text: &text, ctx: &ctx, turns: &[] }, &mut |c| forward(&em, &collected, Side::Source, &first, started, c)).await;
         lock(&collected).translation_complete = result.is_ok();
-        if let Err(e) = result { em.error(Stage::Llm, e.to_string()); }
+        if let Err(e) = result { em.error(Stage::Llm, maru_llm::problem::plain(&e)); }
     }
     let result = std::mem::take(&mut *lock(&collected));
     if !result.is_shown() {
@@ -448,7 +448,10 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     let em = Emitter { tx, id };
     let LiveLine { capture, appeared, ready_ms, ocr_ms } = line;
     let (text, _) = prepare_text(&capture.text, inner.cfg.capture.max_chars);
-    let text = crate::live_noise::trim_stray_marks(&text);
+    // A caption (`captions.rs`) is the video's own text: nothing in it is a misreading, so the repairs meant for
+    // OCR (dropping `BTS` or `1.` from a line's ends, taking a line one syllable apart for a re-read) do not apply.
+    let exact = capture.source == CaptureSource::Caption;
+    let text = if exact { text } else { crate::live_noise::trim_stray_marks(&text) };
     if detect_direction(&text) != Some(Direction::KoToEn) {
         tracing::debug!(text, "live line skipped: not Korean");
         timing.finish("skipped");
@@ -465,7 +468,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
     // OCR read the same line again, or only part of it: show its translation, translate nothing, list nothing.
     let mut replaces = None;
     // Bind first: a guard in the `match` head would live through the arms, which lock `live_recent` again.
-    let seen = lock(&inner.live_recent).seen(&app_exe, &text, Instant::now());
+    let seen = if exact { crate::live_merge::Seen::New } else { lock(&inner.live_recent).seen(&app_exe, &text, Instant::now()) };
     match seen {
         crate::live_merge::Seen::Again { id: original, translation } | crate::live_merge::Seen::Part { id: original, translation } => {
             lock(&inner.live_recent).read_again(id, original, &text, Instant::now());
@@ -500,7 +503,15 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         em.send(Event::TranslationDone { id, variant: Variant::Primary, text: main.clone() });
         (since_ms(appeared), main, false)
     } else {
-        let chosen = if model == maru_core::live_model::LiveModel::Main { await_llm(&inner, &em).await } else { inner.live_llm.clone() };
+        // Live subtitles with their own connection ask it directly; otherwise the capture model, once it is ready.
+        let own_route = inner.routes().live.as_ref().map(|r| r.client.clone());
+        let chosen = match model {
+            maru_core::live_model::LiveModel::Main => match own_route {
+                Some(client) => Some(client),
+                None => await_llm(&inner, &em).await,
+            },
+            _ => inner.live_llm.clone(),
+        };
         let Some(llm) = chosen else {
             em.error(Stage::Llm, "The live translation model is unavailable. Check its file in Settings.");
             timing.finish("model_unavailable");
@@ -541,7 +552,7 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
         };
         lock(&collected).translation_complete = result.is_ok();
         if let Err(e) = result {
-            em.error(Stage::Llm, e.to_string());
+            em.error(Stage::Llm, maru_llm::problem::plain(&e));
         }
         let result = std::mem::take(&mut *lock(&collected));
         let main = result.translations.first().map(|(_, t)| t.clone()).unwrap_or_default();
@@ -698,7 +709,7 @@ pub(crate) async fn deep_dive(inner: Arc<Inner>, id: u64, req: DeepDiveRequest, 
         )
         .await;
     if let Err(err) = result {
-        em.error(Stage::Llm, err.to_string());
+        em.error(Stage::Llm, maru_llm::problem::plain(&err));
     }
     em.timing(Stage::Total, started);
     em.done();

@@ -45,7 +45,9 @@ fn pending_restart(state: &AppState, now: &Config) -> Vec<String> {
 #[tauri::command]
 pub fn get_settings(state: S) -> Res<SettingsView> {
     let path = state.services.paths.config_file.clone();
-    let now = Config::load(&path).map_err(|e| e.to_string())?;
+    let mut now = Config::load(&path).map_err(|e| e.to_string())?;
+    // A file that has no task table yet (no file at all, say) is shown as the routing it amounts to.
+    now.tasks = maru_core::tasks::effective(&now);
     Ok(SettingsView {
         values: settings::snapshot(&now),
         defaults: settings::snapshot(&Config::default()),
@@ -116,7 +118,17 @@ fn check_url(what: &str, url: &str) -> Res<()> {
 #[tauri::command]
 pub fn save_settings(app: AppHandle, state: S, changes: Map<String, Value>) -> Res<SaveResult> {
     let path = state.services.paths.config_file.clone();
-    let patched = settings::patch(&read_text(&state)?, &changes).map_err(|e| e.to_string())?;
+    let mut text = read_text(&state)?;
+    // Choosing a connection for a task only counts once the file has its task table: write it first if it has none.
+    if changes.keys().any(|p| p.starts_with("tasks."))
+        && let Some(with_table) = maru_core::tasks::migrate(&text).map_err(|e| e.to_string())?
+    {
+        text = with_table;
+    }
+    // Switching YouTube captions on also saves the code the extension must send, so it can be copied at once.
+    let mut changes = changes;
+    crate::captions::add_code_when_switched_on(&text, &mut changes);
+    let patched = settings::patch(&text, &changes).map_err(|e| e.to_string())?;
     let new = patched.config.clone();
     check_hotkeys(&new)?;
     // A bare IP or hostname is only a starting point for Detect server; saved as is, every request would fail.
@@ -149,6 +161,10 @@ pub fn save_settings(app: AppHandle, state: S, changes: Map<String, Value>) -> R
 
     let live_changed = patched.changed.iter().any(|p| applies_live(p));
     let mut warnings = Vec::new();
+    // The card connections, and any saved connection they name, take effect at once.
+    if patched.changed.iter().any(|p| p.starts_with("tasks.card_") || p == "llm.servers") {
+        state.engine().reroute_cards(&new);
+    }
     if live_changed {
         state.set_cfg(new.clone());
         if patched.changed.iter().any(|p| p.starts_with("hotkeys.")) {

@@ -42,26 +42,38 @@ struct CardRecord<'a> {
     tokens_in: u64,
     tokens_out: u64,
     words: Vec<Decided>,
+    /// Requests made for the line: 2 when a word with many senses was asked about again.
+    requests: usize,
+    /// Words that got a sense beyond the first eight, by index.
+    later: Vec<usize>,
+    /// Words whose dictionary form the model corrected: `(index, form)`.
+    corrected: Vec<(usize, String)>,
 }
 
-/// `name`, or `name=model` to ask that connection for another model.
+/// `name`, or `name=model` to ask that connection for another model. `name+native` asks a connection saved for
+/// Anthropic's OpenAI-compatible endpoint through Anthropic's own Messages API instead, for this run only.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Target {
     pub name: String,
     pub model: Option<String>,
+    pub native: bool,
 }
 
 impl Target {
     pub fn parse(text: &str) -> Self {
-        match text.split_once('=') {
-            Some((name, model)) if !model.trim().is_empty() => Self { name: name.trim().into(), model: Some(model.trim().into()) },
-            _ => Self { name: text.trim().into(), model: None },
+        let (name, model) = match text.split_once('=') {
+            Some((name, model)) if !model.trim().is_empty() => (name.trim(), Some(model.trim().to_string())),
+            _ => (text.trim(), None),
+        };
+        match name.strip_suffix("+native") {
+            Some(name) => Self { name: name.trim().into(), model, native: true },
+            None => Self { name: name.into(), model, native: false },
         }
     }
 }
 
 /// The settings to talk to a saved connection: found by name whatever the capitals, or by the beginning of its
-/// name when only one starts that way ("azure" finds "Azure Plannia").
+/// name when only one starts that way ("azure" finds "Azure Contoso").
 pub fn resolve(cfg: &Config, target: &Target) -> Result<(String, LlmConfig)> {
     let mut llm = cfg.llm.clone();
     if target.name.eq_ignore_ascii_case(LOCAL) {
@@ -86,6 +98,13 @@ pub fn resolve(cfg: &Config, target: &Target) -> Result<(String, LlmConfig)> {
     llm.provider = saved.provider;
     llm.api_key = saved.api_key.clone();
     llm.model_name = target.model.clone().unwrap_or_else(|| saved.model_name.clone());
+    if target.native {
+        if !saved.endpoint.to_ascii_lowercase().contains("api.anthropic.com") {
+            bail!("+native is for a connection to Anthropic (api.anthropic.com); \"{}\" is not one", saved.name);
+        }
+        llm.provider = ServerProvider::Anthropic;
+        return Ok((format!("{} (Messages API)", saved.name), llm));
+    }
     Ok((saved.name.clone(), llm))
 }
 
@@ -127,6 +146,7 @@ pub fn list(cfg: &Config) {
             ServerProvider::Openai => "OpenAI-compatible",
             ServerProvider::Azure => "Azure OpenAI",
             ServerProvider::Gemini => "Gemini",
+            ServerProvider::Anthropic => "Anthropic",
         };
         println!("{:<16} {:<18} {:<46} {}  key: {}", s.name, provider, s.endpoint, s.model_name, if s.api_key.is_some() { "saved" } else { "none" });
     }
@@ -245,6 +265,8 @@ pub struct LiveSummary {
     pub total_max_ms: Option<u32>,
     pub input_tokens: u64,
     pub output_tokens: u64,
+    /// Of the input tokens, those the server said it read from its prompt cache (0 when it reports none).
+    pub cached_input_tokens: u64,
     /// The different failure messages, each with how often it came.
     pub errors: Vec<(String, usize)>,
 }
@@ -296,23 +318,26 @@ pub fn summarize(connection: &str, model: &str, results: &[LiveResult], tokens: 
         total_max_ms: total.last().copied(),
         input_tokens: tokens.0,
         output_tokens: tokens.1,
+        cached_input_tokens: 0,
         errors,
     }
 }
 
 /// The comparison as a Markdown table, one row per connection.
-pub fn table(summaries: &[LiveSummary], sentences: usize, runs: usize) -> String {
+/// `context` says whether each line was sent with the lines before it.
+pub fn table(summaries: &[LiveSummary], sentences: usize, runs: usize, context: bool) -> String {
     let ms = |v: Option<u32>| v.map_or("–".to_string(), |v| v.to_string());
     let mut out = String::new();
-    let _ = writeln!(out, "Live subtitles: {sentences} lines × {runs} passes per connection, each line sent with the lines before it as context, one at a time. Times in ms; failed lines are counted, not timed.\n");
-    let _ = writeln!(out, "| Connection | Model | First word p50 | First word p95 | Whole line p50 | Whole line p95 | Slowest | Failed | Cut off | Tokens in / out |");
-    let _ = writeln!(out, "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|");
+    let how = if context { "each line sent with the lines before it as context" } else { "each line sent by itself" };
+    let _ = writeln!(out, "Live subtitles: {sentences} lines × {runs} passes per connection, {how}, one at a time. Times in ms; failed lines are counted, not timed.\n");
+    let _ = writeln!(out, "| Connection | Model | First word p50 | First word p95 | Whole line p50 | Whole line p95 | Slowest | Failed | Cut off | Tokens in / out | Input read from cache |");
+    let _ = writeln!(out, "|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for s in summaries {
         let tokens = if s.input_tokens + s.output_tokens == 0 { "not reported".to_string() } else { format!("{} / {}", s.input_tokens, s.output_tokens) };
         let _ = writeln!(
             out,
-            "| {} | {} | {} | {} | {} | {} | {} | {} of {} | {} | {} |",
-            s.connection, s.model, ms(s.first_p50_ms), ms(s.first_p95_ms), ms(s.total_p50_ms), ms(s.total_p95_ms), ms(s.total_max_ms), s.failures, s.lines, s.cut_off, tokens
+            "| {} | {} | {} | {} | {} | {} | {} | {} of {} | {} | {} | {} |",
+            s.connection, s.model, ms(s.first_p50_ms), ms(s.first_p95_ms), ms(s.total_p50_ms), ms(s.total_p95_ms), ms(s.total_max_ms), s.failures, s.lines, s.cut_off, tokens, s.cached_input_tokens
         );
     }
     for s in summaries.iter().filter(|s| !s.errors.is_empty()) {
@@ -364,9 +389,11 @@ pub async fn bench_live(cfg: &Config, paths: &Paths, targets: &[Target], sentenc
             eprintln!("  pass {} of {runs} done", pass + 1);
         }
         let used = opened.client.tokens_used();
-        summaries.push(summarize(&opened.connection, &opened.model, &results, (used.input - before.input, used.output - before.output)));
+        let mut summary = summarize(&opened.connection, &opened.model, &results, (used.input - before.input, used.output - before.output));
+        summary.cached_input_tokens = used.cached_input - before.cached_input;
+        summaries.push(summary);
     }
-    let table = table(&summaries, sentences.len(), runs);
+    let table = table(&summaries, sentences.len(), runs, context_lines > 0);
     println!("{table}");
     if let Some(dir) = out {
         std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
@@ -396,7 +423,7 @@ pub fn write_tasks(engine: &maru_engine::Engine, lines: &[String], out: &Path) -
 /// `maru bench --cards tasks.jsonl --connection A --connection dictionary …`: each candidate decides every
 /// line's word meanings the way the cards sheet does (one request per line for the words that need it), and
 /// every decision is written down for a blind review. Nothing is scored here.
-pub async fn bench_cards(cfg: &Config, paths: &Paths, targets: &[Target], tasks: &Path, out: &Path) -> Result<()> {
+pub async fn bench_cards(cfg: &Config, paths: &Paths, targets: &[Target], tasks: &Path, out: &Path, forms: bool) -> Result<()> {
     let text = std::fs::read_to_string(tasks).with_context(|| format!("opening {}", tasks.display()))?;
     let tasks: Vec<CardTask> = text.lines().filter(|l| !l.trim().is_empty()).map(serde_json::from_str).collect::<std::result::Result<_, _>>().context("the tasks file is made by `maru dict senses`")?;
     if tasks.is_empty() {
@@ -422,26 +449,33 @@ pub async fn bench_cards(cfg: &Config, paths: &Paths, targets: &[Target], tasks:
         let (mut times, mut requests, mut failed, mut tokens) = (Vec::new(), 0usize, 0usize, (0u64, 0u64));
         for (n, task) in tasks.iter().enumerate() {
             let asked = questions(&task.words);
-            let mut answers: Vec<SenseAnswer> = Vec::new();
             let (mut ms, mut error, mut used) = (0, None, (0, 0));
+            let mut chosen = None;
             if let (Some(client), false) = (&client, asked.is_empty()) {
-                requests += 1;
                 let before = client.tokens_used();
                 let started = Instant::now();
-                let result = client.choose_senses(&SenseRequest { sentence: &task.line, words: &asked }, &mut |a| answers.push(a)).await;
+                // The same two steps as the cards sheet: one request, and a second look at a word with many senses.
+                let result = maru_engine::senses::choose(client, &task.line, &task.words, forms).await;
                 ms = started.elapsed().as_millis().min(u128::from(u32::MAX)) as u32;
                 let after = client.tokens_used();
                 used = (after.input - before.input, after.output - before.output);
                 match result {
-                    Ok(()) => times.push(ms),
+                    Ok(found) => {
+                        times.push(ms);
+                        requests += found.as_ref().map_or(1, |c| c.requests);
+                        chosen = found;
+                    }
                     Err(e) => {
+                        requests += 1;
                         failed += 1;
                         error = Some(e.to_string().chars().take(300).collect());
                     }
                 }
             }
             tokens = (tokens.0 + used.0, tokens.1 + used.1);
-            let record = CardRecord { candidate: &label, line: n + 1, asked: client.is_some() && !asked.is_empty(), ms, error, tokens_in: used.0, tokens_out: used.1, words: decide(&task.words, &answers) };
+            let (line_requests, later, corrected) = chosen.as_ref().map(|c| (c.requests, c.later.clone(), c.corrected.clone())).unwrap_or_default();
+            let words = chosen.map(|c| c.decided).unwrap_or_else(|| decide(&task.words, &[]));
+            let record = CardRecord { candidate: &label, line: n + 1, asked: client.is_some() && !asked.is_empty(), ms, error, tokens_in: used.0, tokens_out: used.1, words, requests: line_requests, later, corrected };
             let _ = writeln!(records, "{}", serde_json::to_string(&record)?);
         }
         times.sort_unstable();
@@ -475,7 +509,7 @@ mod tests {
         let server = |name: &str, endpoint: &str, model: &str, provider, key: Option<&str>| SavedServer { name: name.into(), endpoint: endpoint.into(), model_name: model.into(), provider, api_key: key.map(|k| k.to_string().into()) };
         cfg.llm.servers = vec![
             server("NAS", "http://nas:11434", "gemma", ServerProvider::Openai, None),
-            server("Azure Plannia", "https://example.openai.azure.com", "gpt-mini", ServerProvider::Azure, Some("azure-key")),
+            server("Azure Contoso", "https://example.openai.azure.com", "gpt-mini", ServerProvider::Azure, Some("azure-key")),
             server("Azure Two", "https://two.openai.azure.com", "gpt-mini", ServerProvider::Azure, Some("other-key")),
         ];
         cfg
@@ -487,13 +521,13 @@ mod tests {
         let (name, llm) = resolve(&cfg, &Target::parse("nas")).unwrap();
         assert_eq!((name.as_str(), llm.endpoint.as_deref(), llm.model_name.as_str(), llm.api_key.is_none()), ("NAS", Some("http://nas:11434"), "gemma", true));
         assert_eq!(llm.provider, ServerProvider::Openai, "not the active connection's provider or key");
-        let (name, llm) = resolve(&cfg, &Target::parse("azure p=gpt-big")).unwrap();
-        assert_eq!((name.as_str(), llm.model_name.as_str(), llm.provider), ("Azure Plannia", "gpt-big", ServerProvider::Azure));
+        let (name, llm) = resolve(&cfg, &Target::parse("azure c=gpt-big")).unwrap();
+        assert_eq!((name.as_str(), llm.model_name.as_str(), llm.provider), ("Azure Contoso", "gpt-big", ServerProvider::Azure));
         assert_eq!(llm.api_key.as_ref().map(|k| k.as_str()), Some("azure-key"));
         let unclear = resolve(&cfg, &Target::parse("azure")).unwrap_err().to_string();
-        assert!(unclear.contains("Azure Plannia or Azure Two"), "{unclear}");
+        assert!(unclear.contains("Azure Contoso or Azure Two"), "{unclear}");
         let missing = resolve(&cfg, &Target::parse("Claude")).unwrap_err().to_string();
-        assert!(missing.contains("NAS, Azure Plannia, Azure Two") && !missing.contains("key"), "{missing}");
+        assert!(missing.contains("NAS, Azure Contoso, Azure Two") && !missing.contains("key"), "{missing}");
     }
 
     #[test]
@@ -516,8 +550,8 @@ mod tests {
         assert_eq!((s.lines, s.failures, s.cut_off), (23, 2, 1));
         assert_eq!((s.first_p50_ms, s.total_p50_ms, s.total_p95_ms, s.total_max_ms), (Some(100), Some(1000), Some(1900), Some(2000)));
         assert_eq!(s.errors, [("HTTP 429: slow down".to_string(), 2)]);
-        let text = table(&[s, summarize("NAS", "gemma", &[failed("unreachable")], (0, 0))], 23, 1);
-        assert!(text.contains("| Gemini | flash | 100 | 190 | 1000 | 1900 | 2000 | 2 of 23 | 1 | 1200 / 340 |"), "{text}");
+        let text = table(&[s, summarize("NAS", "gemma", &[failed("unreachable")], (0, 0))], 23, 1, true);
+        assert!(text.contains("| Gemini | flash | 100 | 190 | 1000 | 1900 | 2000 | 2 of 23 | 1 | 1200 / 340 | 0 |"), "{text}");
         assert!(text.contains("| NAS | gemma | – | – | – | – | – | 1 of 1 | 0 | not reported |"), "{text}");
         assert!(text.contains("NAS · gemma: 1× unreachable"));
     }

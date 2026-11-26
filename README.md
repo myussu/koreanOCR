@@ -79,7 +79,7 @@ It asks: whether to use that recommendation (if not, which build and which model
 
 `maru setup wizard --dry-run` shows what it found and what it would do, without changing anything. `--yes` takes every recommendation without asking, `--backend cuda|vulkan|cpu` replaces the recommended llama.cpp build, and `--force` downloads llama.cpp again even if a `llama-server` already works (needed to switch a PC from one build to another; quit Maru first). Each step is also its own command (`maru setup llm`, `kiwi`, `ocr`, `ocr-vl`, `tts`, and `maru dict download`) if you prefer to run them yourself.
 
-The model on another PC is not part of the wizard; set it up afterwards in **Settings → Translation model** (below).
+The model on another PC is not part of the wizard; add it afterwards in **Settings → Connections** and choose it for a task (see "Settings: one model per task" below).
 
 Optional: `maru setup tts` (a local Korean voice, see **Speech** below) and the AnkiConnect add-on if you use Anki.
 
@@ -112,14 +112,14 @@ llama-server.exe -hf unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL --no-mmproj --ho
 ```
 Let it through the firewall on private networks (`New-NetFirewallRule -DisplayName llama-server -Direction Inbound -Protocol TCP -LocalPort 8080 -Action Allow -Profile Private`)
 and check it from your PC with `curl http://<that-pc>:8080/health`. The server has no login: keep it on your home network and never forward the port.
-Then on your PC, either set it for good in **Settings → Translation model** (or `[llm] endpoint = "http://<that-pc>:8080"`), or try it for one command only:
+Then on your PC, either add it for good in **Settings → Connections** and choose it under Live subtitles or Captures, or try it for one command only:
 `maru bench --live --endpoint http://<that-pc>:8080` times the live-subtitle lane against it (`maru bench --live` alone times the local model; quit the
 overlay first, it holds the local model's port). The reading model and the speech server still start on your PC unless you turn them off
 (`[ocr] vision_reader = false`, `[tts] enabled = false` or `provider = "endpoint"`). To compare local and remote on a real cutscene, follow M-11 in
 [docs/MANUAL_TESTS.md](docs/MANUAL_TESTS.md).
 
 **Ollama** (for example on a TrueNAS SCALE box) works as that server too, with a few differences from llama-server: it chooses the model by name, and a "thinking" model must be told not to think (Maru sends `reasoning_effort = "none"` to such servers; `[llm] reasoning_effort` changes or empties it), so set
-**Settings → Translation model → Model name that server expects** (`[llm] model_name`) to exactly what `ollama list` shows, and give `maru bench` the same with
+the connection's **Model** (Settings → Connections) to exactly what `ollama list` shows, and give `maru bench` the same with
 `--model`; and it unloads an idle model after five minutes by default, so the first subtitle after a pause waits for the model to load. Set
 **Keep the model loaded on that server** (`[llm] server_keep_minutes`) so Maru loads it when you start playing and unloads it when you stop, or set
 `OLLAMA_KEEP_ALIVE` (for example `-1`) on the server if nothing else needs that GPU.
@@ -369,6 +369,103 @@ and reject incomplete, malformed or token-capped streams. The wrapper accepts `-
 
 **Settings** (tray → Settings…, or the Settings tab) edits `config.toml` for you: shortcuts (press the keys to record them), the panel's look, learning, screen reading, live subtitles and the translation model. Your comments in the file are kept, invalid values are refused with a reason, and each setting says whether it applies at once (shortcuts, panel) or after a restart (everything the engine reads at start-up; the page offers a restart button).
 
+## Settings: one model per task
+
+Settings opens on a map of what a line goes through: **Read the screen → Translate → Words and meanings → Cards**. Each
+step says what it uses right now, where that runs (this PC, another computer on your network, a hosted service) and
+shows a dot: green worked the last time it was asked, red needs something from you (no key, no quota left,
+unreachable), hollow has not been asked yet or is off. Clicking a line opens the section it belongs to.
+
+The sections follow the same flow: **Live subtitles**, **Captures** (snapshot, hover and screen scan), **Making cards**,
+**Voice**, **Connections**, **Shortcuts** and **Advanced** (the settings that rarely change, grouped by section, and what
+is installed). Every setting has one sentence of help and a "Used by" line naming the features that read it; the search
+box finds settings by name, by what they do or by feature ("scan", "make cards", "hover"). There are three kinds of
+control, and they look different: cards when you pick one of several, a switch for on or off, an underlined box when
+you type.
+
+**Each task picks its own model.** Live subtitles, captures, the meanings of card words and the sentence of a card each
+name a connection: **This PC** (the model in `[llm] hf_repo` / `model_path`) or one you saved. At the top of its
+section a task shows what the running app uses for it, with a **Test** button (one short question; this PC's model is
+not loaded by it while live subtitles run). Card meanings ask their connection first, then this PC's model, then use
+the dictionary, and the cards sheet says which of them answered. `maru config tasks` prints the same table.
+
+**Connections are edited in one place.** Settings → Connections lists this PC's model and every server you added, with
+what uses each. **Add a connection** asks for a name, the kind of server (your own or Anthropic, Azure OpenAI, Google
+Gemini), its address, the model and, if it needs one, an API key (kept in `config.toml` on this PC). **Find the server**
+looks for a bare IP or name on ports 11434, 1234 and 8080 and lists its models; **Test** asks it one fixed question and
+answers in plain words ("Gemini has no quota left."). A connection cannot be removed while a task uses it, and renaming
+it follows into the tasks that named it.
+
+Claude can be reached two ways. A connection of the kind **Anthropic (Claude)** uses Anthropic's own API; one saved earlier
+as an ordinary server with the address `https://api.anthropic.com` keeps using the OpenAI-compatible endpoint and works
+as before. For Maru's short requests the two measured the same speed, and the prompt cache of Anthropic's API does not
+come into play because the prompts are shorter than it caches.
+
+**Two voices.** Settings → Voice has one voice for everything by default. Enter an address under *While reading, use
+another voice server* and reading aloud goes there, while cards keep the voice above. The intended pair is Supertonic 3
+for reading (small, on the processor, about a second to start) and the Qwen voice for cards: start it yourself with
+`pip install supertonic` and `python tools/supertonic_server.py --port 18097`, then enter `http://127.0.0.1:18097`,
+speaker `F1`, and (under Advanced) model `supertonic-3`, save and restart. The Qwen voice then loads only when you
+make cards with sound and leaves the graphics card when they are made. Maru does not start that server for you, and
+if it is not running, reading aloud says so instead of falling back. *Test the reading voice* and *Test the card voice*
+try each one.
+
+Changes are collected and written with **Save**. Shortcuts, the panel's look, the list of connections and the two card
+tasks take effect at once; what holds a model or a server (the live and capture connections, the voice, this PC's
+model) waits for a restart, and one banner at the top lists what is waiting.
+
+The first time this version starts, it writes the task table into your `config.toml` from what the file already did
+(the copy of the file as it was is kept beside it as `config.toml.before-tasks-<date>.bak`); the only change of
+behaviour is that card meanings ask this PC's model. Some sections further down this page still describe the earlier
+Settings layout (a "Translation model" section, a "Saved connection" selector, a "Snapshot quality server"): the
+behaviour they describe is unchanged, and their settings are now the connection of Live subtitles, the connection of
+Captures and "While live subtitles are on, use".
+
+## Making cards from a line
+
+History → **Make cards** on a live line opens a sheet with the words of the line. Each word has a short English and a
+short Spanish meaning (both can be typed over), the dictionary's other senses to pick from, and under the words a line
+saying which model chose the meanings ("Meanings chosen by This PC's model …"). If the connection you chose for card
+meanings could not answer, the sheet says why in plain words ("Gemini has no quota left. This PC's model answered
+instead.") and **Retry with …** asks any other connection for that line; your ticks and anything you typed are kept.
+While live subtitles run, this PC's model is not loaded for a card: the sheet offers the other connections now, or
+**Ask This PC's model when live subtitles stop**. **Translate again with …** gives the sentence card a fresh translation.
+
+Words and sentences go to two decks: **Deck for word cards** and **Deck for sentence cards** in Settings → Making cards
+(`learning.anki.deck`, `learning.anki.sentence_deck`); both can be typed over on the sheet. The game or program is the
+tag `maru::<name>` on the card, not a subdeck (turn on "Suggest a deck per program" in Advanced to get those offers
+back; cards made earlier keep their `app::<name>` tag). Before you add, the sheet reads how many new cards already wait
+in each deck and says when yours would come up ("12 new cards already wait in … At 3 a day, these 2 words would come up
+in 4 days."), using the per-day numbers you set in Maru (3 words and 1 sentence by default). Anki's own daily limits
+are not read or changed: AnkiConnect cannot see a deck's overrides.
+
+The dictionary's English is cleaned before it reaches a card: about one sense in twenty of the 한국어기초사전 has no English
+word at all, only the Korean word in Latin letters ("nyeoseok", "su"). Those are never shown as a meaning; the short
+gloss in the definition is used when there is one, and otherwise the model words the card. A word with more than eight
+senses is asked about twice when the model says none of the first eight fits. If the word splitter (Kiwi) gets a word's
+dictionary form wrong, as it does with dialect and misread text, the model can propose the right one when **Let the
+model correct a word's dictionary form** is on (Settings → Advanced; off by default, it only worked well with Claude
+Sonnet in tests): the sheet then shows both forms and a button to use the model's.
+
+A word added from the panel (**Add to Anki**) now gets its Spanish meaning also when the dictionary has several senses
+for it: the sense that fits the sentence you saw it in is chosen by the card-meanings connection.
+
+## YouTube captions as text (experimental)
+
+When a YouTube video has Korean captions uploaded by its author, a small browser extension
+(`extension/youtube-captions`, Chrome or Edge, loaded unpacked) can send each line to Maru as it comes up, so the text
+is exact instead of read from the picture. The lines are listed in History like live subtitles, from the program
+`youtube` (cards get the tag `maru::youtube`); starring and Make cards work as usual. No translation is drawn on the
+video. Auto-translated captions are never used; auto-generated Korean only with a switch in the extension. A video
+without usable captions sends nothing ("No Korean captions on this video") and live subtitles keep working as before.
+
+To use it: Settings → Live subtitles → **Take YouTube captions from the browser** → Save, copy the **Code for the
+browser extension** that appears, restart Maru, load the extension and paste the code in its popup. Maru then listens on
+this PC only (`127.0.0.1`, port 18098, `[captions]` in `config.toml`); it is off by default.
+
+**Not verified against YouTube:** the receiver and the extension's logic are tested, but the extension has not yet been
+run in a browser. [docs/YOUTUBE_CAPTIONS.md](docs/YOUTUBE_CAPTIONS.md) has the design, the install steps and what to check (M-45).
+
 ## Saved reading areas
 
 If the game hides or confines the pointer, press **Ctrl+Alt+Q** to open the controls wheel at its position.
@@ -448,6 +545,9 @@ Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless
 `maru translate "저는 학교에서 공부했어요"` · `maru explain 공부했어요 --in "…"` · `maru doctor` ·
 `maru bench` (latency percentiles) · `maru eval-ocr <folder>` (score OCR engines on **your own** screenshots:
 `name.png` + `name.txt` pairs) · `maru vocab …` · `maru dict …`. The CLI uses the same engine as the overlay.
+
+`maru bench` never writes to your history: it runs the engine read-only (nothing is saved to `history.db`, the reading
+areas or the screen labels).
 
 **Saved connections from the command line.** `maru connection list` shows the connections saved in Settings (never
 their keys); `maru connection test NAME` sends one live subtitle line and one card-meaning choice through that connection
@@ -544,8 +644,8 @@ The different kinds of remembered data have different lifetimes:
 
 ## What is verified
 
-**Checked automatically** (about 465 tests: `cargo test --workspace`, `cargo test --manifest-path app/src-tauri/Cargo.toml`,
-`node --test app/ui/test/*.test.mjs`; CI runs them on Windows and Linux, plus clippy with warnings denied):
+**Checked automatically** (about 1,000 tests: `cargo test --workspace`, `cargo test --manifest-path app/src-tauri/Cargo.toml`,
+`node --test app/ui/test/*.test.mjs` and the browser extension's; CI runs them on Windows and Linux, plus clippy with warnings denied):
 
 * Korean pronunciation and romanization rules, 어절 grouping, dictionary import, FSRS-6 (replays the reference
   implementation's own test vector), vocabulary, Anki (against a **fake** AnkiConnect).

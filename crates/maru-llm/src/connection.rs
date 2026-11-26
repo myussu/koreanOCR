@@ -26,16 +26,72 @@ async fn check(endpoint: &str, model_name: &str, reasoning_effort: &str, deadlin
     check_authenticated(endpoint, model_name, reasoning_effort, Default::default(), None, deadline).await
 }
 
+/// Why a connection check did not pass.
+#[derive(Debug)]
+pub enum CheckFailure {
+    /// What was typed cannot be asked: the sentence says what to change.
+    Input(String),
+    /// The server did not answer within the time allowed.
+    TimedOut,
+    /// It answered with nothing.
+    Empty,
+    /// The request failed.
+    Model(crate::LlmError),
+}
+
+impl CheckFailure {
+    /// The kind of problem and one plain sentence about the connection called `name`, with no status code or
+    /// server text (the settings page shows this).
+    pub fn plain(&self, name: &str) -> (Option<crate::problem::Problem>, String) {
+        use crate::problem::{Problem, classify, sentence};
+        match self {
+            CheckFailure::Input(what) => (None, what.clone()),
+            CheckFailure::TimedOut => (Some(Problem::Unreachable), format!("{name} did not answer in time. It may still be loading its model: try again in a moment.")),
+            CheckFailure::Empty => (Some(Problem::Failed), format!("{name} answered with nothing. Check the model name.")),
+            CheckFailure::Model(error) => {
+                let problem = classify(error);
+                let hint = match (problem, error) {
+                    (Problem::Failed, crate::LlmError::Http { status: 404, .. }) => " The server does not know that model name.",
+                    (Problem::Unreachable, _) => " Check the address and that the server is running.",
+                    _ => "",
+                };
+                (Some(problem), format!("{}{hint}", sentence(name, problem)))
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for CheckFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            CheckFailure::Input(what) => f.write_str(what),
+            CheckFailure::TimedOut => f.write_str("The connection test timed out. The server may still be loading the model; check it and try again."),
+            CheckFailure::Empty => f.write_str("The server responded but returned no translation. Check the model name and its streaming chat API."),
+            CheckFailure::Model(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+/// The same check as [`test_authenticated_connection`], keeping what went wrong so it can be said plainly.
+pub async fn check_connection(endpoint: &str, model_name: &str, reasoning_effort: &str, provider: maru_core::external_servers::ServerProvider, api_key: Option<maru_core::external_servers::ServerKey>) -> Result<ConnectionReply, CheckFailure> {
+    checked(endpoint, model_name, reasoning_effort, provider, api_key, Duration::from_secs(60)).await
+}
+
 async fn check_authenticated(endpoint: &str, model_name: &str, reasoning_effort: &str, provider: maru_core::external_servers::ServerProvider, api_key: Option<maru_core::external_servers::ServerKey>, deadline: Duration) -> Result<ConnectionReply, String> {
-    let endpoint = crate::discovery::normalize(endpoint)?;
-    let url = reqwest::Url::parse(&endpoint).map_err(|_| "Enter a complete server address, such as http://192.168.1.20:11434.".to_string())?;
+    checked(endpoint, model_name, reasoning_effort, provider, api_key, deadline).await.map_err(|e| e.to_string())
+}
+
+async fn checked(endpoint: &str, model_name: &str, reasoning_effort: &str, provider: maru_core::external_servers::ServerProvider, api_key: Option<maru_core::external_servers::ServerKey>, deadline: Duration) -> Result<ConnectionReply, CheckFailure> {
+    let input = CheckFailure::Input;
+    let endpoint = crate::discovery::normalize(endpoint).map_err(input)?;
+    let url = reqwest::Url::parse(&endpoint).map_err(|_| input("Enter a complete server address, such as http://192.168.1.20:11434.".into()))?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none() {
-        return Err("The server address must start with http:// or https://.".into());
+        return Err(input("The server address must start with http:// or https://.".into()));
     }
     if model_name.trim().is_empty() {
-        return Err("Enter the model name expected by the server.".into());
+        return Err(input("Enter the model name expected by the server.".into()));
     }
-    maru_core::external_servers::validate_connection(&endpoint, model_name, provider, api_key.as_ref())?;
+    maru_core::external_servers::validate_connection(&endpoint, model_name, provider, api_key.as_ref()).map_err(input)?;
     let cfg = LlmConfig {
         endpoint: Some(endpoint.clone()), model_name: model_name.trim().into(),
         reasoning_effort: reasoning_effort.into(), request_timeout_secs: 60,
@@ -48,10 +104,10 @@ async fn check_authenticated(endpoint: &str, model_name: &str, reasoning_effort:
     let opts = ChatOpts { max_tokens: Some(64), temperature: Some(0.0), ..Default::default() };
     let start = Instant::now();
     let reply = tokio::time::timeout(deadline, client.stream_chat(&messages, &opts, &mut |_| {}))
-        .await.map_err(|_| "The connection test timed out. The server may still be loading the model; check it and try again.".to_string())?
-        .map_err(|e| e.to_string())?;
+        .await.map_err(|_| CheckFailure::TimedOut)?
+        .map_err(CheckFailure::Model)?;
     if reply.trim().is_empty() {
-        return Err("The server responded but returned no translation. Check the model name and its streaming chat API.".into());
+        return Err(CheckFailure::Empty);
     }
     Ok(ConnectionReply { endpoint, reply: reply.trim().chars().take(300).collect(), took_ms: start.elapsed().as_millis() as u64 })
 }
@@ -86,6 +142,23 @@ mod tests {
     async fn a_missing_model_preserves_the_server_error() {
         let server = spawn_mock(|_, _| MockResponse { status: 404, chunks: vec![b"model not found".to_vec()], delay_ms: 0 }).await;
         assert!(test_connection(&server.url, "missing", "none").await.unwrap_err().contains("model not found"));
+    }
+
+    #[tokio::test]
+    async fn a_failed_check_is_said_in_plain_words_without_the_servers_text() {
+        use crate::problem::Problem;
+        let quota = spawn_mock(|_, _| MockResponse { status: 429, chunks: vec![br#"{"error":{"status":"RESOURCE_EXHAUSTED"}}"#.to_vec()], delay_ms: 0 }).await;
+        let failure = check_connection(&quota.url, "m", "", Default::default(), None).await.unwrap_err();
+        assert_eq!(failure.plain("Gemini"), (Some(Problem::Quota), "Gemini has no quota left.".to_string()));
+        let missing = spawn_mock(|_, _| MockResponse { status: 404, chunks: vec![b"{\"error\":\"model 'x' not found\"}".to_vec()], delay_ms: 0 }).await;
+        let (problem, text) = check_connection(&missing.url, "x", "", Default::default(), None).await.unwrap_err().plain("NAS");
+        assert_eq!(problem, Some(Problem::Failed));
+        assert!(text.contains("does not know that model name") && !text.contains('{') && !text.contains("404"), "{text}");
+        let (problem, text) = check_connection("http://127.0.0.1:9", "x", "", Default::default(), None).await.unwrap_err().plain("NAS");
+        assert_eq!(problem, Some(Problem::Unreachable));
+        assert!(text.starts_with("NAS cannot be reached.") && !text.contains("127.0.0.1"), "{text}");
+        let (problem, text) = check_connection("nas", " ", "", Default::default(), None).await.unwrap_err().plain("NAS");
+        assert!(problem.is_none() && text.contains("model name"), "what was typed is explained as before: {text}");
     }
 
     #[tokio::test]

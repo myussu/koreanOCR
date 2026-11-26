@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "Maru: YouTube captions",
+  "version": "0.1.0",
+  "description": "Sends the Korean captions a video's author uploaded to Maru on this PC, line by line as they come up, so Maru does not have to read them from the screen.",
+  "minimum_chrome_version": "111",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["page-bridge.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["captions-core.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": { "default_title": "Maru: YouTube captions", "default_popup": "popup.html" },
+  "options_ui": { "page": "popup.html", "open_in_tab": false }
+}

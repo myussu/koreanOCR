@@ -3,7 +3,7 @@
 
 import { invoke } from './bridge.js';
 import { soundsText } from './anki.js';
-import { addLabel, ankiIsOff, applySense, deckOptions, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, senseIndex, senseLabel } from './mine-core.js';
+import { addLabel, ankiIsOff, answeredText, applySense, askFor, deckOptions, formChoice, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, queueLines, redraft, retryChoices, senseIndex, senseLabel } from './mine-core.js';
 
 let lists = 0;
 
@@ -15,6 +15,9 @@ export function mineSheet(h, item, { onClose, onAdded }) {
   let busy = false;
   let reply = null;
   let error = null;
+  let asking = null; // "Retry with …" in progress: what the sheet says meanwhile
+  let sentenceBy = null; // who translated the sentence for the card, when a connection did
+  let countTimer = null;
   const ids = { decks: `mine-decks-${++lists}` };
 
   // replaceChildren would print a skipped part as "null": keep only real nodes.
@@ -29,21 +32,26 @@ export function mineSheet(h, item, { onClose, onAdded }) {
       h('div', { class: 'mine-line ko', text: sheet.sentence }),
       h('label', { class: 'mine-tr' }, h('span', { text: 'Translation' }),
         h('input', { type: 'text', value: draft.translation, oninput: (e) => { draft.translation = e.target.value; } })),
-      sheet.note && h('p', { class: 'mine-note', text: sheet.note }),
+      sentenceTools(),
+      sheet.note && h('p', { class: 'mine-note warn', text: sheet.note }),
       sheet.words.length
         ? h('div', { class: 'mine-words' }, sheet.words.map((w, i) => wordRow(w, draft.words[i], i)))
         : h('p', { class: 'mine-note', text: 'No words to learn were found in this line; it can still be a sentence card.' }),
+      sheet.words.length > 0 && meaningTools(),
       h('label', { class: 'mine-check' },
         h('input', { type: 'checkbox', checked: draft.sentenceCard, onchange: (e) => { draft.sentenceCard = e.target.checked; draw(); } }),
         h('span', { text: sheet.sentence_in_anki ? 'Sentence card (Anki already has this line)' : 'Sentence card: the whole line with its sound, its translation and the words above' })),
       h('div', { class: 'mine-opts' },
-        h('label', {}, h('span', { text: 'Deck' }),
-          h('input', { type: 'text', value: draft.deck, list: ids.decks, oninput: (e) => { draft.deck = e.target.value; refresh(); } }),
+        h('label', {}, h('span', { text: 'Deck for the words' }),
+          h('input', { type: 'text', value: draft.deck, list: ids.decks, oninput: (e) => { draft.deck = e.target.value; refresh(); recount(); } }),
           h('datalist', { id: ids.decks }, deckOptions(sheet).map((d) => h('option', { value: d.deck, label: d.label })))),
+        h('label', {}, h('span', { text: 'Deck for the sentence' }),
+          h('input', { type: 'text', value: draft.sentenceDeck, list: ids.decks, oninput: (e) => { draft.sentenceDeck = e.target.value; refresh(); recount(); } })),
         h('label', { class: 'mine-check', title: 'An English → Korean card for each word, to write it from its meaning' },
           h('input', { type: 'checkbox', checked: draft.reverse, onchange: (e) => { draft.reverse = e.target.checked; draw(); } }), h('span', { text: 'Reverse cards for words' })),
         h('label', { class: 'mine-check' },
           h('input', { type: 'checkbox', checked: draft.audio, onchange: (e) => { draft.audio = e.target.checked; } }), h('span', { text: 'Sound' }))),
+      h('div', { class: 'mine-queue' }, queueLines(sheet.queue, draft).map((line) => h('p', { text: line }))),
       h('div', { class: 'mine-go' },
         h('button', { class: 'btn primary', disabled: busy || !!blocker, onclick: add, text: busy ? 'Adding…' : label.text }),
         h('span', { class: 'mine-why', text: busy ? 'Making sounds and cards… the voice can take a minute to start.' : blocker ?? label.cards }),
@@ -63,6 +71,54 @@ export function mineSheet(h, item, { onClose, onAdded }) {
     button.disabled = busy || !!blocker;
     button.textContent = busy ? 'Adding…' : addLabel(draft).text;
     why.textContent = blocker ?? addLabel(draft).cards;
+    root.querySelector('.mine-queue')?.replaceChildren(...queueLines(sheet.queue, draft).map((line) => h('p', { text: line })));
+  };
+
+  // A deck was typed over: count the new cards waiting there (a moment after the last key, and only by reading Anki).
+  const recount = () => {
+    clearTimeout(countTimer);
+    countTimer = setTimeout(async () => {
+      try {
+        sheet.queue = await invoke('mine_queue', { wordDeck: draft.deck.trim(), sentenceDeck: (draft.sentenceDeck || draft.deck).trim() });
+      } catch { sheet.queue = null; }
+      refresh();
+    }, 500);
+  };
+
+  // Who chose the meanings, and the connections the line can be asked again with.
+  const meaningTools = () => h('div', { class: 'mine-by' },
+    h('span', { class: 'mine-by-who', text: asking ?? answeredText(sheet) }),
+    !asking && retryChoices(sheet).filter((c) => !c.current || c.afterLive).map((c) => h('button', { class: 'btn', type: 'button', title: c.detail, text: c.label, onclick: () => ask(c) })));
+
+  async function ask(choice) {
+    asking = choice.afterLive ? 'Waiting for live subtitles to stop, then asking…' : `Asking ${choice.connection === 'local' ? "this PC's model" : choice.connection}…`;
+    draw();
+    try {
+      const again = await invoke('mine_sheet', { sentence: item.source, translation: draft.translation, app: item.app ?? null, ask: askFor(choice) });
+      draft = redraft(draft, sheet, again);
+      sheet = again;
+    } catch (e) {
+      error = String(e);
+    }
+    asking = null;
+    draw();
+  }
+
+  // The sentence card's translation: the line's own, or a fresh one from a connection.
+  const sentenceTools = () => {
+    const choices = retryChoices(sheet).filter((c) => !c.afterLive);
+    if (!choices.length) return null;
+    const out = h('span', { class: 'mine-by-who', text: sentenceBy ?? 'The translation made while you played.' });
+    return h('div', { class: 'mine-by' }, out, choices.map((c) => h('button', { class: 'btn', type: 'button', title: c.detail, text: c.label.replace('Retry with', 'Translate again with'), onclick: async (e) => {
+      e.target.disabled = true;
+      out.textContent = 'Translating…';
+      const r = await invoke('mine_sentence_translation', { sentence: item.source, app: item.app ?? null, ask: askFor(c) }).catch((err) => ({ translation: null, note: String(err) }));
+      if (r.translation) {
+        draft.translation = r.translation;
+        sentenceBy = `Translated for the card by ${r.answered?.connection === 'local' ? "this PC's model" : r.answered?.connection ?? c.connection}.${r.note ? ` ${r.note}` : ''}`;
+      } else sentenceBy = r.note ?? 'No translation came back; the line keeps the one it had.';
+      draw();
+    } })));
   };
 
   const head = () => h('div', { class: 'mine-head' }, h('strong', { text: 'Make cards' }),
@@ -73,7 +129,7 @@ export function mineSheet(h, item, { onClose, onAdded }) {
     const facts = [w.pos, w.level, w.known ? 'known' : '', w.in_anki ? 'in Anki' : ''].filter(Boolean).join(' · ');
     return h('div', { class: d.picked ? 'mine-word on' : 'mine-word' },
       h('input', { type: 'checkbox', checked: d.picked, 'aria-label': `Make a card for ${w.key}`, onchange: (e) => { d.picked = e.target.checked; draw(); } }),
-      h('div', { class: 'mine-key' }, h('span', { class: 'ko', text: w.key }), w.surface !== w.key && h('small', { class: 'ko', text: w.surface })),
+      h('div', { class: 'mine-key' }, h('span', { class: 'ko', text: d.key }), w.surface !== d.key && h('small', { class: 'ko', text: w.surface }), forms(w, d)),
       h('div', { class: 'mine-meaning' },
         h('input', { type: 'text', value: d.meaning, list, placeholder: 'meaning', 'aria-label': `Meaning of ${w.key}`, oninput: (e) => { d.meaning = e.target.value; refresh(); } }),
         w.dictionary.length > 0 && h('datalist', { id: list }, w.dictionary.map((g) => h('option', { value: g }))),
@@ -81,6 +137,13 @@ export function mineSheet(h, item, { onClose, onAdded }) {
         (sheet.credit || d.meaningEs) && h('input', { type: 'text', class: 'es', lang: 'es', value: d.meaningEs, placeholder: 'significado en español', 'aria-label': `Spanish meaning of ${w.key}`, oninput: (e) => { d.meaningEs = e.target.value; } }),
         (w.senses?.length ?? 0) > 1 && senses(w, d),
         h('small', { text: [meaningHint(w), facts].filter(Boolean).join(' · ') })));
+  };
+
+  // The model reads another dictionary form than the word splitter: both are shown, and a button switches the card.
+  const forms = (w, d) => {
+    const choice = formChoice(w, d);
+    return choice && h('div', { class: 'mine-form' }, h('small', { text: choice.text }),
+      h('button', { class: 'btn', type: 'button', text: choice.button, onclick: () => { d.key = choice.next; draw(); } }));
   };
 
   // The dictionary's other senses of a word: choosing one changes both meanings.
@@ -161,6 +224,15 @@ export function mineSheet(h, item, { onClose, onAdded }) {
       error = String(e);
     }
     draw();
+    // With a connection chosen for the sentence (Settings → Making cards) the card gets a fresh translation.
+    if (sheet) {
+      const r = await invoke('mine_sentence_translation', { sentence: item.source, app: item.app ?? null }).catch(() => null);
+      if (r?.translation) {
+        draft.translation = r.translation;
+        sentenceBy = `Translated for the card by ${r.answered?.connection === 'local' ? "this PC's model" : r.answered?.connection}.${r.note ? ` ${r.note}` : ''}`;
+        draw();
+      } else if (r?.note) { sentenceBy = r.note; draw(); }
+    }
   })();
   return root;
 }
