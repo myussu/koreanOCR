@@ -1727,6 +1727,7 @@ dependencies = [
  "maru-platform",
  "maru-srs",
  "maru-tts",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

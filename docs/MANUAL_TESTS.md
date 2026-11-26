@@ -137,7 +137,14 @@ use while a game runs; any error text.
 | Close Anki, press **Check Anki**, then try **Add to Anki** | a clear message, no hang or crash |
 **Bring:** for each row "worked" or the exact message; a screenshot of the note in Anki's Browse view (fields, tags, deck); Anki and
 AnkiConnect versions; the log lines around a failure.
-**Why unverified:** the client was only run against a fake AnkiConnect; the real one rejects calls in ways the fake does not.
+**Run without a person (2026-11-25, see the results log):** with Anki open on a test profile,
+`MARU_REAL_ANKI=1 MARU_REAL_ANKI_PROFILE="<profile>" cargo test -p maru-engine --test real_anki`
+does rows 1, 2, 3 and 5 through the engine in a throwaway deck (Check Anki, a word with its fields, tags and both sounds,
+the reverse card in `<deck>::Reverse`, no duplicate) and then deletes everything; row 8 is checked with nothing listening
+where Anki should be. Every change goes through a guard that refuses it unless the named profile is open and the change
+stays in the throwaway deck, and that never lets a sync through.
+**Still for a person:** hearing the sounds on the card (row 4), **Sync now** and AnkiWeb (row 6: the automated run never
+syncs), reviewing a card until its gloss fades (row 7), really closing Anki (row 8), and the Add to Anki popover itself.
 
 ## M-10 Settings page and lite mode
 **Steps:** change a shortcut (hotkeys apply at once), a panel option, and a model setting (needs a restart: use the page's restart button);
@@ -584,8 +591,12 @@ screenshots of confusing status or clipped controls, and any request interrupted
 
 **Automated verification:** fake-Anki tests cover partial reverse-move failure/retry, pending persistence, duplicate/busy
 preflight, membership distinct from local saves, successful reconciliation and failed-refresh preservation. Browser demo
-checks cover Refresh progress and the editor widgets. The real Anki collection, AnkiWeb sync, media playback and physical
-keyboard behavior remain unverified; the agent did not open, alter or sync the user's collection.
+checks cover Refresh progress and the editor widgets. On 2026-11-25 steps 4 and 5 also ran against a real Anki (test
+profile, throwaway deck, `MARU_REAL_ANKI=1 MARU_REAL_ANKI_PROFILE="<profile>" cargo test -p maru-engine --test real_anki`):
+a card setup made to fail at the reverse-card move reported the unfinished note and the retry finished that same note
+without a second one; after a card was suspended and a note deleted in Anki, Refresh progress kept the suspended word's
+membership without progress and forgot the deleted one. AnkiWeb sync, media playback, physical keyboard behavior, a
+pending record surviving a real restart and the user's own collection remain unverified; the agent never syncs.
 
 **Bring:** app log, Anki/AnkiConnect versions, selected deck and audio choice, card/deck/field screenshots, any duplicate
 or unfinished-setup message, and whether the word/note/media appeared on AnkiWeb. Do not send credentials or API keys.
@@ -1018,13 +1029,20 @@ line, one model request, dictionary fallback, what Anki has), a word card carryi
 even when the word has a newer sentence, the sentence card's fields, tags and single card, duplicate lines, and a word
 without a meaning being refused; the sheet was checked in headless Chromium with mocked commands. Real Anki's search
 syntax for empty and filled fields was checked read-only against a real collection. With Anki open,
-`MARU_REAL_ANKI=1 cargo test -p maru-srs --test real_anki` adds a word card (with reverse), a silent word and a sentence
-card to a throwaway deck, checks fields, decks, duplicates and sounds added later, then deletes them (it creates the two
-Maru note types if missing). On 2026-10-14 it ran against the developer's Anki (AnkiConnect 6): its first run found that
+`MARU_REAL_ANKI=1 MARU_REAL_ANKI_PROFILE="<profile>" cargo test -p maru-srs --test real_anki` adds a word card (with
+reverse), a silent word and a sentence card to a throwaway deck, checks fields, decks, duplicates and sounds added later,
+then deletes them (it creates the two Maru note types if missing; they stay, AnkiConnect cannot delete one). The profile
+must be named: the test writes through a guard (`maru-srs/tests/support/guarded_anki.rs`) that refuses every change
+unless that profile is open in Anki and the change stays in the throwaway deck, and that never forwards a sync. The same
+command with `-p maru-engine` runs steps 1 to 4 through the engine (the sheet's ticks from what Anki has, a word card
+with this line and the edited meaning, reverse cards off giving one card, the sentence card, a second run adding
+nothing). On 2026-10-14 it ran against the developer's Anki (AnkiConnect 6): its first run found that
 AnkiConnect attaches a sound only to a field the update also names (with `fields: {}` it answers success and attaches
 nothing), which the stand-in had hidden; `add_sounds` now names the fields and the stand-in behaves the same way. The
-second run passed in 3.4 s and left no deck, note or sound file. That is an automated run, not a person reviewing the
-cards in Anki, and it used generated silence: real speech and meanings from a real model are still unchecked.
+second run passed in 3.4 s and left no deck, note or sound file. On 2026-11-25 both tests passed on a test profile
+(results log), the engine one with speech files made by the installed voice (`maru tts`). These are automated runs, not
+a person reviewing the cards in Anki: nobody has listened to the cards, the meanings came from a scripted model, and the
+sheet itself (steps 2, 5 and 6 in the app) was not driven.
 
 ## M-40 Anki on from the sheet, and sounds added later
 
@@ -1041,9 +1059,11 @@ notes in 17.4 s and a second press found none left. Not checked: the restart in 
 4. Time the first sound after Maru starts (the voice loading) and later ones.
 
 **Verification:** the search for silent notes, filling only empty fields and keeping existing sounds are tested against
-the stand-in AnkiConnect; the sheet's turn-on flow was clicked through in headless Chromium with mocked commands. Not
-checked: Anki's real search syntax for empty fields, AnkiConnect's real handling of audio on `updateNoteFields`, the real
-voice, a real restart.
+the stand-in AnkiConnect; the sheet's turn-on flow was clicked through in headless Chromium with mocked commands. On
+2026-11-25 step 3's engine side ran against a real Anki (results log): notes added without sound were found by the real
+search, got real speech files through `updateNoteFields`, were no longer listed, and a second fill changed nothing. Not
+checked: the **Add missing sounds** button itself (the shell speaks each text and fills up to 30 notes of the whole
+collection, which the automated run does not do outside its throwaway deck), hearing the result, a real restart.
 
 ## Results log
 
@@ -1052,3 +1072,5 @@ Add a line per test run. An empty log means **nothing below has been checked on 
 | Date | Test | PC / setup | Result | Notes |
 |---|---|---|---|---|
 | 2026-10-11 | M-3 live subtitles | Ryzen 9 7900X3D, RTX 5070 Ti, a game in an emulator, 1280×720, PP-OCR on CPU | partly | Reported by the user: 11 lines translated in order and listed in History → Live subtitles, with "to the first word" times of 1.1–5.4 s. Found by replaying the recorded clip: those times were inflated (the clock started at an earlier scene change; real reads took 0.5–1.4 s), and two short subtitles (about 0.9 s and 1.1 s on screen) were never translated. The watcher was fixed (text signal) and passes the replay; **needs a retest on the real PC**. The user also reported that the band covered the original subtitles, which they do not want; it now goes above or below the original (browser demo checked in Chromium, geometry unit-tested), **not yet seen on the real PC**. |
+| 2026-11-25 | M-39/M-40 Anki client (`maru-srs --test real_anki`) | run by the agent; Anki 26.9.4, AnkiConnect API 6, profile "User 2" (empty test profile), throwaway deck | passed | 4.4 s through the new profile-and-deck guard. Word card with reverse in `<deck>::Reverse`, silent word, sentence card, duplicates refused, sound added later. First run on this profile, so it created the note types `Maru Korean` and `Maru Korean Sentence`; they remain (AnkiConnect cannot delete a note type). No deck, note or sound file left; no sync requested. Sounds were generated silence. |
+| 2026-11-25 | M-9, M-24, M-39, M-40 engine path (`maru-engine --test real_anki`) | run by the agent; same Anki and profile; scripted model for word meanings; speech files made by the installed Qwen3-TTS voice with `maru tts` (0.7 s for 학교, 2.4 s for the line) | passed | 11.5 s, run twice. M-9: Check Anki, word card with fields, tags (`maru`, `topik-1`, `pos::noun`, `app::game`, `added::2026-11`), both sounds, reverse card in the Reverse subdeck, second add reports it exists; nothing listening gives "cannot reach AnkiConnect … Is Anki open" in 2 s. M-24: an add whose `changeDeck` was made to fail reported the unfinished note, the retry finished the same note; after a suspension and a deletion in Anki, Refresh progress counted 2 of 3 words. M-39: sheet ticks follow what Anki has, mined word with reverse off has one card, sentence card has one card, second time everything exists. M-40: 3 silent notes found, 2 given sound, not listed again, existing sound kept. **Not checked:** nobody listened to or looked at the cards; no AnkiWeb sync; the app's own buttons; the user's real profile and deck. No defect found in this path. |

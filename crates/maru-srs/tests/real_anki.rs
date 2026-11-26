@@ -1,8 +1,14 @@
 //! End-to-end check against a real Anki with AnkiConnect, in a throwaway deck that is deleted afterwards.
 //!
-//! Skipped unless `MARU_REAL_ANKI=1` (Anki must be open; `MARU_ANKI_URL` overrides the address). It creates the
-//! `Maru Korean` and `Maru Korean Sentence` note types if they are missing, as Maru does on first use, and leaves
-//! no notes, deck or sound files behind. It never asks Anki to sync.
+//! Skipped unless `MARU_REAL_ANKI=1` (Anki must be open; `MARU_ANKI_URL` overrides the address) and
+//! `MARU_REAL_ANKI_PROFILE` names the Anki profile that may be written to: every change goes through
+//! `support/guarded_anki.rs`, which refuses it when another profile is open or when it would leave the throwaway
+//! deck. It creates the `Maru Korean` and `Maru Korean Sentence` note types if they are missing, as Maru does on
+//! first use (AnkiConnect cannot delete a note type, so those stay), and leaves no notes, deck or sound files
+//! behind. It never asks Anki to sync.
+
+#[path = "support/guarded_anki.rs"]
+mod guarded_anki;
 
 use maru_core::WordState;
 use maru_core::config::{AnkiConfig, ReverseMode};
@@ -84,7 +90,12 @@ async fn word_cards_sentence_cards_and_sounds_added_later_work_in_a_real_anki() 
         eprintln!("skipped: set MARU_REAL_ANKI=1 with Anki open to run");
         return;
     }
-    let url = std::env::var("MARU_ANKI_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
+    let Ok(profile) = std::env::var("MARU_REAL_ANKI_PROFILE") else {
+        panic!("set MARU_REAL_ANKI_PROFILE to the Anki profile this test may write to (it must be the one open in Anki)");
+    };
+    let anki_url = std::env::var("MARU_ANKI_URL").unwrap_or_else(|_| "http://127.0.0.1:8765".into());
+    let guard = guarded_anki::GuardedAnki::start(&anki_url, &profile, DECK).await;
+    let url = guard.url.clone();
     let stamp = now_secs();
     let files = [format!("maru_test_{stamp}_w.wav"), format!("maru_test_{stamp}_s.wav"), format!("maru_test_{stamp}_later.wav")];
     let outcome = tokio::spawn(checks(url.clone(), stamp, files.clone())).await;
@@ -105,12 +116,14 @@ async fn word_cards_sentence_cards_and_sounds_added_later_work_in_a_real_anki() 
     }
     // Deleting the deck takes its Reverse subdeck with it.
     tidy(&url, "deleteDecks", json!({ "decks": [DECK], "cardsToo": true })).await;
-    for f in files {
+    for f in guard.stored_media() {
         tidy(&url, "deleteMediaFile", json!({ "filename": f })).await;
     }
     if let Err(e) = outcome {
         std::panic::resume_unwind(e.into_panic());
     }
+    assert!(guard.refused().is_empty(), "the guard refused: {:?}", guard.refused());
+    assert!(!guard.calls().iter().any(|c| c == "sync"), "nothing asked Anki to sync");
 }
 
 async fn checks(url: String, stamp: i64, files: [String; 3]) {

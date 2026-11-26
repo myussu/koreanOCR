@@ -211,7 +211,7 @@ read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
 * **UI:** `anki.js` (pure rules for the Add-to-Anki popover), `panel.js`, `hub.js` (Review tab), Settings → Anki.
 * **Config:** `[learning]`, `[learning.anki]`, per-program decks/tags in `[[profile]]`.
 * **Tests:** FSRS vectors, `anki.rs` against a fake AnkiConnect, `anki_flow.rs`, `anki.test.mjs`.
-* **Real-PC check:** M-9 (real Anki and AnkiConnect — never run against the real thing yet).
+* **Real-PC check:** M-9 (opt-in tests against a real Anki cover the engine path, see below; the popover, AnkiWeb and listening to a card are still for a person).
 * **Mining a live line** (`maru-engine/src/mining.rs`, `maru-srs/src/anki_sentence.rs`, shell `mining.rs`, `app/ui/mine.js`
   + `mine-core.js` + `mine.css`): History → *Make cards* calls `mine_sheet`: the line is analysed, one `glosses` request to
   `pipeline::snapshot_model` gives each word's meaning in the line (dictionary senses as candidates; the dictionary's
@@ -234,7 +234,11 @@ read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
   stops at the first speech or Anki failure. Adds hold `Engine::anki_batch` (mining, filling sounds): the AnkiWeb sync
   waits until no batch is running and Anki has had no add for 4 s, since Anki refuses adds while it syncs. `AnkiClient`
   retries a request refused with "Collection lifecycle operation is active" for up to about 15 s. Tests: `anki.rs` (fake AnkiConnect), `anki_sounds.rs`, `anki.test.mjs`; opt-in
-  against a real Anki (throwaway deck, cleaned up): `maru-srs/tests/real_anki.rs` with `MARU_REAL_ANKI=1`. Real: M-39, M-40.
+  against a real Anki (throwaway deck, cleaned up): `maru-srs/tests/real_anki.rs` (the client) and
+  `maru-engine/tests/real_anki.rs` (word card, add recovery, cards from a line, sounds later, refresh progress) with
+  `MARU_REAL_ANKI=1` and `MARU_REAL_ANKI_PROFILE` naming the profile that may be written to. Both write through
+  `maru-srs/tests/support/guarded_anki.rs`, which refuses a change unless that profile is open and the change stays in
+  the throwaway deck, never forwards a sync, and is tested itself (`maru-srs/tests/guarded_anki.rs`). Real: M-39, M-40.
 
 Anki adds are reserved and validated through `anki_add.rs` before the shell asks speech to generate media. The permit
 spans preflight, audio and the add; refresh shares its gate so it cannot overwrite membership from a concurrent add.

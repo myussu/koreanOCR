@@ -35,6 +35,8 @@ rusqlite.workspace = true
 
 [dev-dependencies]
 maru-llm = { workspace = true, features = ["testing"] }
+# Only the opt-in real-Anki test's pass-through (tests/real_anki.rs).
+reqwest.workspace = true
 
 # ONNX Runtime: bundled on Windows (the supported platform), located at run time elsewhere.
 [target.'cfg(windows)'.dependencies]
