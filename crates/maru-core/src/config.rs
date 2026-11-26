@@ -26,6 +26,8 @@ pub struct Config {
     pub tts: TtsConfig,
     /// Which connection and model each task uses (`tasks.rs`). Without it the older settings decide.
     pub tasks: crate::tasks::TasksConfig,
+    /// Captions sent by the browser extension (`captions.rs`). Off unless switched on.
+    pub captions: crate::captions::CaptionsConfig,
     #[serde(rename = "profile")]
     pub profiles: Vec<AppProfile>,
 }

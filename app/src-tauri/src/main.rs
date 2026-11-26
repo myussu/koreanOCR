@@ -24,6 +24,7 @@ mod input_session;
 mod picker_session;
 mod reading_feedback;
 mod mining;
+mod captions;
 
 use std::sync::{Arc, Mutex};
 
@@ -145,6 +146,8 @@ fn main() {
                 Ok(None) => {}
                 Err(e) => tracing::warn!("config.toml could not be updated with a model per task ({e}); the older settings decide"),
             }
+            // YouTube captions switched on in the file by hand: the code the extension must send is written before the settings are read.
+            captions::write_code_if_missing(&paths.config_file);
             let cfg = Config::load(&paths.config_file).unwrap_or_else(|e| {
                 tracing::error!("{e}; using defaults");
                 Config::default()
@@ -179,6 +182,7 @@ fn main() {
             watch::spawn_scan_hits(app.handle().clone(), state.clone());
             reading::spawn(app.handle().clone(), state.clone());
             reading_feedback::spawn(app.handle().clone(),state.clone());
+            captions::start(app.handle(), state.clone());
             // A model on another computer is loaded now rather than at the first subtitle ([llm] server_keep_minutes).
             state.engine().hold_server_models(false);
             app.manage(state);
@@ -291,6 +295,7 @@ fn main() {
             resources::resource_status,
             resources::resource_record,
             resources::resource_enable,
+            captions::captions_status,
         ])
         .build(tauri::generate_context!())
         .expect("failed to build the Maru application");

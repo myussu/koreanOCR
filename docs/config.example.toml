@@ -216,3 +216,13 @@ run_in_lite = false   # keep the local voice off in game mode so the game has th
 # exe = ["eldenring.exe"]
 # anki_deck = "Korean::Games::Elden Ring"
 # anki_tags = ["game"]
+
+[captions]
+# YouTube captions as text (docs/YOUTUBE_CAPTIONS.md): the browser extension in extension/youtube-captions sends the
+# Korean caption track a video's author uploaded, line by line, to this PC only (127.0.0.1). The lines go to History
+# like live subtitles, from the program "youtube". Off by default; save and restart.
+enabled = false
+port = 18096                  # where the extension sends; change it only if another program uses this port
+# token = "..."               # the code the extension must send. Maru writes one here the first time this is switched
+#                             # on (Settings shows it to copy); delete the line to get a new one.
+# allowed_origin = "chrome-extension://<the id the extension's popup shows>"   # optional: only that extension may send
