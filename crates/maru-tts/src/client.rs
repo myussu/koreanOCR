@@ -73,6 +73,11 @@ impl TtsClient {
         body
     }
 
+    /// The speaking speed asked for (1.0 = normal).
+    pub fn speed(&self) -> f32 {
+        self.speed
+    }
+
     /// Identifies how this client makes `text` sound, for the audio cache.
     pub fn cache_key(&self, text: &str) -> String {
         cache::key_of(&[&self.root, &self.model, &self.voice, &self.language, self.instructions.as_deref().unwrap_or(""), &format!("{:.2}", self.speed), text])
