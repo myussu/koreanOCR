@@ -18,10 +18,12 @@ use crate::store::{Context, WordRecord};
 use crate::{Result, SrsError};
 
 /// Bump when the card layout changes: [`AnkiClient::ensure_model`] then updates the note type in place.
-pub const MODEL_VERSION: u32 = 1;
+/// 2: the Spanish meaning (`MeaningEs`) under the English one.
+pub const MODEL_VERSION: u32 = 2;
 
-/// The fields of the note type, first one being what Anki treats as the unique key.
-pub const FIELDS: [&str; 12] = [
+/// The fields of the note type, first one being what Anki treats as the unique key. New fields go at the end, and
+/// into [`ADDED_FIELDS`], so a note type made by an older Maru gets them without its notes changing.
+pub const FIELDS: [&str; 13] = [
     "Word",
     "Meaning",
     "Pronunciation",
@@ -34,7 +36,12 @@ pub const FIELDS: [&str; 12] = [
     "SentenceAudio",
     "Source",
     "Reverse",
+    "MeaningEs",
 ];
+
+/// Fields a note type made by an older Maru may lack: they are added to it, where a note type lacking any other
+/// field is somebody else's and is refused.
+pub const ADDED_FIELDS: [&str; 1] = ["MeaningEs"];
 
 pub(crate) fn esc(s: &str) -> String {
     s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
@@ -100,6 +107,7 @@ fn css() -> String {
 .ko {{ font-family: 'Malgun Gothic', 'Noto Sans KR', 'Apple SD Gothic Neo', sans-serif; }}\n\
 .big {{ font-size: 2.1em; font-weight: 600; margin: 0.3em 0; }}\n\
 .meaning {{ font-size: 1.4em; margin: 0.3em 0; }}\n\
+.meaning.es {{ font-size: 1.15em; opacity: 0.8; }}\n\
 .pron {{ color: #b45309; font-size: 0.85em; }}\n\
 .pos, .level {{ display: inline-block; font-size: 0.65em; padding: 0 0.6em; margin: 0 0.15em; border-radius: 1em; background: #e8ebf3; color: #50566a; }}\n\
 .nightMode .pos, .nightMode .level {{ background: #2c313c; color: #aab1c5; }}\n\
@@ -122,6 +130,7 @@ fn templates() -> [(&'static str, &'static str, &'static str); 2] {
             "Korean → English",
             "<div class=\"ko big\">{{Word}}</div>\n{{WordAudio}}\n{{#Level}}<div><span class=\"level\">{{Level}}</span></div>{{/Level}}",
             "<div class=\"ko big\">{{Word}}</div>\n<hr id=answer>\n<div class=\"meaning\">{{Meaning}}</div>\n\
+{{#MeaningEs}}<div class=\"meaning es\">{{MeaningEs}}</div>{{/MeaningEs}}\n\
 {{#Pronunciation}}<div class=\"pron\">[{{Pronunciation}}]</div>{{/Pronunciation}}\n\
 {{#POS}}<span class=\"pos\">{{POS}}</span>{{/POS}}\n\
 {{#Sentence}}<div class=\"ctx ko\">{{Sentence}}</div><div class=\"tr\">{{Translation}}</div>{{SentenceAudio}}{{/Sentence}}\n\
@@ -130,7 +139,7 @@ fn templates() -> [(&'static str, &'static str, &'static str); 2] {
         ),
         (
             "English → Korean",
-            "{{#Reverse}}<div class=\"meaning big\">{{Meaning}}</div>\n{{#POS}}<span class=\"pos\">{{POS}}</span>{{/POS}}{{/Reverse}}",
+            "{{#Reverse}}<div class=\"meaning big\">{{Meaning}}</div>\n{{#MeaningEs}}<div class=\"meaning es\">{{MeaningEs}}</div>{{/MeaningEs}}\n{{#POS}}<span class=\"pos\">{{POS}}</span>{{/POS}}{{/Reverse}}",
             "{{FrontSide}}\n<hr id=answer>\n<div class=\"ko big\">{{Word}}</div>{{WordAudio}}\n\
 {{#Pronunciation}}<div class=\"pron\">[{{Pronunciation}}]</div>{{/Pronunciation}}\n\
 {{#Sentence}}<div class=\"ctx ko\">{{Sentence}}</div><div class=\"tr\">{{Translation}}</div>{{SentenceAudio}}{{/Sentence}}\n\
@@ -169,6 +178,8 @@ pub struct AddRequest {
     pub sentence_audio: Option<Media>,
     /// The program the word was met in, kept on the card.
     pub source: Option<String>,
+    /// The meaning in Spanish, shown under the English one; `None` leaves the field empty.
+    pub meaning_es: Option<String>,
 }
 
 /// A word Anki already has.
@@ -291,7 +302,8 @@ impl AnkiClient {
     }
 
     /// Make sure the note type exists and is the current layout. Creates it on first use; an older
-    /// layout is updated in place; a note type of that name with the wrong fields is an error.
+    /// layout is updated in place, gaining the fields added since ([`ADDED_FIELDS`]) without touching its notes;
+    /// a note type of that name with the wrong fields is an error.
     pub async fn ensure_model(&self) -> Result<()> {
         let name = &self.cfg.note_type;
         let names = self.call("modelNames", json!({})).await?;
@@ -303,12 +315,20 @@ impl AnkiClient {
         }
         let fields = self.call("modelFieldNames", json!({ "modelName": name })).await?;
         let have: Vec<String> = fields.as_array().map(|a| a.iter().map(str_of).collect()).unwrap_or_default();
-        let missing: Vec<&str> = FIELDS.iter().copied().filter(|f| !have.iter().any(|h| h == f)).collect();
+        let (new, missing): (Vec<&str>, Vec<&str>) = FIELDS.iter().copied().filter(|f| !have.iter().any(|h| h == f)).partition(|f| ADDED_FIELDS.contains(f));
         if !missing.is_empty() {
             return Err(SrsError::Anki(format!(
                 "the note type \"{name}\" already exists in Anki but lacks the fields {}. Rename it there, or change [learning.anki] note_type",
                 missing.join(", ")
             )));
+        }
+        for (n, field) in new.iter().enumerate() {
+            let added = self.call("modelFieldAdd", json!({ "modelName": name, "fieldName": field, "index": have.len() + n })).await;
+            if let Err(e) = added {
+                // Cards still work with the layout the note type has: keep it, and try again next time.
+                tracing::warn!("could not add the field {field} to the Anki note type \"{name}\": {e}");
+                return Ok(());
+            }
         }
         let styling = self.call("modelStyling", json!({ "modelName": name })).await?;
         let stamp = format!("maru-model-v{MODEL_VERSION} ");
@@ -325,6 +345,7 @@ impl AnkiClient {
         let mut f: BTreeMap<&'static str, String> = FIELDS.iter().map(|k| (*k, String::new())).collect();
         f.insert("Word", esc(&w.key));
         f.insert("Meaning", w.meaning.as_deref().map(esc).unwrap_or_default());
+        f.insert("MeaningEs", req.meaning_es.as_deref().map(esc).unwrap_or_default());
         f.insert("Pronunciation", req.pronunciation.as_deref().map(esc).unwrap_or_default());
         f.insert("POS", esc(&w.pos));
         f.insert("Level", w.level.as_deref().map(esc).unwrap_or_default());
@@ -560,6 +581,7 @@ mod tests {
             word_audio: Some(Media { filename: "maru_w.wav".into(), data: vec![1, 2, 3] }),
             sentence_audio: Some(Media { filename: "maru_s.wav".into(), data: vec![4, 5] }),
             source: Some("eldenring.exe".into()),
+            meaning_es: Some("estudiar".into()),
         }
     }
 
@@ -612,6 +634,8 @@ mod tests {
         next: u64,
         /// Requests still to refuse as Anki does while it syncs.
         busy: usize,
+        /// An AnkiConnect that cannot add a field to a note type.
+        no_new_fields: bool,
     }
 
     type Log = Arc<Mutex<Vec<(String, Value, Option<String>)>>>;
@@ -683,6 +707,14 @@ mod tests {
                 json!({})
             }
             "modelStyling" => json!({ "css": c.styling.get(&str_of(&p["modelName"])).cloned().unwrap_or_default() }),
+            "modelFieldAdd" => {
+                if c.no_new_fields {
+                    return Err("unsupported action".into());
+                }
+                let fields = c.models.get_mut(&str_of(&p["modelName"])).ok_or("model was not found")?;
+                fields.insert(p["index"].as_u64().map_or(fields.len(), |i| (i as usize).min(fields.len())), str_of(&p["fieldName"]));
+                json!(null)
+            }
             "updateModelTemplates" => json!(null),
             "updateModelStyling" => {
                 c.styling.insert(str_of(&p["model"]["name"]), str_of(&p["model"]["css"]));
@@ -874,6 +906,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_note_type_from_before_spanish_meanings_gains_the_field_at_the_end_and_the_new_layout() {
+        let before: Vec<String> = FIELDS.iter().filter(|f| !ADDED_FIELDS.contains(f)).map(|f| (*f).to_string()).collect();
+        let col = Arc::new(Mutex::new(Collection::default()));
+        col.lock().unwrap().models.insert("Maru Korean".into(), before.clone());
+        col.lock().unwrap().styling.insert("Maru Korean".into(), "/* maru-model-v1 */".into());
+        let (url, log) = fake_anki(col.clone()).await;
+        let anki = client(url);
+        anki.ensure_model().await.unwrap();
+        let after = col.lock().unwrap().models["Maru Korean"].clone();
+        assert_eq!(after[..before.len()], before[..], "the fields its notes already use keep their places");
+        assert_eq!(after.last().map(String::as_str), Some("MeaningEs"));
+        assert!(col.lock().unwrap().styling["Maru Korean"].contains("maru-model-v2"));
+        assert_eq!(calls(&log).iter().filter(|c| *c == "modelFieldAdd").count(), 1);
+        anki.ensure_model().await.unwrap();
+        assert_eq!(calls(&log).iter().filter(|c| *c == "modelFieldAdd").count(), 1, "only once");
+
+        anki.add(&request("Korean", ReverseMode::Off)).await.unwrap();
+        let note = col.lock().unwrap().notes[0].1.clone();
+        assert_eq!((note["fields"]["Meaning"].as_str(), note["fields"]["MeaningEs"].as_str()), (Some("to study &lt;hard&gt;"), Some("estudiar")));
+        let (front, back) = (templates()[1].1, templates()[0].2);
+        assert!(front.contains("{{#MeaningEs}}") && back.contains("{{#MeaningEs}}"), "shown only on cards that have it");
+    }
+
+    #[tokio::test]
+    async fn when_anki_cannot_add_the_field_the_old_layout_stays_and_cards_are_still_added() {
+        let col = Arc::new(Mutex::new(Collection { no_new_fields: true, ..Default::default() }));
+        col.lock().unwrap().models.insert("Maru Korean".into(), FIELDS.iter().filter(|f| !ADDED_FIELDS.contains(f)).map(|f| (*f).to_string()).collect());
+        col.lock().unwrap().styling.insert("Maru Korean".into(), "/* maru-model-v1 */".into());
+        let (url, log) = fake_anki(col.clone()).await;
+        let anki = client(url);
+        assert!(matches!(anki.add(&request("Korean", ReverseMode::Off)).await.unwrap(), Added::New { .. }));
+        assert!(col.lock().unwrap().styling["Maru Korean"].contains("maru-model-v1"), "the layout is not changed to one that names a field it lacks");
+        assert!(!calls(&log).contains(&"updateModelTemplates".to_string()));
+    }
+
+    #[tokio::test]
     async fn an_older_layout_is_upgraded_and_a_wrong_note_type_is_refused() {
         let col = Arc::new(Mutex::new(Collection::default()));
         col.lock().unwrap().models.insert("Maru Korean".into(), FIELDS.iter().map(|f| (*f).to_string()).collect());
@@ -967,7 +1035,7 @@ mod tests {
         let req = SentenceRequest {
             sentence: line.into(),
             translation: "I thought I would never see you again.".into(),
-            words: vec![SentenceWord { word: "보다".into(), meaning: "to see".into() }],
+            words: vec![SentenceWord { word: "보다".into(), meaning: "to see".into(), meaning_es: "ver".into() }],
             deck: "Korean::Games".into(),
             tags: vec!["maru".into(), "sentence".into(), "maru".into()],
             audio: Some(Media { filename: "maru_s.wav".into(), data: vec![1, 2] }),
@@ -979,7 +1047,7 @@ mod tests {
             assert_eq!(c.models["Maru Korean Sentence"], SENTENCE_FIELDS);
             let (_, note, cards) = c.notes.last().unwrap();
             assert_eq!(note["modelName"], "Maru Korean Sentence");
-            assert_eq!(note["fields"]["Words"], "<div><b>보다</b> — to see</div>");
+            assert_eq!(note["fields"]["Words"], "<div><b>보다</b> — to see · ver</div>");
             assert_eq!(note["fields"]["Source"], "Elden Ring");
             assert_eq!(note["audio"][0]["fields"][0], "SentenceAudio");
             assert_eq!(note["tags"], json!(["maru", "sentence"]));
@@ -1005,7 +1073,7 @@ mod tests {
         anki.add(&request("Korean", ReverseMode::Off)).await.unwrap(); // has both sounds
         anki.add(&silent("학교", ctx())).await.unwrap();
         anki.add(&silent("가다", Vec::new())).await.unwrap(); // no sentence: only the word needs a sound
-        let line = SentenceRequest { sentence: "다시는 못 볼 줄 알았어요".into(), translation: String::new(), words: vec![SentenceWord { word: "보다".into(), meaning: "to see".into() }], deck: "Korean".into(), tags: vec![], audio: None, source: None };
+        let line = SentenceRequest { sentence: "다시는 못 볼 줄 알았어요".into(), translation: String::new(), words: vec![SentenceWord { word: "보다".into(), meaning: "to see".into(), meaning_es: String::new() }], deck: "Korean".into(), tags: vec![], audio: None, source: None };
         anki.add_sentence(&line).await.unwrap();
 
         let found = anki.silent_notes(10).await.unwrap();

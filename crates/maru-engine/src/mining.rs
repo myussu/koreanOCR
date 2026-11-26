@@ -1,6 +1,7 @@
 //! Anki cards from a live line you starred: the words in it, each with its meaning in that line, and the line itself as
-//! a sentence card. Opening a line ([`Engine::mine_sheet`]) costs one model request for the meanings; word cards go
-//! through the same path as the panel's "Add to Anki", with this line as their example sentence.
+//! a sentence card. Opening a line ([`Engine::mine_sheet`]) costs at most one model request for the meanings; word cards
+//! go through the same path as the panel's "Add to Anki", with this line as their example sentence. With the learner's
+//! dictionary installed (`senses.rs`) the meanings are its senses, in English and Spanish.
 
 use maru_core::WordState;
 use maru_core::config::ReverseMode;
@@ -27,6 +28,12 @@ pub struct MineWord {
     pub dictionary: Vec<String>,
     /// Its meaning in this line (from the model), else the first dictionary sense.
     pub meaning: String,
+    /// The same in Spanish, from the learner's dictionary (or the model for a word it lacks); empty without it.
+    pub meaning_es: String,
+    /// How the two meanings were arrived at; `None` when the learner's dictionary had no part in it.
+    pub source: Option<crate::senses::MeaningSource>,
+    /// The learner's dictionary's senses for the word, to choose another one.
+    pub senses: Vec<crate::senses::SenseChoice>,
     pub in_context: bool,
     pub known: bool,
     pub in_anki: bool,
@@ -51,6 +58,8 @@ pub struct MineSheet {
     pub anki_error: Option<String>,
     /// Why meanings are the dictionary's rather than the line's.
     pub note: Option<String>,
+    /// The learner's dictionary's attribution, shown with its meanings.
+    pub credit: Option<String>,
 }
 
 /// The line being mined and where its cards go.
@@ -73,6 +82,8 @@ pub struct MineChoice {
     #[serde(default)]
     pub level: Option<String>,
     pub meaning: String,
+    #[serde(default)]
+    pub meaning_es: String,
 }
 
 /// What adding the sentence card did.
@@ -104,22 +115,40 @@ impl Engine {
         eojeols.retain(|e| seen.insert(e.vocab_key().to_string()));
 
         let profile = app.and_then(|a| self.inner.cfg.profile_for(a));
-        let (glosses, note) = self.line_meanings(&sentence, &eojeols, profile).await;
+        // With the learner's dictionary the meanings are its senses; without it, the model's words as before.
+        let (glosses, senses, note) = match self.inner.nikl.get() {
+            Some(nikl) => {
+                let found = crate::senses::line_senses(&self.inner, nikl, &sentence, &eojeols).await;
+                (Vec::new(), found.words, found.note)
+            }
+            None => {
+                let (glosses, note) = self.line_meanings(&sentence, &eojeols, profile).await;
+                (glosses, Vec::new(), note)
+            }
+        };
 
         let cfg = self.inner.cfg.learning.anki.clone();
         let mut words: Vec<MineWord> = eojeols
             .iter()
             .map(|e| {
+                use crate::senses::MeaningSource;
                 let in_line = glosses.iter().find(|(i, _)| *i == e.index).map(|(_, m)| m.clone());
+                let sense = senses.iter().find(|s| s.index == e.index);
                 MineWord {
                     key: e.vocab_key().to_string(),
                     surface: e.surface.clone(),
                     pos: e.pos.label().to_string(),
                     level: e.level.clone(),
                     formula: e.formula.clone(),
-                    dictionary: e.dict_glosses.clone(),
-                    in_context: in_line.is_some(),
-                    meaning: in_line.or_else(|| e.dict_glosses.first().cloned()).unwrap_or_default(),
+                    dictionary: match sense {
+                        Some(s) if !s.options.is_empty() => s.options.iter().map(|o| o.en.clone()).collect(),
+                        _ => e.dict_glosses.clone(),
+                    },
+                    in_context: in_line.is_some() || sense.is_some_and(|s| matches!(s.source, MeaningSource::Chosen | MeaningSource::Model)),
+                    meaning: sense.map(|s| s.en.clone()).filter(|m| !m.trim().is_empty()).or(in_line).or_else(|| e.dict_glosses.first().cloned()).unwrap_or_default(),
+                    meaning_es: sense.map(|s| s.es.clone()).unwrap_or_default(),
+                    source: sense.map(|s| s.source),
+                    senses: sense.map(|s| s.options.clone()).unwrap_or_default(),
                     known: e.state == WordState::Known,
                     in_anki: false,
                     pick: false,
@@ -159,6 +188,7 @@ impl Engine {
             sentence_in_anki,
             anki_error,
             note,
+            credit: self.learner_dictionary_credit().map(str::to_owned),
         })
     }
 
@@ -242,6 +272,7 @@ impl Engine {
             word_audio,
             sentence_audio,
             context: Some(context_of(line)),
+            meaning_es: Some(word.meaning_es.trim().to_string()).filter(|m| !m.is_empty()),
         };
         self.finish_anki_add(permit, opts).await
     }
@@ -258,7 +289,7 @@ impl Engine {
         let req = SentenceRequest {
             sentence: line.sentence.clone(),
             translation: line.translation.clone(),
-            words: words.iter().map(|w| SentenceWord { word: w.key.trim().to_string(), meaning: w.meaning.trim().to_string() }).collect(),
+            words: words.iter().map(|w| SentenceWord { word: w.key.trim().to_string(), meaning: w.meaning.trim().to_string(), meaning_es: w.meaning_es.trim().to_string() }).collect(),
             deck,
             tags: sentence_tags(&self.inner.cfg.learning.anki, app, profile, now_secs()),
             audio,

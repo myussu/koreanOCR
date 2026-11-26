@@ -18,6 +18,8 @@ pub const SENTENCE_FIELDS: [&str; 5] = ["Sentence", "Translation", "SentenceAudi
 pub struct SentenceWord {
     pub word: String,
     pub meaning: String,
+    /// The meaning in Spanish, listed after the English one; may be empty.
+    pub meaning_es: String,
 }
 
 #[derive(Debug, Clone)]
@@ -66,14 +68,17 @@ fn sentence_template() -> (&'static str, &'static str, &'static str) {
     )
 }
 
-/// The back's word list: `<div><b>공부하다</b> — to study</div>…`.
+/// The back's word list: `<div><b>공부하다</b> — to study · estudiar</div>…`.
 pub fn words_html(words: &[SentenceWord]) -> String {
     words
         .iter()
         .filter(|w| !w.word.trim().is_empty())
-        .map(|w| match w.meaning.trim() {
-            "" => format!("<div><b>{}</b></div>", esc(w.word.trim())),
-            meaning => format!("<div><b>{}</b> — {}</div>", esc(w.word.trim()), esc(meaning)),
+        .map(|w| {
+            let meanings: Vec<String> = [w.meaning.trim(), w.meaning_es.trim()].into_iter().filter(|m| !m.is_empty()).map(esc).collect();
+            match meanings.is_empty() {
+                true => format!("<div><b>{}</b></div>", esc(w.word.trim())),
+                false => format!("<div><b>{}</b> — {}</div>", esc(w.word.trim()), meanings.join(" · ")),
+            }
         })
         .collect()
 }
@@ -172,11 +177,12 @@ mod tests {
     #[test]
     fn the_back_lists_the_picked_words_with_their_meanings_escaped() {
         let words = [
-            SentenceWord { word: "공부하다".into(), meaning: "to study <hard>".into() },
-            SentenceWord { word: " 학교 ".into(), meaning: String::new() },
-            SentenceWord { word: " ".into(), meaning: "nothing".into() },
+            SentenceWord { word: "공부하다".into(), meaning: "to study <hard>".into(), meaning_es: String::new() },
+            SentenceWord { word: " 학교 ".into(), meaning: String::new(), meaning_es: String::new() },
+            SentenceWord { word: " ".into(), meaning: "nothing".into(), meaning_es: String::new() },
+            SentenceWord { word: "배".into(), meaning: "ship; boat".into(), meaning_es: " barco ".into() },
         ];
-        assert_eq!(words_html(&words), "<div><b>공부하다</b> — to study &lt;hard&gt;</div><div><b>학교</b></div>");
+        assert_eq!(words_html(&words), "<div><b>공부하다</b> — to study &lt;hard&gt;</div><div><b>학교</b></div><div><b>배</b> — ship; boat · barco</div>");
     }
 
     #[test]

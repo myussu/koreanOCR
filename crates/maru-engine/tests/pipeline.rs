@@ -1467,7 +1467,7 @@ async fn a_mined_word_card_shows_this_line_and_the_chosen_meaning_and_the_line_b
     let later = maru_srs::now_secs() + 100;
     h.vocab.record_lookup(&maru_srs::LookupInfo { key: "학교".into(), surface: "학교".into(), context: Some(maru_srs::Context { sentence: "학교에 가요".into(), ..Default::default() }), ..Default::default() }, later).unwrap();
     let line = MineLine { sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: Some("game.exe".into()), deck: "Korean::Games".into(), reverse: maru_core::config::ReverseMode::Subdeck };
-    let choice = MineChoice { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), level: Some("TOPIK 1".into()), meaning: "school (where I studied)".into() };
+    let choice = MineChoice { key: "학교".into(), surface: "학교에서".into(), pos: "noun".into(), level: Some("TOPIK 1".into()), meaning: "school (where I studied)".into(), meaning_es: String::new() };
     let permit = h.engine.begin_mine_word(&line, &choice).await.unwrap();
     assert!(matches!(h.engine.finish_mine_word(permit, &line, &choice, None, None).await.unwrap(), AnkiAdded::Added { .. }));
     assert_eq!(h.engine.mine_sentence(&line, std::slice::from_ref(&choice), None).await.unwrap(), MinedSentence::Added { deck: "Korean::Games".into() });
@@ -1491,7 +1491,7 @@ async fn a_word_without_a_meaning_is_refused_before_anything_reaches_anki() {
     use maru_engine::mining::{MineChoice, MineLine};
     let h = mining_harness(spawn_mock(ankiconnect).await);
     let line = MineLine { sentence: SENTENCE.into(), translation: String::new(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
-    let choice = MineChoice { key: "공부하다".into(), surface: "공부했어요".into(), pos: String::new(), level: None, meaning: "  ".into() };
+    let choice = MineChoice { key: "공부하다".into(), surface: "공부했어요".into(), pos: String::new(), level: None, meaning: "  ".into(), meaning_es: String::new() };
     let err = h.engine.begin_mine_word(&line, &choice).await.err().expect("refused").to_string();
     assert!(err.contains("needs a meaning"), "{err}");
     assert!(h.requests().is_empty(), "Anki was not called");
@@ -1536,7 +1536,7 @@ async fn an_incomplete_anki_add_is_reported_and_retried_without_audio_or_another
     let mut cfg=Config::default();cfg.learning.anki.enabled=true;cfg.learning.anki.url=server.url;cfg.learning.anki.sync_after_add=false;
     let h=build(cfg,None,None);
     h.vocab.record_lookup(&maru_srs::LookupInfo {key:"학교".into(),surface:"학교".into(),meaning:Some("school".into()),..Default::default()},1).unwrap();
-    let options=||AnkiAddOptions {context:None,key:"학교".into(),deck:"Korean".into(),tags:vec![],reverse:maru_core::config::ReverseMode::Subdeck,app:Some("game.exe".into()),word_audio:None,sentence_audio:None};
+    let options=||AnkiAddOptions {meaning_es:None,context:None,key:"학교".into(),deck:"Korean".into(),tags:vec![],reverse:maru_core::config::ReverseMode::Subdeck,app:Some("game.exe".into()),word_audio:None,sentence_audio:None};
     let result=h.engine.anki_add(options()).await.unwrap();
     assert!(matches!(result,AnkiAdded::Added {warning:Some(_),cards:0,..}));
     assert_eq!(h.engine.anki_count().unwrap(),1);
@@ -1603,7 +1603,7 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
     assert!(before.suggestions.iter().any(|s| s.deck == "Korean" && s.exists));
     assert!(before.tags.contains(&"app::hades".to_string()) && before.tags.contains(&"topik-1".to_string()), "{:?}", before.tags);
 
-    let opts = AnkiAddOptions { context: None, key: "학교".into(), deck: " Korean :: Games ".into(), tags: before.tags.clone(), reverse: before.reverse, app: Some("hades.exe".into()), word_audio: None, sentence_audio: None };
+    let opts = AnkiAddOptions { meaning_es: None, context: None, key: "학교".into(), deck: " Korean :: Games ".into(), tags: before.tags.clone(), reverse: before.reverse, app: Some("hades.exe".into()), word_audio: None, sentence_audio: None };
     let added = h.engine.anki_add(opts).await.unwrap();
     assert!(matches!(&added, AnkiAdded::Added { deck, reverse_deck: Some(r), cards: 2, sync: true, warning: None } if deck == "Korean::Games" && r == "Korean::Games::Reverse"), "{added:?}");
 
@@ -1614,7 +1614,7 @@ async fn a_word_goes_to_the_chosen_deck_and_the_program_remembers_it() {
 
     let calls: Vec<String> = anki.requests.lock().unwrap().iter().filter_map(|(_, b)| serde_json::from_str::<serde_json::Value>(b).ok()).map(|v| v["action"].as_str().unwrap_or_default().to_string()).collect();
     assert!(calls.contains(&"createDeck".to_string()) && calls.contains(&"changeDeck".to_string()), "{calls:?}");
-    assert!(h.engine.anki_add(AnkiAddOptions { context: None, key: "학교".into(), deck: "  ".into(), tags: vec![], reverse: before.reverse, app: None, word_audio: None, sentence_audio: None }).await.unwrap_err().to_string().contains("deck"), "no deck, no add");
+    assert!(h.engine.anki_add(AnkiAddOptions { meaning_es: None, context: None, key: "학교".into(), deck: "  ".into(), tags: vec![], reverse: before.reverse, app: None, word_audio: None, sentence_audio: None }).await.unwrap_err().to_string().contains("deck"), "no deck, no add");
 }
 
 // ───────────── live subtitles ─────────────
@@ -2071,4 +2071,132 @@ async fn live_subtitles_keep_the_original_ocr_until_cpu_ocr_is_requested() {
     assert!(matches!(event, maru_engine::LiveEvent::Line(_)));
     assert!(normal.0.load(std::sync::atomic::Ordering::SeqCst) > 0);
     assert_eq!(cpu.0.load(std::sync::atomic::Ordering::SeqCst), 0);
+}
+
+// ───────────── card meanings in English and Spanish from the learner's dictionary ─────────────
+
+const NIKL: &str = r#"{"meta":{"source":"한국어기초사전","license":"CC BY-SA 2.0 KR"}}
+{"w":"학교","h":0,"p":"명사","l":"초급","s":[{"en":"school","es":"escuela"}]}
+{"w":"공부하다","h":0,"p":"동사","l":"초급","s":[{"en":"study","es":"estudiar"}]}
+{"w":"저","h":1,"p":"대명사","l":"초급","s":[{"en":"I; me","es":"yo","end":"The humble form of I."}]}
+{"w":"저","h":2,"p":"대명사","l":"초급","s":[{"en":"that","es":"ese; aquel","end":"Something far from both speakers."}]}
+"#;
+
+fn with_learners_dictionary(h: Harness) -> Harness {
+    let nikl = maru_dict::Nikl::open_in_memory().unwrap();
+    nikl.import_jsonl(Cursor::new(NIKL)).unwrap();
+    h.engine.set_learner_dictionary(Arc::new(nikl));
+    h
+}
+
+/// The model and AnkiConnect on one server; a request to choose senses is answered with `answer`.
+fn sense_server(answer: &'static str) -> impl Fn(&str, &str) -> MockResponse + Send + Sync + 'static {
+    move |path, body| {
+        if !path.contains("chat/completions") {
+            return ankiconnect(path, body);
+        }
+        if body.contains("make flashcards") { MockResponse { status: 200, chunks: sse_answer(&[answer]), delay_ms: 0 } } else { model(path, body) }
+    }
+}
+
+fn model_requests(h: &Harness) -> Vec<String> {
+    h.requests().into_iter().filter(|b| b.contains("\"messages\"")).collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_line_whose_words_have_one_dictionary_sense_gets_both_meanings_without_asking_a_model() {
+    use maru_engine::senses::MeaningSource;
+    let h = with_learners_dictionary(mining_harness(spawn_mock(sense_server("")).await));
+    let sheet = h.engine.mine_sheet("학교에서 공부했어요", "I studied at school.", None).await.unwrap();
+    let word = |key: &str| sheet.words.iter().find(|w| w.key == key).unwrap_or_else(|| panic!("{key} in {:?}", sheet.words));
+    assert_eq!((word("학교").meaning.as_str(), word("학교").meaning_es.as_str(), word("학교").source), ("school", "escuela", Some(MeaningSource::OneSense)));
+    assert_eq!((word("공부하다").meaning.as_str(), word("공부하다").meaning_es.as_str()), ("study", "estudiar"));
+    assert!(sheet.words.iter().all(|w| w.pick && !w.in_context), "{:?}", sheet.words);
+    assert!(model_requests(&h).is_empty(), "no model request: {:?}", model_requests(&h));
+    assert!(sheet.note.is_none());
+    assert!(sheet.credit.as_deref().is_some_and(|c| c.contains("한국어기초사전") && c.contains("CC BY-SA")), "the dictionary is credited: {:?}", sheet.credit);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn words_with_several_senses_and_words_the_dictionary_lacks_share_one_request() {
+    use maru_engine::senses::MeaningSource;
+    // 저 has two senses (the model picks the first); 억수로 is not in the dictionary (the model gives both meanings).
+    let h = with_learners_dictionary(mining_harness(spawn_mock(sense_server("0|1\n1|0|extremely|muchísimo\n")).await));
+    let sheet = h.engine.mine_sheet("저는 억수로 공부했어요", "I studied extremely hard.", None).await.unwrap();
+    // Found by how it is written: the test analyser may shorten a word it does not know.
+    let word = |surface: &str| sheet.words.iter().find(|w| w.surface.starts_with(surface)).unwrap_or_else(|| panic!("{surface} in {:?}", sheet.words));
+    assert_eq!((word("저").meaning.as_str(), word("저").meaning_es.as_str(), word("저").source), ("I; me", "yo", Some(MeaningSource::Chosen)));
+    assert_eq!(word("저").senses.len(), 2, "the other sense can still be picked on the sheet");
+    assert_eq!(word("저").dictionary, ["I; me", "that"]);
+    assert_eq!((word("억수로").meaning.as_str(), word("억수로").meaning_es.as_str(), word("억수로").source), ("extremely", "muchísimo", Some(MeaningSource::Model)));
+    assert!(word("저").in_context && word("억수로").in_context && !word("공부").in_context);
+    assert_eq!(word("공부").source, Some(MeaningSource::OneSense));
+    let asked = model_requests(&h);
+    assert_eq!(asked.len(), 1, "one request for the whole line");
+    assert!(asked[0].contains("1) I; me") && asked[0].contains("2) that") && asked[0].contains("억수로"), "{}", asked[0]);
+    assert!(!asked[0].contains("1) study"), "a word with one sense is not sent: {}", asked[0]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_sense_number_the_word_does_not_have_or_no_model_at_all_leaves_the_first_sense_to_be_checked() {
+    use maru_engine::senses::MeaningSource;
+    let h = with_learners_dictionary(mining_harness(spawn_mock(sense_server("0|7\n")).await));
+    let sheet = h.engine.mine_sheet(SENTENCE, "I studied at school.", None).await.unwrap();
+    let me = sheet.words.iter().find(|w| w.key == "저").unwrap();
+    assert_eq!((me.meaning.as_str(), me.meaning_es.as_str(), me.source), ("I; me", "yo", Some(MeaningSource::FirstSense)));
+    assert!(sheet.note.as_deref().is_some_and(|n| n.contains("first sense")), "{:?}", sheet.note);
+
+    // No model: the same, and a word the dictionary lacks keeps the meaning it had before (no Spanish).
+    let server = spawn_mock(ankiconnect).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    let h = with_learners_dictionary(build(cfg, None, Some(server)));
+    let sheet = h.engine.mine_sheet(SENTENCE, "I studied at school.", None).await.unwrap();
+    let me = sheet.words.iter().find(|w| w.key == "저").unwrap();
+    assert_eq!((me.meaning.as_str(), me.source), ("I; me", Some(MeaningSource::FirstSense)));
+    assert!(sheet.note.as_deref().is_some_and(|n| n.contains("first sense") && n.contains("language model")), "{:?}", sheet.note);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_card_made_from_the_sheet_carries_the_spanish_meaning_and_the_sentence_card_lists_both() {
+    use maru_engine::mining::{MineChoice, MineLine};
+    let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
+    let line = MineLine { sentence: SENTENCE.into(), translation: "I studied at school.".into(), app: None, deck: "Korean".into(), reverse: maru_core::config::ReverseMode::Off };
+    let choice = MineChoice { key: "저".into(), surface: "저는".into(), pos: "pronoun".into(), level: None, meaning: "I; me".into(), meaning_es: " yo ".into() };
+    let permit = h.engine.begin_mine_word(&line, &choice).await.unwrap();
+    h.engine.finish_mine_word(permit, &line, &choice, None, None).await.unwrap();
+    h.engine.mine_sentence(&line, std::slice::from_ref(&choice), None).await.unwrap();
+    let notes = added_notes(&h);
+    let card = notes.iter().find(|n| n["modelName"] == "Maru Korean").unwrap();
+    assert_eq!((card["fields"]["Meaning"].as_str(), card["fields"]["MeaningEs"].as_str()), (Some("I; me"), Some("yo")));
+    let sentence = notes.iter().find(|n| n["modelName"] == "Maru Korean Sentence").unwrap();
+    assert_eq!(sentence["fields"]["Words"], "<div><b>저</b> — I; me · yo</div>");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_word_added_from_the_panel_takes_its_spanish_from_the_dictionary_only_when_it_has_one_sense() {
+    use maru_engine::anki_flow::AnkiAddOptions;
+    let h = with_learners_dictionary(mining_harness(spawn_mock(ankiconnect).await));
+    for (key, pos, meaning) in [("학교", "noun", "school"), ("저", "pronoun", "I")] {
+        h.vocab.record_lookup(&maru_srs::LookupInfo { key: key.into(), surface: key.into(), pos: pos.into(), meaning: Some(meaning.into()), ..Default::default() }, 1).unwrap();
+        let opts = AnkiAddOptions { meaning_es: None, context: None, key: key.into(), deck: "Korean".into(), tags: vec![], reverse: maru_core::config::ReverseMode::Off, app: None, word_audio: None, sentence_audio: None };
+        h.engine.anki_add(opts).await.unwrap();
+    }
+    let notes = added_notes(&h);
+    let spanish = |word: &str| notes.iter().find(|n| n["fields"]["Word"] == word).map(|n| n["fields"]["MeaningEs"].as_str().unwrap_or_default().to_string());
+    assert_eq!(spanish("학교").as_deref(), Some("escuela"), "one sense: the dictionary's Spanish, no model");
+    assert_eq!(spanish("저").as_deref(), Some(""), "two senses: left empty rather than guessed");
+    assert!(model_requests(&h).is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coverage_counts_the_words_the_dictionary_has_and_those_that_need_no_model() {
+    let h = with_learners_dictionary(build(Config::default(), None, None));
+    let lines = ["학교에서 공부했어요".to_string(), SENTENCE.to_string(), "억수로 공부했어요".to_string(), "  ".to_string()];
+    let c = h.engine.sense_coverage(&lines).unwrap();
+    assert_eq!((c.lines, c.words, c.found, c.one_sense), (3, 7, 6, 5), "{c:?}");
+    assert_eq!((c.distinct, c.distinct_found, c.distinct_one_sense), (4, 3, 2), "{c:?}");
+    assert_eq!(c.lines_without_model, 1, "only the first line needs no model at all");
+    assert!(build(Config::default(), None, None).engine.sense_coverage(&lines).is_err(), "without the dictionary there is nothing to measure");
 }

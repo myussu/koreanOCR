@@ -9,7 +9,7 @@ export function mineDraft(sheet) {
     reverse: sheet.reverse !== 'off',
     audio: !!sheet.audio,
     sentenceCard: !sheet.sentence_in_anki,
-    words: (sheet.words ?? []).map((w) => ({ key: w.key, surface: w.surface, pos: w.pos ?? '', level: w.level ?? null, meaning: w.meaning ?? '', picked: !!w.pick })),
+    words: (sheet.words ?? []).map((w) => ({ key: w.key, surface: w.surface, pos: w.pos ?? '', level: w.level ?? null, meaning: w.meaning ?? '', meaningEs: w.meaning_es ?? '', picked: !!w.pick })),
   };
 }
 
@@ -48,8 +48,31 @@ export function mineRequest(draft, item, sheet) {
     reverse: draft.reverse,
     audio: draft.audio,
     sentence_card: draft.sentenceCard,
-    words: picked(draft).map(({ key, surface, pos, level, meaning }) => ({ key, surface, pos, level, meaning: meaning.trim() })),
+    words: picked(draft).map(({ key, surface, pos, level, meaning, meaningEs }) => ({ key, surface, pos, level, meaning: meaning.trim(), meaning_es: (meaningEs ?? '').trim() })),
   };
+}
+
+/** Where a word's meaning came from, in a few words (`source` is set when the learner's dictionary took part). */
+export function meaningHint(word) {
+  switch (word.source) {
+    case 'one_sense': return 'the dictionary’s only sense';
+    case 'chosen': return 'the dictionary sense chosen for this line';
+    case 'first_sense': return 'the dictionary’s first sense: check it fits';
+    case 'model': return 'not in the dictionary: the model’s words';
+    default: return word.in_context ? 'as used in this line' : 'from the dictionary';
+  }
+}
+
+/** A dictionary sense as an option: "ship; boat · barco". */
+export const senseLabel = (sense) => [sense.en, sense.es].filter(Boolean).join(' · ');
+
+/** The dictionary sense shown for a word, as an index into its senses; -1 when the meanings were edited by hand. */
+export const senseIndex = (word, draftWord) => (word.senses ?? []).findIndex((s) => s.en === draftWord.meaning && (s.es ?? '') === (draftWord.meaningEs ?? ''));
+
+/** Take another dictionary sense: both meanings change together. */
+export function applySense(draftWord, sense) {
+  draftWord.meaning = sense.en ?? '';
+  draftWord.meaningEs = sense.es ?? '';
 }
 
 /** "2 added · 1 already in Anki · 1 failed". */

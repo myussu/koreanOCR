@@ -110,6 +110,7 @@ impl Engine {
             });
         } else {
             let req = AddRequest {
+                meaning_es: opts.meaning_es.filter(|m| !m.trim().is_empty()).or_else(|| self.only_sense_es(&word.key, &word.pos)),
                 pronunciation: Some(maru_lang::pronounce::pronounce_word(&word.key))
                     .filter(|p| *p != word.key),
                 word,

@@ -556,6 +556,11 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     if let Err(e) = engine.open_history(&paths.data_dir.join("history.db")) {
         notes.push(e.to_string());
     }
+    match engine.open_learner_dictionary(&paths.nikl_db()) {
+        Ok(Some(stats)) => notes.push(format!("Learner's dictionary: 한국어기초사전, {} words (card meanings in English and Spanish)", stats.words)),
+        Ok(None) => {}
+        Err(e) => notes.push(e.to_string()),
+    }
 
     if !alternate && !opts.defer_models && opts.start_llm && cfg.llm.endpoint.is_none() && source.is_some() && cfg.llm.autostart {
         let (engine, cfg, paths, server) = (engine.clone(), cfg.clone(), paths.clone(), server.clone());

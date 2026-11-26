@@ -142,6 +142,7 @@ async fn checks(url: String, stamp: i64, files: [String; 3]) {
         word_audio: Some(wav(&files[0])),
         sentence_audio: Some(wav(&files[1])),
         source: Some("Maru test".into()),
+        meaning_es: Some("una palabra de prueba".into()),
     };
     // A word card with both sounds and its reverse card in the Reverse subdeck.
     let Added::New { note_id, reverse_deck, cards, warning, .. } = anki.add(&base).await.expect("word added") else { panic!("the test word existed already") };
@@ -152,6 +153,7 @@ async fn checks(url: String, stamp: i64, files: [String; 3]) {
     assert!(field("WordAudio").contains("[sound:"), "word sound: {}", field("WordAudio"));
     assert!(field("SentenceAudio").contains("[sound:"), "sentence sound: {}", field("SentenceAudio"));
     assert!(field("Sentence").contains(&format!("<b>{heard}</b>")), "{}", field("Sentence"));
+    assert_eq!(field("MeaningEs"), "una palabra de prueba", "the note type has the Spanish field (added to an older one)");
     let decks: Vec<String> = raw(&url, "cardsInfo", json!({ "cards": info[0]["cards"] })).await.as_array().unwrap().iter().map(|c| c["deckName"].as_str().unwrap().to_string()).collect();
     assert_eq!(decks, [DECK.to_string(), format!("{DECK}::Reverse")]);
     assert!(matches!(anki.add(&base).await.unwrap(), Added::Exists(_)), "the same word is not added twice");
@@ -159,7 +161,7 @@ async fn checks(url: String, stamp: i64, files: [String; 3]) {
     // A word and a sentence added without sound are found, and get their sound later.
     let quiet = AddRequest { word: word(&silent, "a quiet word"), word_audio: None, sentence_audio: None, reverse: ReverseMode::Off, ..base.clone() };
     let Added::New { note_id: quiet_id, .. } = anki.add(&quiet).await.expect("silent word added") else { panic!("the quiet word existed already") };
-    let sentence = SentenceRequest { sentence: line.clone(), translation: "This is a test sentence.".into(), words: vec![SentenceWord { word: heard.clone(), meaning: "a test word".into() }], deck: DECK.into(), tags: vec!["maru-test".into()], audio: None, source: Some("Maru test".into()) };
+    let sentence = SentenceRequest { sentence: line.clone(), translation: "This is a test sentence.".into(), words: vec![SentenceWord { word: heard.clone(), meaning: "a test word".into(), meaning_es: "una palabra de prueba".into() }], deck: DECK.into(), tags: vec!["maru-test".into()], audio: None, source: Some("Maru test".into()) };
     let SentenceAdded::New { note_id: sentence_id, .. } = anki.add_sentence(&sentence).await.expect("sentence added") else { panic!("the test line existed already") };
     assert_eq!(raw(&url, "notesInfo", json!({ "notes": [sentence_id] })).await[0]["cards"].as_array().unwrap().len(), 1, "no reverse card for sentences");
     assert!(matches!(anki.add_sentence(&sentence).await.unwrap(), SentenceAdded::Exists(_)), "the same line is not added twice");

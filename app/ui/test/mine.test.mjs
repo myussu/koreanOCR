@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { addLabel, ankiIsOff, deckOptions, mineBlocker, mineDraft, mineRequest, outcomeSummary } from '../mine-core.js';
+import { addLabel, ankiIsOff, applySense, deckOptions, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, senseIndex, senseLabel } from '../mine-core.js';
 
 const sheet = (over = {}) => ({
   sentence: '다시는 못 볼 줄 알았어요',
@@ -54,7 +54,7 @@ test('the request carries only the ticked words, trimmed, and the line it came f
   d.words[0].meaning = '  ever again ';
   d.translation = ' I never thought I would see you. ';
   const req = mineRequest(d, { saved_id: 12 }, sheet());
-  assert.deepEqual(req.words, [{ key: '다시', surface: '다시는', pos: 'adverb', level: 'TOPIK 1', meaning: 'ever again' }]);
+  assert.deepEqual(req.words, [{ key: '다시', surface: '다시는', pos: 'adverb', level: 'TOPIK 1', meaning: 'ever again', meaning_es: '' }]);
   assert.equal(req.translation, 'I never thought I would see you.');
   assert.equal(req.saved_id, 12);
   assert.equal(req.sentence_card, true);
@@ -76,4 +76,35 @@ test('only Anki switched off in Maru offers to turn it on; a closed Anki does no
   assert.equal(ankiIsOff(sheet({ anki_error: 'Anki is switched off: turn it on in Settings → Anki' })), true);
   assert.equal(ankiIsOff(sheet({ anki_error: 'cannot reach AnkiConnect at http://127.0.0.1:8765' })), false);
   assert.equal(ankiIsOff(sheet()), false);
+});
+
+test('with the learner’s dictionary each word carries a Spanish meaning into the request, trimmed', () => {
+  const s = sheet({ words: [{ key: '배', surface: '배가', pos: 'noun', level: null, meaning: 'ship; boat', meaning_es: 'barco', source: 'chosen', pick: true }] });
+  const d = mineDraft(s);
+  assert.equal(d.words[0].meaningEs, 'barco');
+  d.words[0].meaningEs = ' barco, nave ';
+  assert.deepEqual(mineRequest(d, {}, s).words, [{ key: '배', surface: '배가', pos: 'noun', level: null, meaning: 'ship; boat', meaning_es: 'barco, nave' }]);
+});
+
+test('each meaning says where it came from, and without the learner’s dictionary the old wording stays', () => {
+  assert.equal(meaningHint({ source: 'one_sense' }), 'the dictionary’s only sense');
+  assert.equal(meaningHint({ source: 'chosen', in_context: true }), 'the dictionary sense chosen for this line');
+  assert.match(meaningHint({ source: 'first_sense' }), /check it fits/);
+  assert.match(meaningHint({ source: 'model', in_context: true }), /not in the dictionary/);
+  assert.equal(meaningHint({ source: null, in_context: true }), 'as used in this line');
+  assert.equal(meaningHint({ in_context: false }), 'from the dictionary');
+});
+
+test('choosing another dictionary sense changes both meanings, and an edited meaning matches no sense', () => {
+  const word = { senses: [{ en: 'belly; stomach', es: 'barriga' }, { en: 'ship; boat', es: 'barco' }, { en: 'womb', es: '' }] };
+  const d = { meaning: 'belly; stomach', meaningEs: 'barriga' };
+  assert.equal(senseIndex(word, d), 0);
+  applySense(d, word.senses[1]);
+  assert.deepEqual(d, { meaning: 'ship; boat', meaningEs: 'barco' });
+  assert.equal(senseIndex(word, d), 1);
+  d.meaning = 'the ship';
+  assert.equal(senseIndex(word, d), -1);
+  assert.equal(senseLabel(word.senses[1]), 'ship; boat · barco');
+  assert.equal(senseLabel(word.senses[2]), 'womb', 'a sense without Spanish shows the English alone');
+  assert.equal(senseIndex({}, d), -1, 'a word without dictionary senses');
 });

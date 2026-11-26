@@ -38,6 +38,7 @@ pub mod resource_monitor;
 pub mod server_discovery;
 mod scan;
 mod scan_joining;
+pub mod senses;
 mod server_hold;
 pub mod reading_areas;
 mod reading_store;

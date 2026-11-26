@@ -3,7 +3,7 @@
 
 import { invoke } from './bridge.js';
 import { soundsText } from './anki.js';
-import { addLabel, ankiIsOff, deckOptions, mineBlocker, mineDraft, mineRequest, outcomeSummary } from './mine-core.js';
+import { addLabel, ankiIsOff, applySense, deckOptions, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, senseIndex, senseLabel } from './mine-core.js';
 
 let lists = 0;
 
@@ -50,6 +50,7 @@ export function mineSheet(h, item, { onClose, onAdded }) {
         ankiIsOff(sheet) && turnOn()),
       reply && results(),
       error && h('div', { class: 'err', text: error }),
+      sheet.credit && h('p', { class: 'mine-credit', text: sheet.credit }),
     );
   };
 
@@ -76,7 +77,20 @@ export function mineSheet(h, item, { onClose, onAdded }) {
       h('div', { class: 'mine-meaning' },
         h('input', { type: 'text', value: d.meaning, list, placeholder: 'meaning', 'aria-label': `Meaning of ${w.key}`, oninput: (e) => { d.meaning = e.target.value; refresh(); } }),
         w.dictionary.length > 0 && h('datalist', { id: list }, w.dictionary.map((g) => h('option', { value: g }))),
-        h('small', { text: [w.in_context ? 'as used in this line' : 'from the dictionary', facts].filter(Boolean).join(' · ') })));
+        // With the learner's dictionary every card also carries a Spanish meaning.
+        (sheet.credit || d.meaningEs) && h('input', { type: 'text', class: 'es', lang: 'es', value: d.meaningEs, placeholder: 'significado en español', 'aria-label': `Spanish meaning of ${w.key}`, oninput: (e) => { d.meaningEs = e.target.value; } }),
+        (w.senses?.length ?? 0) > 1 && senses(w, d),
+        h('small', { text: [meaningHint(w), facts].filter(Boolean).join(' · ') })));
+  };
+
+  // The dictionary's other senses of a word: choosing one changes both meanings.
+  const senses = (w, d) => {
+    const at = senseIndex(w, d);
+    const select = h('select', { class: 'mine-senses', 'aria-label': `Dictionary senses of ${w.key}`, onchange: (e) => { const s = w.senses[Number(e.target.value)]; if (s) { applySense(d, s); draw(); } } },
+      at < 0 && h('option', { value: '', text: 'edited by hand — choose a dictionary sense…' }),
+      w.senses.map((s, n) => h('option', { value: String(n), text: `${n + 1}. ${senseLabel(s)}` })));
+    select.value = at < 0 ? '' : String(at);
+    return select;
   };
 
   const results = () => h('div', { class: 'mine-results' },

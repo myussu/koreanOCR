@@ -225,6 +225,20 @@ read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
   (sentence card against the fake AnkiConnect), `anki_sentence.rs`, `mining.rs`, `app/ui/test/mine.test.mjs`. Real Anki: M-39.
   With Anki off in Maru, the sheet's *Turn on Anki* saves `learning.anki.enabled` through `save_settings` and calls
   `restart_app` (the engine's Anki client and config are fixed at start-up); `anki_check` also ensures the sentence type.
+* **Card meanings in English and Spanish** (`maru-dict/src/nikl.rs`, `maru-llm/src/senses.rs`, `maru-engine/src/senses.rs`,
+  `tools/build_nikl.py`, `maru dict nikl|coverage`): the learner's dictionary (한국어기초사전, CC BY-SA 2.0 KR; not bundled) is
+  a second dictionary file, `nikl.db`, opened at start-up if present (`Engine::open_learner_dictionary`; `Inner::nikl`).
+  With it, `mine_sheet` calls `senses::line_senses` instead of the `glosses` request: a word with one sense
+  (`Nikl::senses(key, pos)`, narrowed by part of speech when that matches some) takes both meanings from the dictionary; the
+  words with several senses and the words it lacks go into one `LlmClient::choose_senses` request to
+  `pipeline::snapshot_model`, answered line by line as `N|k` (sense number) or `N|0|english|spanish` (a missing word); with no
+  usable answer the first sense is shown and the sheet's `note` says to check. `MineWord` gains `meaning_es`, `source`
+  (`one_sense`, `chosen`, `first_sense`, `model`) and `senses` (to pick another); `MineChoice.meaning_es` travels to
+  `AnkiAddOptions::meaning_es` → `AddRequest::meaning_es` → the note's `MeaningEs` field, and to the sentence card's word
+  list. `finish_anki_add` fills it for a panel add only when the word has exactly one sense. The sheet shows
+  `MineSheet::credit`. Tests: `nikl.rs`, `senses.rs` (both), `tests/pipeline.rs` (`…one_dictionary_sense…`,
+  `…several_senses…`, `…first_sense…`, `…spanish…`, `coverage…`), `anki.rs` (note type upgrade), `mine.test.mjs`,
+  `tools/test_build_nikl.py`. Real Anki: M-41.
 * **Sound added later** (`maru-srs/src/anki_sounds.rs`, `Engine::{anki_silent_notes, anki_add_sounds}`, shell
   `mining::anki_fill_sounds`): an add whose speech is off or fails still adds the card and says so (`SOUND_LATER`).
   `silent_notes` searches Anki for Maru notes with an empty `WordAudio`, or an empty `SentenceAudio` beside a filled
@@ -750,6 +764,11 @@ correct_scan, forget_ocr_fix}`. A snapshot result returns its capture, new reque
 keeps the scan ID and allocates a replacement item. Stale targets cannot persist a rule. Anki adds retain existing method
 signatures and add `begin_anki_add`/`finish_anki_add` permits, `anki_count`, and nullable `warning` on successful note results.
 No config key, event variant order, existing column meaning or command name is repurposed.
+Card meanings in two languages are additive: `MineWord` (`meaning_es`, `source`, `senses`), `MineSheet::credit`,
+`MineChoice::meaning_es` (absent in older requests = empty), `AnkiAddOptions::meaning_es`, `AddRequest::meaning_es`,
+`SentenceWord::meaning_es`, and `Engine::{open_learner_dictionary, set_learner_dictionary, learner_dictionary_credit,
+sense_coverage}`. No setting is added: the feature is on when `nikl.db` exists. `mine_sheet` / `mine_add` keep their names
+and arguments.
 
 ### 6.3 Shell ↔ pages
 * **Saved reading areas:** additive `reading_status`, `reading_create(name,areaId?)`, `reading_select(areaId)`,
@@ -820,7 +839,8 @@ feedback adds no setting or database field; normal translation cache/history ret
 | `vocab.db` | `maru-srs` | words, lookups, states, FSRS fields, contexts, Anki intervals |
 | `vocab.db` additional tables | `maru-srs::anki_store` | `anki_membership` (unique tracked words) and `anki_pending_adds` (owned incomplete note setup, scoped by endpoint/note type); additive initialization |
 | `dict.db` | `maru-dict` | dictionary entries, inflected forms, levels |
-| Anki collection (via AnkiConnect) | `maru-srs::anki`, `anki_sentence` | note types `Maru Korean` (words) and `Maru Korean Sentence` (sentence cards), created and updated in place by version stamps in their CSS; notes are only added, never edited except `Examples` on an existing word |
+| `nikl.db` | `maru-dict::nikl` | optional learner's dictionary (한국어기초사전, CC BY-SA 2.0 KR): `nikl_entries` (word, homonym, part of speech, level), `nikl_senses` (English and Spanish equivalents and definitions), `nikl_meta` (source, licence, build date); replaced as a whole by `maru dict nikl`; absent = cards as before |
+| Anki collection (via AnkiConnect) | `maru-srs::anki`, `anki_sentence` | note types `Maru Korean` (words) and `Maru Korean Sentence` (sentence cards), created and updated in place by version stamps in their CSS; notes are only added, never edited except `Examples` on an existing word. Word layout v2 adds the field `MeaningEs` at the end (`anki::ADDED_FIELDS`): an older note type gets it through `modelFieldAdd`, its notes untouched; if Anki cannot add it the old layout stays and cards are still added |
 | `labels.db` | `maru-engine::labels` | remembered scan labels `(scope, text)` and joins `(scope, parts)`; `scope` = program `.exe` |
 | `labels.db` additional table | `maru-engine::ocr_corrections` | exact `(scope, observed) → corrected` rules; only explicit Remember persists a fix, explicit Forget removes it; no fuzzy or cross-program lookup |
 | `labels.db` additional table | `maru-engine::scan_joining` | `join_spacing(scope,parts,as_word)` retains explicit word/sentence choices; separation removes only its exact scoped component rules and choices |

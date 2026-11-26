@@ -188,6 +188,36 @@ marked as such, if neither answers). Words you know or Anki already has start un
 * a **sentence card** (optional): the whole line in Korean with its sound on the front; its translation and the words you
   picked on the back, in its own `Maru Korean Sentence` note type with no reverse card.
 
+**Meanings in English and Spanish, from a learner's dictionary (optional).** With the 한국어기초사전 installed (below),
+the sheet shows each word's meaning in both languages and every word card carries both (the Spanish one in a new
+`MeaningEs` field, shown under the English meaning; the sentence card lists them as `school · escuela`). The meanings are
+the dictionary's, not the model's:
+* a word with **one sense** in the dictionary takes both meanings from it and costs no model request;
+* words with **several senses** share one request for the whole line, in which the model only answers with the number of
+  the sense that fits; a word the dictionary lacks gets a short meaning in both languages in that same request;
+* if no model answers, the dictionary's first sense is shown and the sheet says to check it. You can always pick another
+  sense from the list under the word, or type your own.
+
+A word added from the panel's **Add to Anki** gets its Spanish meaning only when the dictionary has exactly one sense for
+it; otherwise that field stays empty (no guess). Without the dictionary installed everything works as before.
+
+To install it (once): download the dictionary's XML from <https://krdict.korean.go.kr> (**사전 내려받기**; or the
+2019 copy at <https://github.com/spellcheck-ko/korean-dict-nikl-krdict>), then
+```
+python tools/build_nikl.py <folder with the .xml files> nikl.jsonl
+maru dict nikl nikl.jsonl
+```
+and restart Maru. `maru dict stats` shows whether it is installed, and `maru dict coverage lines.txt` how many words of
+your own lines it has. **The first time Maru adds a card afterwards it adds the `MeaningEs` field to its note type in
+Anki; your existing cards are not changed, but Anki may ask for a one-way sync to AnkiWeb the next time it syncs (choose
+*Upload to AnkiWeb* on the PC that has the change).**
+
+*Source and licence:* 국립국어원 «한국어기초사전» (National Institute of Korean Language, *Basic Korean Dictionary*),
+<https://krdict.korean.go.kr>, licensed [CC BY-SA 2.0 KR](https://creativecommons.org/licenses/by-sa/2.0/kr/). Maru
+keeps the words with their English and Spanish equivalents and definitions, unchanged; the data is not part of this
+repository, and the file you build and the meanings copied onto your cards remain under that licence. The sheet shows this
+credit wherever the dictionary's meanings appear.
+
 The line's sound is made once and shared by its cards; each card's result is listed (added, already in Anki, or why it
 failed), and the line shows **✓ Cards made** afterwards. Needs Anki open with AnkiConnect, and Anki on in Maru: if it is
 off, the sheet offers **Turn on Anki**, which saves that one setting and restarts Maru.
@@ -522,7 +552,8 @@ The different kinds of remembered data have different lifetimes:
   Wiktionary extract, llama.cpp release assets. Every URL can be overridden on the command line.
 
 Known limits: pronunciation rules that need morpheme knowledge (ㄴ-insertion in compounds, 사이시옷) are not
-guessed; word meanings in context come from the model, so they are only as good as the model; the scan never merges OCR boxes by itself
+guessed; word meanings in context come from the model, so they are only as good as the model (card meanings come from the learner's
+dictionary when it is installed, and then the model only chooses among its senses); the scan never merges OCR boxes by itself
 (you join them by hand), because tight menus and inventory grids would be glued together wrongly.
 
 ## Layout

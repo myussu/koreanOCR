@@ -136,6 +136,8 @@ pub(crate) struct Inner {
     pub(crate) live_recent: Mutex<crate::live_merge::Recent>,
     /// Saved live history (`history.db`); `None` until opened, and in tests.
     pub(crate) history_store: Mutex<Option<crate::history_store::HistoryStore>>,
+    /// The learner's dictionary for card meanings (`senses.rs`); unset until its file is opened.
+    pub(crate) nikl: std::sync::OnceLock<Arc<maru_dict::Nikl>>,
     /// Lines starred before their translation finished (`live_star.rs`).
     pub(crate) pending_stars: Mutex<crate::live_star::PendingStars>,
     pub live_counts: Arc<crate::live_lane::Counters>,
@@ -193,6 +195,7 @@ impl Engine {
             server_rest: Mutex::new(None),
             live_recent: Mutex::new(Default::default()),
             history_store: Mutex::new(None),
+            nikl: std::sync::OnceLock::new(),
             pending_stars: Mutex::new(Default::default()),
             live_counts: Arc::new(crate::live_lane::Counters::default()),
             live_queue: std::sync::OnceLock::new(),

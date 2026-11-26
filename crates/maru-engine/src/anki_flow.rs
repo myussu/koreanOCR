@@ -183,6 +183,8 @@ pub struct AnkiAddOptions {
     pub sentence_audio: Option<Media>,
     /// The sentence to put on the card; `None` uses the newest one the word was met in.
     pub context: Option<maru_srs::Context>,
+    /// The meaning in Spanish; `None` takes it from the learner's dictionary when the word has one sense there.
+    pub meaning_es: Option<String>,
 }
 
 fn anki_error(e: maru_srs::SrsError) -> EngineError {

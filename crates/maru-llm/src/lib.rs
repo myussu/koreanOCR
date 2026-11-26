@@ -5,6 +5,7 @@
 //! * [`prompts`] — the instructions, kept in one place so they can be tuned
 //! * [`demux`] — splits one token stream into labelled sections as it arrives
 //! * [`tasks`] — translate / gloss / deep-dive operations built from the above
+//! * [`senses`] — choosing a word's dictionary sense in its sentence (for word cards)
 
 pub mod client;
 pub mod connection;
@@ -15,6 +16,7 @@ pub mod live_bench;
 mod live_completion;
 mod live_sub_models;
 pub mod prompts;
+pub mod senses;
 pub mod server;
 pub mod tasks;
 pub mod model_runtime;

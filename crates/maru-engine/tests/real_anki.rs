@@ -103,7 +103,7 @@ impl Run {
     }
 
     fn options(&self, key: &str, tags: Vec<String>, word_audio: Option<Media>, sentence_audio: Option<Media>) -> AnkiAddOptions {
-        AnkiAddOptions { key: key.into(), deck: self.deck.clone(), tags, reverse: ReverseMode::Subdeck, app: Some("game.exe".into()), word_audio, sentence_audio, context: None }
+        AnkiAddOptions { key: key.into(), deck: self.deck.clone(), tags, reverse: ReverseMode::Subdeck, app: Some("game.exe".into()), word_audio, sentence_audio, context: None, meaning_es: None }
     }
 }
 
@@ -260,19 +260,20 @@ async fn cards_from_a_line(run: &Run) -> (u64, u64) {
 
     // Reverse cards off, as with `reverse = "off"`: the word gets its Korean → English card only.
     let line = MineLine { sentence: SENTENCE.into(), translation: TRANSLATION.into(), app: Some("game.exe".into()), deck: run.deck.clone(), reverse: ReverseMode::Off };
-    let choice = MineChoice { key: "저".into(), surface: "저는".into(), pos: word("저").pos.clone(), level: None, meaning: "I (said humbly)".into() };
+    let choice = MineChoice { key: "저".into(), surface: "저는".into(), pos: word("저").pos.clone(), level: None, meaning: "I (said humbly)".into(), meaning_es: "yo (humilde)".into() };
     let permit = run.engine.begin_mine_word(&line, &choice).await.unwrap();
     assert!(matches!(run.engine.finish_mine_word(permit, &line, &choice, None, None).await.unwrap(), AnkiAdded::Added { cards: 1, reverse_deck: None, warning: None, .. }));
     assert_eq!(run.engine.mine_sentence(&line, std::slice::from_ref(&choice), None).await.unwrap(), MinedSentence::Added { deck: run.deck.clone() });
 
     let pronoun = run.word_note("저").await;
     assert_eq!(field(&pronoun, "Meaning"), "I (said humbly)", "the meaning as edited on the sheet");
+    assert_eq!(field(&pronoun, "MeaningEs"), "yo (humilde)", "and its Spanish, in the field added to the note type");
     assert!(field(&pronoun, "Sentence").contains("<b>저는</b>"), "{}", field(&pronoun, "Sentence"));
     assert_eq!(run.decks_of(&pronoun).await, std::slice::from_ref(&run.deck), "one card, in the chosen deck");
     let sentence = run.note(&format!("\"note:Maru Korean Sentence\" \"deck:{}\"", run.deck)).await;
     assert_eq!(field(&sentence, "Sentence"), SENTENCE);
     assert_eq!(field(&sentence, "Translation"), TRANSLATION);
-    assert!(field(&sentence, "Words").contains("<b>저</b> — I (said humbly)"), "{}", field(&sentence, "Words"));
+    assert!(field(&sentence, "Words").contains("<b>저</b> — I (said humbly) · yo (humilde)"), "{}", field(&sentence, "Words"));
     assert_eq!(sentence["cards"].as_array().unwrap().len(), 1, "a sentence has no reverse card");
     assert!(tags(&sentence).iter().any(|t| t == "sentence"), "{:?}", tags(&sentence));
 

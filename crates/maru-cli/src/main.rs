@@ -217,6 +217,11 @@ enum DictCommand {
     Levels { file: PathBuf },
     /// Show what is in the dictionary.
     Stats,
+    /// Import the learner's dictionary (한국어기초사전, CC BY-SA 2.0 KR) from the file made by `tools/build_nikl.py`:
+    /// word cards then carry its meanings in English and Spanish.
+    Nikl { file: PathBuf },
+    /// How much of some lines' words the learner's dictionary covers (a text file, one Korean line per line).
+    Coverage { file: PathBuf },
 }
 
 #[derive(Subcommand)]
@@ -618,6 +623,30 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             }
             Ok(0)
         }
+        Command::Dict(DictCommand::Nikl { file }) => {
+            paths.ensure()?;
+            let reader = std::io::BufReader::new(std::fs::File::open(&file).with_context(|| format!("opening {}", file.display()))?);
+            let nikl = maru_dict::Nikl::open(&paths.nikl_db())?;
+            let (stats, skipped) = nikl.import_jsonl(reader)?;
+            println!("Imported {} words with {} senses into {} ({skipped} lines skipped).", stats.words, stats.senses, paths.nikl_db().display());
+            if let (Some(source), Some(license)) = (nikl.meta("source"), nikl.meta("license")) {
+                println!("Source: {source}\nLicence: {license}");
+            }
+            println!("Restart Maru to use it: Make cards then shows each word's meaning in English and Spanish.");
+            Ok(0)
+        }
+        Command::Dict(DictCommand::Coverage { file }) => {
+            let text = std::fs::read_to_string(&file).with_context(|| format!("opening {}", file.display()))?;
+            let lines: Vec<String> = text.lines().map(str::to_owned).collect();
+            let s = services(&paths, cfg, false).await;
+            let c = s.engine.sense_coverage(&lines)?;
+            let share = |n: usize, of: usize| if of == 0 { 0.0 } else { 100.0 * n as f64 / of as f64 };
+            println!("{} lines, {} words to learn ({} different).", c.lines, c.words, c.distinct);
+            println!("In the learner's dictionary: {} of {} ({:.0}%); different words: {} of {} ({:.0}%).", c.found, c.words, share(c.found, c.words), c.distinct_found, c.distinct, share(c.distinct_found, c.distinct));
+            println!("One sense, so no model is needed: {} of {} ({:.0}%); different words: {} of {} ({:.0}%).", c.one_sense, c.words, share(c.one_sense, c.words), c.distinct_one_sense, c.distinct, share(c.distinct_one_sense, c.distinct));
+            println!("Lines whose cards need no model request at all: {} of {} ({:.0}%).", c.lines_without_model, c.lines, share(c.lines_without_model, c.lines));
+            Ok(0)
+        }
         Command::Dict(cmd) => {
             paths.ensure()?;
             let dict = maru_dict::Dictionary::open(&paths.dict_db())?;
@@ -631,7 +660,14 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     let n = dict.import_levels(std::io::BufReader::new(std::fs::File::open(&file)?))?;
                     println!("Imported levels for {n} words.");
                 }
-                DictCommand::Stats => println!("{} dictionary entries in {}", dict.entry_count()?, paths.dict_db().display()),
+                DictCommand::Stats => {
+                    println!("{} dictionary entries in {}", dict.entry_count()?, paths.dict_db().display());
+                    match paths.nikl_db().exists().then(|| maru_dict::Nikl::open(&paths.nikl_db())).transpose()?.map(|n| n.stats()).transpose()? {
+                        Some(n) if n.words > 0 => println!("Learner's dictionary (한국어기초사전): {} words, {} senses in {}", n.words, n.senses, paths.nikl_db().display()),
+                        _ => println!("Learner's dictionary (한국어기초사전): not installed (maru dict nikl <file>)"),
+                    }
+                }
+                DictCommand::Nikl { .. } | DictCommand::Coverage { .. } => unreachable!("handled above"),
             }
             Ok(0)
         }

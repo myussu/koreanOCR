@@ -1065,6 +1065,31 @@ search, got real speech files through `updateNoteFields`, were no longer listed,
 checked: the **Add missing sounds** button itself (the shell speaks each text and fills up to 30 notes of the whole
 collection, which the automated run does not do outside its throwaway deck), hearing the result, a real restart.
 
+## M-41 Card meanings in English and Spanish from the learner's dictionary
+
+**Needs:** the dictionary installed (`python tools/build_nikl.py <xml folder> nikl.jsonl`, `maru dict nikl nikl.jsonl`,
+restart; Status lists "Learner's dictionary: 한국어기초사전"), Anki as in M-39, and a model for lines with ambiguous words.
+
+1. History → **Make cards** on a line. Each word shows an English and a Spanish meaning and where they came from ("the
+   dictionary's only sense", "the dictionary sense chosen for this line", "the dictionary's first sense: check it fits",
+   "not in the dictionary: the model's words"). Judge whether the chosen senses fit the line.
+2. On a word with several senses, pick another one from the list under it: both meanings change. Type over one: the list
+   says it was edited by hand.
+3. Add. In Anki the word card shows the Spanish meaning under the English one (front of the reverse card too), the
+   sentence card lists `word — english · spanish`, and cards made before the dictionary look as they did.
+4. In Anki → Tools → Manage note types → Maru Korean → Fields: `MeaningEs` is last. Sync: if Anki asks for a one-way
+   sync, choose **Upload to AnkiWeb**; afterwards check a card on another device.
+5. With the model stopped, open a line again: first senses are shown with the note to check them, and adding still works.
+6. Rename `nikl.db` away and restart: the sheet works as in M-39 (one English meaning from the model).
+
+**Verification:** engine tests cover every source of a meaning, the single model request and what it contains, the
+fallbacks, the Spanish field on the note and the sentence card's list, and the panel add's one-sense rule; the Anki
+client's tests cover adding the field to an older note type and keeping the old layout when Anki refuses; the sheet was
+checked in headless Chromium through the History demo. On 2026-11-25 the real-Anki tests ran against a test profile
+whose `Maru Korean` note type was the older layout: the field was added at the end, the layout stamp became v2, and a
+mined card held its Spanish meaning (results log). Not checked: whether the chosen senses are right (that needs a reader
+and a real model: see the blind review page of run 1), the sync question in step 4, and the owner's real collection.
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.
@@ -1074,3 +1099,5 @@ Add a line per test run. An empty log means **nothing below has been checked on 
 | 2026-10-11 | M-3 live subtitles | Ryzen 9 7900X3D, RTX 5070 Ti, a game in an emulator, 1280×720, PP-OCR on CPU | partly | Reported by the user: 11 lines translated in order and listed in History → Live subtitles, with "to the first word" times of 1.1–5.4 s. Found by replaying the recorded clip: those times were inflated (the clock started at an earlier scene change; real reads took 0.5–1.4 s), and two short subtitles (about 0.9 s and 1.1 s on screen) were never translated. The watcher was fixed (text signal) and passes the replay; **needs a retest on the real PC**. The user also reported that the band covered the original subtitles, which they do not want; it now goes above or below the original (browser demo checked in Chromium, geometry unit-tested), **not yet seen on the real PC**. |
 | 2026-11-25 | M-39/M-40 Anki client (`maru-srs --test real_anki`) | run by the agent; Anki 26.9.4, AnkiConnect API 6, profile "User 2" (empty test profile), throwaway deck | passed | 4.4 s through the new profile-and-deck guard. Word card with reverse in `<deck>::Reverse`, silent word, sentence card, duplicates refused, sound added later. First run on this profile, so it created the note types `Maru Korean` and `Maru Korean Sentence`; they remain (AnkiConnect cannot delete a note type). No deck, note or sound file left; no sync requested. Sounds were generated silence. |
 | 2026-11-25 | M-9, M-24, M-39, M-40 engine path (`maru-engine --test real_anki`) | run by the agent; same Anki and profile; scripted model for word meanings; speech files made by the installed Qwen3-TTS voice with `maru tts` (0.7 s for 학교, 2.4 s for the line) | passed | 11.5 s, run twice. M-9: Check Anki, word card with fields, tags (`maru`, `topik-1`, `pos::noun`, `app::game`, `added::2026-11`), both sounds, reverse card in the Reverse subdeck, second add reports it exists; nothing listening gives "cannot reach AnkiConnect … Is Anki open" in 2 s. M-24: an add whose `changeDeck` was made to fail reported the unfinished note, the retry finished the same note; after a suspension and a deletion in Anki, Refresh progress counted 2 of 3 words. M-39: sheet ticks follow what Anki has, mined word with reverse off has one card, sentence card has one card, second time everything exists. M-40: 3 silent notes found, 2 given sound, not listed again, existing sound kept. **Not checked:** nobody listened to or looked at the cards; no AnkiWeb sync; the app's own buttons; the user's real profile and deck. No defect found in this path. |
+| 2026-11-25 | M-41 note type upgrade and Spanish meanings (`maru-srs` and `maru-engine` `--test real_anki`) | run by the agent; Anki 26.9.4, AnkiConnect API 6, profile "User 2", whose `Maru Korean` note type had the older 12 fields from the run above | passed | The first add called `modelFieldAdd`: `MeaningEs` is now the 13th field and the CSS stamp is `maru-model-v2`. The client's word card held `MeaningEs`; the engine's mined card held "yo (humilde)" and its sentence card listed `저 — I (said humbly) · yo (humilde)`. Throwaway deck, notes and sounds deleted afterwards; no sync. **Not checked:** how the cards look, the one-way sync Anki may ask for after a field is added, sense choices by a real model. |
+| 2026-11-25 | Learner's dictionary coverage (`maru dict coverage`) | run by the agent; an isolated copy of the data folder (copied `dict.db`, the real Kiwi analyser), the 115 different lines of a copy of the owner's `history.db`, dictionary built from the 2019-08-02 XML (48,353 words, 67,653 senses) | measured | 478 words to learn (267 different): 424 (89%) are in the dictionary (224 different, 84%); 104 (22%) have one sense and need no model (71 different, 27%); 7 of 115 lines (6%) need no model request at all. |
