@@ -34,6 +34,9 @@ pub struct MineWord {
     pub source: Option<crate::senses::MeaningSource>,
     /// The learner's dictionary's senses for the word, to choose another one.
     pub senses: Vec<crate::senses::SenseChoice>,
+    /// The dictionary form the model says the word really has in this line, when it differs from `key` (the
+    /// analyser's): the sheet shows both and you choose.
+    pub corrected: Option<String>,
     pub in_context: bool,
     pub known: bool,
     pub in_anki: bool,
@@ -208,6 +211,7 @@ impl Engine {
                     meaning_es: sense.map(|s| s.es.clone()).unwrap_or_default(),
                     source: sense.map(|s| s.source),
                     senses: sense.map(|s| s.options.clone()).unwrap_or_default(),
+                    corrected: sense.and_then(|s| s.corrected.clone()),
                     known: e.state == WordState::Known,
                     in_anki: false,
                     pick: false,

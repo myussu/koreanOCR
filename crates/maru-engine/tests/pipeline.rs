@@ -2549,3 +2549,112 @@ async fn a_word_with_several_senses_added_from_the_panel_gets_the_spanish_of_the
     h.engine.anki_add(opts).await.unwrap();
     assert_eq!(added_notes(&h).pop().unwrap()["fields"]["MeaningEs"], "");
 }
+
+// ───────────── the dictionary on cards: romanized equivalents, words with many senses, a corrected form ─────────────
+
+/// A learner's dictionary with a romanized equivalent that has a gloss (국), one that has nothing else (녀석),
+/// and a word with twelve senses (일).
+fn tricky_dictionary() -> Arc<maru_dict::Nikl> {
+    let many: Vec<String> = (1..=12).map(|k| format!(r#"{{"en":"sense {k}","es":"acepción {k}"}}"#)).collect();
+    let file = format!(
+        "{}\n{}\n{}\n{}\n",
+        r#"{"w":"국","h":0,"p":"명사","l":"초급","s":[{"en":"guk","es":"guk, sopa","end":"soup: A dish made by boiling meat."}]}"#,
+        r#"{"w":"녀석","h":0,"p":"의존 명사","l":"","s":[{"en":"nyeoseok","end":"A bound noun used to refer to a man."}]}"#,
+        format_args!(r#"{{"w":"일","h":0,"p":"명사","l":"초급","s":[{}]}}"#, many.join(",")),
+        r#"{"w":"학교","h":0,"p":"명사","l":"초급","s":[{"en":"school","es":"escuela"}]}"#,
+    );
+    let nikl = maru_dict::Nikl::open_in_memory().unwrap();
+    nikl.import_jsonl(Cursor::new(file)).unwrap();
+    Arc::new(nikl)
+}
+
+/// The model and AnkiConnect on one server; the model answers a card request with what `answer` gives for its body.
+fn card_server(answer: impl Fn(&str) -> &'static str + Send + Sync + 'static) -> impl Fn(&str, &str) -> MockResponse + Send + Sync + 'static {
+    move |path, body| {
+        if !path.contains("chat/completions") {
+            return ankiconnect(path, body);
+        }
+        MockResponse { status: 200, chunks: sse_answer(&[answer(body)]), delay_ms: 0 }
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_bare_romanization_is_never_a_card_meaning() {
+    use maru_engine::senses::MeaningSource;
+    let h = mining_harness(spawn_mock(card_server(|_| "1|0|guy|tipo\n")).await);
+    h.engine.set_learner_dictionary(tricky_dictionary());
+    let sheet = h.engine.mine_sheet("국 녀석", "", None).await.unwrap();
+    let word = |key: &str| sheet.words.iter().find(|w| w.key == key).unwrap_or_else(|| panic!("{key} in {:?}", sheet.words));
+
+    // 국 → "guk" in the dictionary, with "soup:" at the start of the definition: the gloss, and the Spanish without "guk".
+    assert_eq!((word("국").meaning.as_str(), word("국").meaning_es.as_str(), word("국").source), ("soup", "sopa", Some(MeaningSource::OneSense)));
+    // 녀석 → only "nyeoseok": nothing usable, so a model words it like a word the dictionary lacks.
+    assert_eq!((word("녀석").meaning.as_str(), word("녀석").meaning_es.as_str(), word("녀석").source), ("guy", "tipo", Some(MeaningSource::Model)));
+    for w in &sheet.words {
+        assert!(!["guk", "nyeoseok"].contains(&w.meaning.as_str()) && !w.dictionary.iter().any(|d| d == "guk" || d == "nyeoseok"), "{w:?}");
+    }
+    let asked = model_requests(&h);
+    assert_eq!(asked.len(), 1);
+    assert!(asked[0].contains("녀석") && !asked[0].contains("nyeoseok") && !asked[0].contains("guk"), "the romanization is not offered to the model either: {}", asked[0]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_word_with_more_than_eight_senses_gets_a_second_request_when_the_model_says_none_of_the_first_fits() {
+    use maru_engine::senses::MeaningSource;
+    // First request shows senses 1 to 8 of 일: "none fits". The second shows 9 to 12 and gets the third of them.
+    let h = mining_harness(spawn_mock(card_server(|body| if body.contains("1) sense 9") { "0|3\n" } else { "0|0|work|trabajo\n" })).await);
+    h.engine.set_learner_dictionary(tricky_dictionary());
+    let sheet = h.engine.mine_sheet("일", "", None).await.unwrap();
+    let work = &sheet.words[0];
+    assert_eq!((work.meaning.as_str(), work.meaning_es.as_str(), work.source), ("sense 11", "acepción 11", Some(MeaningSource::Chosen)));
+    assert_eq!(work.senses.len(), 12, "every sense can still be picked by hand");
+    let asked = model_requests(&h);
+    assert_eq!(asked.len(), 2, "one more request, only for this word");
+    assert!(asked[0].contains("8) sense 8") && !asked[0].contains("sense 9"), "{}", asked[0]);
+    assert!(asked[1].contains("1) sense 9") && asked[1].contains("4) sense 12") && !asked[1].contains("sense 8"), "{}", asked[1]);
+
+    // A model that picks one of the first eight costs one request, as before.
+    let h = mining_harness(spawn_mock(card_server(|_| "0|5\n")).await);
+    h.engine.set_learner_dictionary(tricky_dictionary());
+    let sheet = h.engine.mine_sheet("일", "", None).await.unwrap();
+    assert_eq!(sheet.words[0].meaning, "sense 5");
+    assert_eq!(model_requests(&h).len(), 1);
+
+    // "None" twice: the model's own words stay.
+    let h = mining_harness(spawn_mock(card_server(|_| "0|0|work|trabajo\n")).await);
+    h.engine.set_learner_dictionary(tricky_dictionary());
+    let sheet = h.engine.mine_sheet("일", "", None).await.unwrap();
+    assert_eq!((sheet.words[0].meaning.as_str(), sheet.words[0].source), ("work", Some(MeaningSource::Model)));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_dictionary_form_the_model_corrects_is_shown_beside_the_analysers_and_nothing_is_changed_for_you() {
+    // The analyser read 학교; the model says the word in the line is really 학원. Asked for with a setting.
+    let server = spawn_mock(card_server(|_| "0|0|academy|academia|=학원\n")).await;
+    let mut cfg = Config::default();
+    cfg.learning.anki.enabled = true;
+    cfg.learning.anki.url = server.url.clone();
+    cfg.learning.anki.sync_after_add = false;
+    cfg.learning.anki.correct_forms = true;
+    let llm = LlmClient::new(&server.url, &cfg.llm);
+    let h = build(cfg, Some(llm), Some(server));
+    let nikl = maru_dict::Nikl::open_in_memory().unwrap();
+    nikl.import_jsonl(Cursor::new(r#"{"w":"학교","h":0,"p":"명사","l":"","s":[{"en":"school","es":"escuela"},{"en":"school building","es":"edificio"}]}"#)).unwrap();
+    h.engine.set_learner_dictionary(Arc::new(nikl));
+    let sheet = h.engine.mine_sheet("학교", "", None).await.unwrap();
+    let word = &sheet.words[0];
+    assert_eq!(word.key, "학교", "the card's word stays the analyser's until you choose otherwise");
+    assert_eq!(word.corrected.as_deref(), Some("학원"));
+    assert_eq!((word.meaning.as_str(), word.meaning_es.as_str()), ("academy", "academia"), "the meaning belongs to the corrected form");
+    assert_eq!(model_requests(&h).len(), 1, "a corrected word is not asked about again");
+    assert!(model_requests(&h)[0].contains("=form"), "the request asked the model for forms");
+
+    // Without the setting (the default) the request is the one measured in run 1, and a form in the answer is ignored.
+    let h = mining_harness(spawn_mock(card_server(|_| "0|0|academy|academia|=학원\n")).await);
+    let nikl = maru_dict::Nikl::open_in_memory().unwrap();
+    nikl.import_jsonl(Cursor::new(r#"{"w":"학교","h":0,"p":"명사","l":"","s":[{"en":"school","es":"escuela"},{"en":"school building","es":"edificio"}]}"#)).unwrap();
+    h.engine.set_learner_dictionary(Arc::new(nikl));
+    let sheet = h.engine.mine_sheet("학교", "", None).await.unwrap();
+    assert!(sheet.words[0].corrected.is_none() && sheet.words[0].meaning == "academy");
+    assert!(!model_requests(&h)[0].contains("=form"));
+}

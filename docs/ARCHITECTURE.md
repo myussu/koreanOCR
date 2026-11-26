@@ -247,6 +247,26 @@ read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
   comparison tools: `Engine::card_words` / `maru dict senses` (a line's words and senses), `maru bench --cards` (each
   connection decides them), `tools/rerank_senses.py` (a CPU reranker instead of a model) and
   `tools/build_card_review.py` (the blind review page and its separate key; `tools/test_card_review.py`).
+* **What the dictionary gives a card** (run 2; `maru-engine/src/romanized.rs`, `senses.rs`, `maru-llm/src/senses.rs`).
+  *Romanized equivalents:* 3,280 of the dictionary's 67,653 senses (2,448 of 48,353 entries) have an English "equivalent"
+  that is only the headword in Latin letters (녀석 → "nyeoseok", the 수 of 할 수 있다 → "su"; `maru dict romanized`
+  counts them). `romanized::usable_english` never lets one be a meaning: real words beside it stay (44 senses), the gloss at
+  the start of the definition stands in ("red chili paste: …", 521), a word Spanish spells the same is kept as borrowed
+  (radio, hotel, and dish names: 406), and the rest (2,309) are left without English. `senses::card_senses` drops a sense
+  without English, so such a word reaches the model like one the dictionary lacks. The match is exact against four
+  spellings (as written, as pronounced, syllable by syllable, without a linking ㅅ); capitalised equivalents are names.
+  *More than eight senses:* the first request still shows eight (`MAX_SENSES`); when the model answers "none of these"
+  for a word that has more, `senses::choose` sends a second request with that word's next sixteen (`MORE_SENSES`,
+  `second_questions`, `resolve`), and a second "none" keeps the model's own words. No reranker.
+  *A corrected dictionary form:* with `learning.anki.correct_forms` the prompt gains one rule
+  (`sense_system_with_forms`) and an answer may end in `|=form` (`parse_correction`); `MineWord::corrected` carries it
+  and the sheet shows both forms with a button (`mine-core.js::formChoice`); the card keeps the analyser's form until
+  pressed. It is off by default and a separate prompt, so the request measured in run 1's blind review is unchanged.
+  `maru bench --cards … [--forms]` runs the same two steps (`Chosen::{requests, later, corrected}` are in its records).
+  Tests: `romanized.rs`, `senses.rs` (both crates), `tests/pipeline.rs` (`a_bare_romanization_is_never_a_card_meaning`,
+  `a_word_with_more_than_eight_senses…`, `a_dictionary_form_the_model_corrects…`), `mine.test.mjs`. Review tools outside the
+  app: `tools/nikl_stats.py` (the dictionary statistics), `tools/build_kiwi_review.py` (a page to mark Kiwi's lemmas
+  right or wrong, grouped as standard text, dialect and broken OCR). Measured on the 50 review lines: docs/reports/run-2.md.
 * **Two decks, the program as a tag, the queue, and asking again** (run 2). Word cards go to `learning.anki.deck` and the
   sentence card to `learning.anki.sentence_deck` (empty = the same): `MineSheet::{word_deck, sentence_deck}`,
   `MineLine::sentence_deck` (absent in older requests = the words' deck), `mine_add`'s `sentence_deck`. The program a card
@@ -781,6 +801,7 @@ model), a `hint` for the prompts, `register`, `gloss_mode`, and Anki deck/tags.
 | `hybrid_ocr.rs` · `vlm_ocr.rs` · `vision.rs` · `respace.rs` | OCR second opinion and repair |
 | `hardware.rs` · `plan.rs` | what this PC has · what to install on it |
 | `routes.rs` | one model per task: the live route, the card routes with their fallbacks, per-task status and test |
+| `romanized.rs` | dictionary "equivalents" that are only the headword in Latin letters, and what a card shows instead |
 | `resource_targets.rs` · `resource_monitor.rs` | owned process identities, demand-driven platform samples and bounded local resource sessions |
 
 ## 6. Contracts

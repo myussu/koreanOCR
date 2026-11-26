@@ -348,6 +348,9 @@ pub struct AnkiConfig {
     pub new_sentences_per_day: u32,
     /// Offer a deck per program (`Korean::Games::<name>`) when adding. Off: the program is only a tag.
     pub suggest_app_decks: bool,
+    /// Let the model that chooses card meanings also correct a word's dictionary form (dialect, misread text); the
+    /// sheet then shows both forms. Off by default: it changes the prompt, and with it which senses a small model picks.
+    pub correct_forms: bool,
 }
 
 impl Default for AnkiConfig {
@@ -370,6 +373,7 @@ impl Default for AnkiConfig {
             new_words_per_day: 3,
             new_sentences_per_day: 1,
             suggest_app_decks: false,
+            correct_forms: false,
         }
     }
 }

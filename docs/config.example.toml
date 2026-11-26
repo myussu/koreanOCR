@@ -89,6 +89,9 @@ deck = "Korean"             # where word cards go unless you type another deck w
 new_words_per_day = 3       # new word cards you study a day: only used to say when the cards you add would come up
 new_sentences_per_day = 1   # (Anki's own limits are neither read nor changed; AnkiConnect cannot see a deck's overrides)
 suggest_app_decks = false   # true also offers a deck per program (Korean::<program>); false: the program is only a tag
+correct_forms = false       # true lets the card-meanings model correct a word's dictionary form (dialect, misread text);
+                            # the sheet shows both. Off: it changes the prompt, and with it what a small model chooses
+                            # (run 2: Gemma 12B corrected nothing; Claude Sonnet corrected 25 forms on 50 lines).
 reverse = "subdeck"         # the English -> Korean card: subdeck (<deck>::Reverse) | same_deck | off
 sentence_note_type = "Maru Korean Sentence"  # History → Make cards: the line as a one-card note (no reverse)
 audio = true                # attach the spoken word and sentence (needs [tts])

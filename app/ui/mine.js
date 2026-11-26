@@ -3,7 +3,7 @@
 
 import { invoke } from './bridge.js';
 import { soundsText } from './anki.js';
-import { addLabel, ankiIsOff, answeredText, applySense, askFor, deckOptions, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, queueLines, redraft, retryChoices, senseIndex, senseLabel } from './mine-core.js';
+import { addLabel, ankiIsOff, answeredText, applySense, askFor, deckOptions, formChoice, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, queueLines, redraft, retryChoices, senseIndex, senseLabel } from './mine-core.js';
 
 let lists = 0;
 
@@ -129,7 +129,7 @@ export function mineSheet(h, item, { onClose, onAdded }) {
     const facts = [w.pos, w.level, w.known ? 'known' : '', w.in_anki ? 'in Anki' : ''].filter(Boolean).join(' · ');
     return h('div', { class: d.picked ? 'mine-word on' : 'mine-word' },
       h('input', { type: 'checkbox', checked: d.picked, 'aria-label': `Make a card for ${w.key}`, onchange: (e) => { d.picked = e.target.checked; draw(); } }),
-      h('div', { class: 'mine-key' }, h('span', { class: 'ko', text: w.key }), w.surface !== w.key && h('small', { class: 'ko', text: w.surface })),
+      h('div', { class: 'mine-key' }, h('span', { class: 'ko', text: d.key }), w.surface !== d.key && h('small', { class: 'ko', text: w.surface }), forms(w, d)),
       h('div', { class: 'mine-meaning' },
         h('input', { type: 'text', value: d.meaning, list, placeholder: 'meaning', 'aria-label': `Meaning of ${w.key}`, oninput: (e) => { d.meaning = e.target.value; refresh(); } }),
         w.dictionary.length > 0 && h('datalist', { id: list }, w.dictionary.map((g) => h('option', { value: g }))),
@@ -137,6 +137,13 @@ export function mineSheet(h, item, { onClose, onAdded }) {
         (sheet.credit || d.meaningEs) && h('input', { type: 'text', class: 'es', lang: 'es', value: d.meaningEs, placeholder: 'significado en español', 'aria-label': `Spanish meaning of ${w.key}`, oninput: (e) => { d.meaningEs = e.target.value; } }),
         (w.senses?.length ?? 0) > 1 && senses(w, d),
         h('small', { text: [meaningHint(w), facts].filter(Boolean).join(' · ') })));
+  };
+
+  // The model reads another dictionary form than the word splitter: both are shown, and a button switches the card.
+  const forms = (w, d) => {
+    const choice = formChoice(w, d);
+    return choice && h('div', { class: 'mine-form' }, h('small', { text: choice.text }),
+      h('button', { class: 'btn', type: 'button', text: choice.button, onclick: () => { d.key = choice.next; draw(); } }));
   };
 
   // The dictionary's other senses of a word: choosing one changes both meanings.

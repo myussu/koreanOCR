@@ -29,6 +29,8 @@
 .mine-why, .mine-wait, .mine-note { font-size: 12.5px; color: var(--muted); }
 .mine-note { margin: 4px 0 8px; }
 .mine-note.warn { color: var(--warn); }
+.mine-form small { color: var(--warn); }
+.mine-form .btn { font-size: 11.5px; padding: 2px 8px; margin-top: 4px; }
 .mine-by { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin: 2px 0 10px; }
 .mine-by-who { font-size: 12.5px; color: var(--muted); margin-right: 4px; }
 .mine-by .btn { font-size: 11.5px; padding: 3px 9px; }
