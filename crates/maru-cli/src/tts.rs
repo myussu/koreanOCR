@@ -195,6 +195,36 @@ pub struct EvalOptions {
     pub language: Option<String>,
     pub instructions: Option<String>,
     pub sentences_file: Option<PathBuf>,
+    /// Other speech servers to put on the same page: `Name=http://address[,voice=…][,model=…]`.
+    pub candidates: Vec<String>,
+}
+
+/// A voice on another speech server, compared beside the configured one.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Candidate {
+    pub name: String,
+    pub endpoint: String,
+    pub voice: Option<String>,
+    pub model: Option<String>,
+}
+
+/// `Supertonic 3=http://127.0.0.1:18096,voice=F1,model=supertonic-3`.
+pub fn parse_candidate(text: &str) -> Result<Candidate> {
+    let (name, rest) = text.split_once('=').context("a candidate is written Name=http://address[,voice=…][,model=…]")?;
+    let mut parts = rest.split(',').map(str::trim);
+    let endpoint = parts.next().unwrap_or_default().to_string();
+    if name.trim().is_empty() || !(endpoint.starts_with("http://") || endpoint.starts_with("https://")) {
+        bail!("a candidate is written Name=http://address[,voice=…][,model=…]; got \"{text}\"");
+    }
+    let mut candidate = Candidate { name: name.trim().to_string(), endpoint, voice: None, model: None };
+    for part in parts.filter(|p| !p.is_empty()) {
+        match part.split_once('=') {
+            Some(("voice", v)) => candidate.voice = Some(v.trim().to_string()),
+            Some(("model", m)) => candidate.model = Some(m.trim().to_string()),
+            _ => bail!("a candidate takes voice=… and model=…; got \"{part}\""),
+        }
+    }
+    Ok(candidate)
 }
 
 fn slug(s: &str) -> String {
@@ -226,6 +256,7 @@ pub async fn eval(paths: &Paths, cfg: &Config, opts: EvalOptions) -> Result<()> 
     }
     // each voice gets its own cache identity, so voices never reuse each other's audio
     let voices = if opts.voices.is_empty() { vec![tts_cfg.voice.clone()] } else { opts.voices };
+    let candidates: Vec<Candidate> = opts.candidates.iter().map(|c| parse_candidate(c)).collect::<Result<_>>()?;
     let sentences: Vec<(String, String)> = match &opts.sentences_file {
         Some(f) => std::fs::read_to_string(f)
             .with_context(|| format!("reading {}", f.display()))?
@@ -239,23 +270,53 @@ pub async fn eval(paths: &Paths, cfg: &Config, opts: EvalOptions) -> Result<()> 
     let out_dir = opts.out.unwrap_or_else(|| paths.data_dir.join("tts-eval"));
     std::fs::create_dir_all(&out_dir)?;
 
+    let starting = Instant::now();
     let server = if tts_cfg.provider == TtsProvider::Local {
         eprintln!("Starting the local speech server …");
         Some(LocalTts::start(&tts_cfg, paths).await.map_err(|e| anyhow::anyhow!("{e}"))?)
     } else {
         None
     };
+    let started_in = server.as_ref().map(|_| starting.elapsed().as_secs_f32());
+    if let (Some(s), Some(secs)) = (&server, started_in) {
+        println!("The local speech server was ready in {secs:.1} s (process {}).", s.process_id().map_or("?".to_string(), |p| p.to_string()));
+    }
+    // What is compared: the configured server's voices, then each other server's voice.
+    let mut entries: Vec<(String, String, maru_core::config::TtsConfig)> = voices
+        .iter()
+        .map(|voice| {
+            let mut c = tts_cfg.clone();
+            c.voice = voice.clone();
+            let note = started_in.map_or(String::new(), |secs| format!("{} · the server was ready in {secs:.1} s", tts_cfg.model));
+            (voice.clone(), note, c)
+        })
+        .collect();
+    for candidate in &candidates {
+        let mut c = tts_cfg.clone();
+        c.provider = TtsProvider::Endpoint;
+        c.endpoint = Some(candidate.endpoint.clone());
+        c.api_key = None;
+        c.instructions = None;
+        if let Some(voice) = &candidate.voice {
+            c.voice = voice.clone();
+        }
+        if let Some(model) = &candidate.model {
+            c.model = model.clone();
+        }
+        entries.push((candidate.name.clone(), format!("{} · voice {}", candidate.endpoint, c.voice), c));
+    }
 
     let mut html = String::from("<!doctype html><meta charset=utf-8><title>Maru voices</title><style>body{font:16px system-ui;max-width:860px;margin:2em auto;padding:0 1em}h2{margin-top:2em}.s{margin:1.2em 0;padding-bottom:1em;border-bottom:1px solid #ddd}.k{font-size:20px}.m{color:#777;font-size:13px}audio{width:100%;margin-top:.4em}</style><h1>Maru voices</h1><p>Listen and note which voice sounds most like a native speaker; the sentences test sound changes that the spelling does not show.</p>");
     println!("{:<18} {:<16} {:>8} {:>8} {:>6}", "voice", "sentence", "audio", "took", "RTF");
-    for voice in &voices {
-        let mut c = tts_cfg.clone();
-        c.voice = voice.clone();
-        let tts = Tts::new(&c, paths).map_err(|e| anyhow::anyhow!("{e}"))?;
-        tts.client().check().await.map_err(|e| anyhow::anyhow!("{e}"))?;
+    for (voice, note, c) in &entries {
+        let tts = Tts::new(c, paths).map_err(|e| anyhow::anyhow!("{e}"))?;
+        tts.client().check().await.map_err(|e| anyhow::anyhow!("{voice}: {e}"))?;
         let dir = out_dir.join(slug(voice));
         std::fs::create_dir_all(&dir)?;
         html.push_str(&format!("<h2>{}</h2>", escape(voice)));
+        if !note.is_empty() {
+            html.push_str(&format!("<p class=m>{}</p>", escape(note)));
+        }
         let mut all = Vec::new();
         for (name, text) in &sentences {
             // a paragraph is spoken the way the reader will: one sentence at a time, joined
@@ -310,5 +371,15 @@ mod tests {
         }
         assert!(maru_tts::split::sentences(EVAL_SENTENCES.last().unwrap().1).len() >= 4, "the paragraph really is several sentences");
         assert_eq!(slug("sohee / v2"), "sohee---v2");
+    }
+
+    #[test]
+    fn another_speech_server_is_named_with_its_address_and_optionally_a_voice_and_model() {
+        let c = parse_candidate("Supertonic 3=http://127.0.0.1:18096, voice=F1 ,model=supertonic-3").unwrap();
+        assert_eq!(c, Candidate { name: "Supertonic 3".into(), endpoint: "http://127.0.0.1:18096".into(), voice: Some("F1".into()), model: Some("supertonic-3".into()) });
+        assert_eq!(parse_candidate("Other=https://voice.example/v1").unwrap().voice, None);
+        for wrong in ["http://127.0.0.1:18096", "=http://x", "Name=127.0.0.1:18096", "Name=http://x,speed=2"] {
+            assert!(parse_candidate(wrong).is_err(), "{wrong}");
+        }
     }
 }

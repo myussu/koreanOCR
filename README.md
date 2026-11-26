@@ -458,6 +458,13 @@ model of the same connection; `local` is the model this PC runs itself. `maru be
 Gemini=gemini-3.8-flash --file lines.txt -n 3 --out results` times live subtitles on each connection in turn with the same
 lines (first word, whole line, failures, lines cut off at the length limit, tokens) and prints one table.
 
+**Comparing voices.** `maru tts-eval` speaks a set of test sentences with your voice and writes a page to listen to.
+`--candidate "Name=http://address[,voice=…][,model=…]"` (repeatable) adds a voice from any other OpenAI-style speech
+server to the same page. `python tools/supertonic_server.py` is such a server for Supertonic 3, Supertone's small ONNX
+voice that runs on the CPU (`pip install supertonic`; model under the OpenRAIL-M licence, downloaded on first start):
+`maru tts-eval --candidate "Supertonic 3=http://127.0.0.1:18096,voice=F1"`. This only compares; the voice Maru uses stays
+the one in Settings → Speech.
+
 **Comparing who chooses card meanings best.** `maru dict senses lines.txt --out tasks.jsonl` writes, for each line, its
 words to learn with their dictionary senses; `maru bench --cards tasks.jsonl --connection dictionary --connection NAS
 --connection Claude=claude-haiku-5-5 --out results` lets each candidate decide every meaning the way the cards sheet does
