@@ -75,7 +75,7 @@ fn offline_items(inner: &Inner, found: &[Found], mode: GlossMode, profile: Optio
 
     let mut items = Vec::with_capacity(found.len());
     for f in found {
-        let mut eojeols = inner.analyzer.analyze(&f.text).eojeols;
+        let mut eojeols = inner.analyzer.analyze_with(&f.text, crate::engine::analysis_options(&inner.cfg, Some(scope))).eojeols;
         annotate::annotate(&mut eojeols, inner.dict.as_deref(), Some(&inner.vocab), 1);
         let content: Vec<_> = eojeols.iter().filter(|e| e.content).collect();
         let known = !content.is_empty() && content.iter().all(|e| e.state == WordState::Known);

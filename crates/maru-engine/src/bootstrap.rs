@@ -136,19 +136,24 @@ pub fn kiwi_cache_dir(paths: &Paths) -> PathBuf {
 pub const PROBE_MARKER: &str = "probe.ok";
 /// Hidden command-line flag: run the Kiwi self-test and exit (see [`run_probe_if_requested`]).
 pub const PROBE_FLAG: &str = "--maru-probe-kiwi";
+/// The same self-test with typo correction on (Kiwi built with its basic typo set, every sample analysed with it).
+pub const PROBE_TYPO_FLAG: &str = "--maru-probe-kiwi-typo";
 
 /// Call first thing in `main` of every Maru program: if this process was started as the Kiwi
 /// self-test, run it and exit; otherwise return immediately.
 pub fn run_probe_if_requested() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) != Some(PROBE_FLAG) || args.len() < 4 {
+    let typo = args.get(1).map(String::as_str) == Some(PROBE_TYPO_FLAG);
+    if !(typo || args.get(1).map(String::as_str) == Some(PROBE_FLAG)) || args.len() < 4 {
         return;
     }
-    let code = match maru_lang::kiwi::KiwiAnalyzer::spawn_from_paths(PathBuf::from(&args[2]), PathBuf::from(&args[3])) {
+    let setup = maru_lang::kiwi::KiwiSetup { dialects: 0, typo };
+    let options = maru_lang::AnalysisOptions { dialects: 0, typo };
+    let code = match maru_lang::kiwi::KiwiAnalyzer::spawn_from_paths_with(PathBuf::from(&args[2]), PathBuf::from(&args[3]), setup) {
         Ok(analyzer) => {
             use maru_lang::Morphology;
             let samples = ["안녕하세요, 한국어를 공부해요.", "저는 학교에서 친구랑 같이 영화를 봤어요!", "열심히 노력하면 꼭 성공할 수 있을 거예요", "Hello 2024 한국어"];
-            match samples.iter().map(|t| analyzer.tokenize(t)).collect::<Result<Vec<_>, _>>() {
+            match samples.iter().map(|t| analyzer.tokenize_with(t, options)).collect::<Result<Vec<_>, _>>() {
                 Ok(all) if all.iter().all(|t| !t.is_empty()) => {
                     println!("OK");
                     0
@@ -173,9 +178,14 @@ pub fn run_probe_if_requested() {
 
 /// Run the Kiwi self-test in a separate process so a crash cannot take this one down.
 pub fn probe_kiwi(library: &Path, model: &Path) -> Result<(), String> {
+    probe_kiwi_with(library, model, PROBE_FLAG)
+}
+
+/// [`probe_kiwi`] with one of the probe flags ([`PROBE_FLAG`], [`PROBE_TYPO_FLAG`]).
+pub fn probe_kiwi_with(library: &Path, model: &Path, flag: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut child = std::process::Command::new(exe)
-        .arg(PROBE_FLAG)
+        .arg(flag)
         .arg(library)
         .arg(model)
         .stdin(std::process::Stdio::null())
@@ -218,13 +228,36 @@ pub fn find_kiwi(paths: &Paths) -> Option<(PathBuf, PathBuf)> {
     })
 }
 
-fn load_analyzer(paths: &Paths, notes: &mut Vec<String>) -> Analyzer {
+/// What Kiwi must be built with for the programs' `dialects` and `typo_correction`. Typo correction is tried in a
+/// separate process first (as every Kiwi install is): with Kiwi 0.23.1 it crashes the process that analyses with it.
+fn kiwi_setup(cfg: &Config, lib: &std::path::Path, model: &std::path::Path, notes: &mut Vec<String>) -> maru_lang::kiwi::KiwiSetup {
+    let mut dialects = 0;
+    for p in &cfg.profiles {
+        let (mask, unknown) = maru_lang::dialect_mask(&p.dialects);
+        dialects |= mask;
+        if !unknown.is_empty() {
+            notes.push(format!("Korean analyser: unknown dialect name(s) {} in profile {}; known: {}.", unknown.join(", "), p.name, maru_lang::morph::DIALECTS.map(|d| d.0).join(", ")));
+        }
+    }
+    let wants_typo = cfg.profiles.iter().any(|p| p.typo_correction);
+    let typo = wants_typo && match probe_kiwi_with(lib, model, PROBE_TYPO_FLAG) {
+        Ok(()) => true,
+        Err(why) => {
+            notes.push(format!("Korean analyser: typo correction is off: this Kiwi failed a test with it ({why})."));
+            false
+        }
+    };
+    maru_lang::kiwi::KiwiSetup { dialects, typo }
+}
+
+fn load_analyzer(cfg: &Config, paths: &Paths, notes: &mut Vec<String>) -> Analyzer {
     use maru_lang::kiwi::KiwiAnalyzer;
     let Some((lib, model)) = find_kiwi(paths) else {
         notes.push("Korean analyser: simplified rules (word breakdown is approximate). Run `maru setup kiwi` for accurate grammar analysis.".into());
         return Analyzer::heuristic();
     };
-    match KiwiAnalyzer::spawn_from_paths(lib, model) {
+    let setup = kiwi_setup(cfg, &lib, &model, notes);
+    match KiwiAnalyzer::spawn_from_paths_with(lib, model, setup) {
         Ok(k) => {
             notes.push("Korean analyser: Kiwi".into());
             Analyzer::new(Arc::new(k))
@@ -347,10 +380,10 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
 
     tracing::info!("boot: loading the Korean analyser");
     let analyzer = {
-        let paths = paths.clone();
+        let (paths, kiwi_cfg) = (paths.clone(), cfg.clone());
         match tokio::task::spawn_blocking(move || {
             let mut n = Vec::new();
-            let a = load_analyzer(&paths, &mut n);
+            let a = load_analyzer(&kiwi_cfg, &paths, &mut n);
             (a, n)
         })
         .await

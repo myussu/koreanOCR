@@ -7,6 +7,11 @@ text, dialect, broken OCR) because the analyser is expected to do very different
 
   python tools/build_kiwi_review.py build tokens.jsonl --groups groups.json --out index.html [--known known.json]
   python tools/build_kiwi_review.py score marks.json
+  python tools/build_kiwi_review.py changes standard.jsonl "Gyeongsang dialect=gyeongsang.jsonl" --groups groups.json --out changes.html
+
+`changes` lists only the words whose dictionary form differs between Kiwi as Maru runs it and Kiwi with an option on
+(the files `cargo run -p maru-cli --example kiwi_options` writes), in the same three groups, and judges nothing. An
+option given as `"name=!reason"` is shown as not measured, with the reason.
 
 `tokens.jsonl`: one object per line with `line_no`, `line` and `eojeols` (`surface`, `lemma`, `pos`, `content`,
 `morphs`), as `maru translate --no-llm --json` gives them in its `breakdown` event.
@@ -247,6 +252,91 @@ def score(saved):
     return out
 
 
+def changed_rows(base, other, groups, known=()):
+    """`[(group, line_no, line, surface, lemma before, lemma after, note)]` for every word whose lemma differs."""
+    notes = {(k["surface"], k["lemma"]): k.get("note", "known failure") for k in known}
+    placed = groups.get("lines", {})
+    after = {t["line_no"]: t for t in other}
+    out = []
+    for t in base:
+        o = after.get(t["line_no"])
+        if o is None:
+            continue
+        for e, f in zip(t["eojeols"], o["eojeols"]):
+            before, now = e.get("lemma") or "", f.get("lemma") or ""
+            if e["surface"] == f["surface"] and before != now:
+                group = placed.get(str(t["line_no"]), {}).get("group", "standard text")
+                out.append((group, t["line_no"], t["line"], e["surface"], before, now, notes.get((bare(e["surface"]), before), "")))
+    return sorted(out, key=lambda r: (GROUPS.index(r[0]) if r[0] in GROUPS else 9, r[1]))
+
+
+CHANGES_PAGE = """<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Kiwi options: what changes</title>
+<style>
+ body{{margin:0;font:15px/1.5 system-ui,"Segoe UI","Malgun Gothic",sans-serif;background:#f6f6f4;color:#1d1d1b}}
+ main{{max-width:900px;margin:0 auto;padding:16px}} h1{{font-size:19px;margin:0 0 6px}} h2{{font-size:16px;margin:22px 0 6px}}
+ h3{{font-size:14px;color:#6b6b66;margin:14px 0 4px;text-transform:uppercase;letter-spacing:.04em}}
+ p{{color:#4a4a45;margin:4px 0 10px}} table{{width:100%;border-collapse:collapse;background:#fff;border:1px solid #dcdcd6;border-radius:8px}}
+ td,th{{padding:6px 10px;border-bottom:1px solid #ecece6;text-align:left;vertical-align:top}} th{{font-size:12px;color:#6b6b66;font-weight:600}}
+ .ko{{font-family:"Malgun Gothic","Noto Sans CJK KR",sans-serif;font-size:16px}} .line{{color:#6b6b66;font-size:13px}}
+ .note{{color:#b4540a;font-size:12px}} .none{{color:#6b6b66;font-style:italic}}
+ button{{font:inherit;border:1px solid #dcdcd6;background:#fff;border-radius:6px;padding:2px 8px;cursor:pointer}} button.on{{background:#2f5fd0;color:#fff;border-color:#2f5fd0}}
+ @media (prefers-color-scheme: dark){{body{{background:#151514;color:#ecece8}} table{{background:#1f1f1d;border-color:#34342f}} td,th{{border-color:#2a2a26}} p,.line,h3,th{{color:#9a9a93}} button{{background:#1f1f1d;color:#ecece8;border-color:#34342f}}}}
+</style></head><body><main>
+<h1>Kiwi options: which dictionary forms change</h1>
+<p>{intro}</p>
+{sections}
+<p><button id="save">Save marks</button> downloads what you marked as <code>kiwi-option-marks.json</code>. Marks stay in this browser until then.</p>
+</main>
+<script>
+const KEY = 'maru-kiwi-option-marks';
+const marks = JSON.parse(localStorage.getItem(KEY) || '{{}}');
+for (const b of document.querySelectorAll('button[data-row]')) {{
+  const paint = () => b.classList.toggle('on', marks[b.dataset.row] === b.dataset.say);
+  paint();
+  b.addEventListener('click', () => {{
+    marks[b.dataset.row] = marks[b.dataset.row] === b.dataset.say ? undefined : b.dataset.say;
+    localStorage.setItem(KEY, JSON.stringify(marks));
+    for (const o of document.querySelectorAll(`button[data-row="${{b.dataset.row}}"]`)) o.classList.toggle('on', marks[o.dataset.row] === o.dataset.say);
+  }});
+}}
+document.getElementById('save').addEventListener('click', () => {{
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([JSON.stringify(marks, null, 1)], {{type: 'application/json'}}));
+  a.download = 'kiwi-option-marks.json'; a.click();
+}});
+</script></body></html>
+"""
+
+
+def changes_page(base, options, groups, known=()):
+    """The page: per option, the changed words by group; or why the option could not be measured."""
+    parts = []
+    for name, other in options:
+        parts.append(f"<h2>{escape(name)}</h2>")
+        if isinstance(other, str):
+            parts.append(f'<p class="none">Not measured: {escape(other)}</p>')
+            continue
+        rows_ = changed_rows(base, other, groups, known)
+        counts = {g: sum(1 for r in rows_ if r[0] == g) for g in GROUPS}
+        parts.append("<p>" + ", ".join(f"{g}: {counts[g]}" for g in GROUPS) + f" words changed, of {sum(len(t['eojeols']) for t in base)}.</p>")
+        for group in GROUPS:
+            mine = [r for r in rows_ if r[0] == group]
+            if not mine:
+                continue
+            parts.append(f"<h3>{group}</h3><table><tr><th>Line</th><th>Word</th><th>Kiwi today</th><th>With the option</th><th>Which is right?</th></tr>")
+            for _, no, line, surface, before, now, note in mine:
+                row = f"{name}|{no}|{surface}"
+                buttons = "".join(f'<button data-row="{escape(row)}" data-say="{say}">{label}</button> ' for say, label in (("today", "today"), ("option", "with option"), ("neither", "neither")))
+                extra = f'<div class="note">{escape(note)}</div>' if note else ""
+                parts.append(f'<tr><td class="line">{no}<br><span class="ko">{escape(line)}</span></td><td class="ko">{escape(surface)}</td><td class="ko">{escape(before) or "—"}</td><td class="ko">{escape(now) or "—"}</td><td>{buttons}{extra}</td></tr>')
+            parts.append("</table>")
+    intro = ("Kiwi analysed the same lines twice: as Maru runs it, and with an option on. Only the words whose dictionary form "
+             "changed are listed, in the groups of the run 2 page (sorted by the assistant, not checked by a person). Nothing here is judged.")
+    return CHANGES_PAGE.format(intro=escape(intro), sections="\n".join(parts))
+
+
 def main(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -257,7 +347,23 @@ def main(argv):
     b.add_argument("--known")
     s = sub.add_parser("score")
     s.add_argument("marks")
+    c = sub.add_parser("changes")
+    c.add_argument("base")
+    c.add_argument("options", nargs="+", help='"name=file.jsonl", or "name=!why it was not measured"')
+    c.add_argument("--groups", required=True)
+    c.add_argument("--out", required=True)
+    c.add_argument("--known")
     args = parser.parse_args(argv)
+    if args.command == "changes":
+        options = []
+        for spec in args.options:
+            name, _, value = spec.partition("=")
+            options.append((name, value[1:] if value.startswith("!") else load(value)))
+        page = changes_page(load(args.base), options, load_json(args.groups), load_json(args.known) if args.known else [])
+        with open(args.out, "w", encoding="utf-8", newline="\n") as out:
+            out.write(page)
+        print(f"-> {args.out}")
+        return
     if args.command == "score":
         result = score(load_json(args.marks))
         for kind, title in (("group", "By group"), ("pos", "By part of speech")):

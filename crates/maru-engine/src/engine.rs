@@ -353,6 +353,11 @@ impl Engine {
         lock(&self.inner.reading_engines).as_ref().map(|r| r.rows()).unwrap_or_default()
     }
 
+    /// How the word splitter reads the lines of `exe`: the dialects and typo correction its profile allows.
+    pub fn analysis_options(&self, exe: Option<&str>) -> maru_lang::AnalysisOptions {
+        crate::engine::analysis_options(&self.inner.cfg, exe)
+    }
+
     /// Which engine each task reads with (set once at boot).
     pub fn set_reading_engines(&self, engines: Arc<crate::reading_engines::ReadingEngines>) {
         *lock(&self.inner.reading_engines) = Some(engines);
@@ -561,5 +566,28 @@ impl Engine {
 
     pub fn started_at() -> Instant {
         Instant::now()
+    }
+}
+
+/// What `[[profile]] dialects` and `typo_correction` ask of the word splitter for `exe` (standard Korean otherwise).
+pub(crate) fn analysis_options(cfg: &Config, exe: Option<&str>) -> maru_lang::AnalysisOptions {
+    match exe.and_then(|e| cfg.profile_for(e)) {
+        Some(p) => maru_lang::AnalysisOptions { dialects: maru_lang::dialect_mask(&p.dialects).0, typo: p.typo_correction },
+        None => maru_lang::AnalysisOptions::default(),
+    }
+}
+
+#[cfg(test)]
+mod analysis_option_tests {
+    use super::*;
+
+    #[test]
+    fn a_programs_profile_decides_which_dialects_and_whether_typos_are_corrected() {
+        let mut cfg = Config::default();
+        cfg.profiles.push(maru_core::config::AppProfile { name: "Sekiro".into(), exe: vec!["sekiro.exe".into()], dialects: vec!["gyeongsang".into()], typo_correction: true, ..Default::default() });
+        let there = analysis_options(&cfg, Some("Sekiro.exe"));
+        assert_eq!((there.dialects, there.typo), (1 << 3, true));
+        assert_eq!(analysis_options(&cfg, Some("other.exe")), maru_lang::AnalysisOptions::default());
+        assert_eq!(analysis_options(&cfg, None), maru_lang::AnalysisOptions::default(), "no program: standard Korean, as before");
     }
 }

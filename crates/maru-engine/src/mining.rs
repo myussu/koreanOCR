@@ -165,8 +165,9 @@ impl Engine {
         }
         let inner = self.inner.clone();
         let text = sentence.clone();
+        let options = crate::engine::analysis_options(&inner.cfg, app);
         let eojeols = tokio::task::spawn_blocking(move || {
-            let mut eojeols = inner.analyzer.analyze(&text).eojeols;
+            let mut eojeols = inner.analyzer.analyze_with(&text, options).eojeols;
             crate::annotate::annotate(&mut eojeols, inner.dict.as_deref(), Some(&inner.vocab), 3);
             eojeols
         })

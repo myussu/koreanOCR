@@ -667,6 +667,12 @@ pub struct AppProfile {
     pub anki_tags: Vec<String>,
     /// How this program's live subtitles and captures read the screen, where it differs from `[reading]`.
     pub reading: crate::reading::ProfileReading,
+    /// Regional dialects the word splitter (Kiwi) may recognise in this program's lines: `gyeongsang`, `jeolla`,
+    /// `chungcheong`, `gangwon`, `gyeonggi`, `jeju`, `hwanghae`, `hamgyeong`. Empty (the default): standard Korean only.
+    pub dialects: Vec<String>,
+    /// Let Kiwi correct typos and misread letters while it splits this program's lines. Off by default; used only when
+    /// Kiwi passes a test with it in a separate process (Kiwi 0.23.1 does not on the owner's PC: it crashes).
+    pub typo_correction: bool,
 }
 
 #[cfg(test)]
