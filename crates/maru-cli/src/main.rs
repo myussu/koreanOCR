@@ -1013,7 +1013,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 if found.is_empty() {
                     bail!("{} is not a report saved by --save-report", path.display());
                 }
-                if saved.get("labels").and_then(|l| l.as_str()).is_some_and(|l| l != "person") && tag.as_deref() != Some("gold") {
+                if saved.get("labels").and_then(|l| l.as_str()).is_some_and(|l| l != "person") && !matches!(tag.as_deref(), Some("gold" | evalreport::PERSON_TAG)) {
                     println!("PROVISIONAL: {} was scored against labels that include text no person has checked.", path.display());
                 }
                 runs.extend(found.into_iter().map(|r| evalreport::SavedRun { results: evalreport::keep(&r.results, split, tag.as_deref()), ..r }));

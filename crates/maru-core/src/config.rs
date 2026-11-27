@@ -529,10 +529,12 @@ pub struct ContinuousConfig {
     /// worse on 4 of 13 (an earlier "gain" was punctuation). Measure it on your own game (`maru eval-ocr <folder> --scale 2
     /// --compare <report>`) before turning it on.
     pub ocr_scale: f32,
-    /// Keep a picture and a draft text file of every line the watcher reads, under `<data>/evalset/raw/<game>/`, so you can
+    /// Keep a picture and a draft text file of every line the watcher reads, under `<test set>/<game>/`, so you can
     /// write down what the subtitles really say and score OCR changes on your own games. Off by default; nothing leaves the
     /// PC. See docs/MANUAL_TESTS.md (M-48).
     pub save_reads: bool,
+    /// Where `save_reads` keeps them. Unset: `Documents\maru-evalset\raw` (a folder the label page can open).
+    pub save_reads_dir: Option<PathBuf>,
     /// Drop lines with no Hangul read beside a subtitle (`M`, `0`, `FIRST`: marks of the background), keeping Latin
     /// letters and digits inside a Korean line and a number cut off the end of one (see `maru_ocr::stray`).
     pub drop_stray_lines: bool,
@@ -540,7 +542,7 @@ pub struct ContinuousConfig {
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false, translation: Default::default(), ocr_scale: 1.0, save_reads: false, drop_stray_lines: false }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false, translation: Default::default(), ocr_scale: 1.0, save_reads: false, save_reads_dir: None, drop_stray_lines: false }
     }
 }
 
