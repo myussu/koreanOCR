@@ -139,10 +139,10 @@ test('the read step says per task what reads and where it runs, and that the rea
   const rows = readRows({ ocr: true, ocr_reader: 'loads on demand', reading });
   assert.deepEqual(rows.map((r) => r.what), ['Live subtitles', 'Captures', 'Screen scan']);
   assert.deepEqual([rows[0].uses, rows[0].where, rows[0].dot.kind, rows[0].open], ['Line finder: Small and quick · letters: Standard · no reading model', 'This PC · processor', 'ok', 'live']);
-  assert.deepEqual([rows[1].uses, rows[1].dot.kind, rows[1].open], ['Line finder: Standard · letters: Standard · checked by PaddleOCR-VL 1.6', 'idle', 'captures']);
-  assert.match(rows[1].note, /loads with the first capture/);
-  assert.equal(readRows({ ocr: true, ocr_reader: 'ready', reading })[1].dot.kind, 'ok', 'loaded: no note, a green dot');
-  assert.equal(readRows({ ocr: true, ocr_reader: 'ready', reading })[1].note, undefined);
+  assert.deepEqual([rows[1].uses, rows[1].dot.kind, rows[1].open], ['Line finder: Standard · letters: Standard · checked by PaddleOCR-VL 1.6, which loads with the first capture', 'idle', 'captures']);
+  assert.equal(rows[1].note, undefined, 'waiting to load is not shown as a problem');
+  const loaded = readRows({ ocr: true, ocr_reader: 'ready', reading })[1];
+  assert.deepEqual([loaded.dot.kind, loaded.uses], ['ok', 'Line finder: Standard · letters: Standard · checked by PaddleOCR-VL 1.6']);
   for (const r of rows) assert.ok(!/pp-ocr|onnx|cpu_ocr|vision_reader/i.test(`${r.what} ${r.uses} ${r.where}`), `no internal names: ${r.uses}`);
   assert.deepEqual(readRows({ ocr: false, reading }).map((r) => r.uses), ['not installed'], 'no text reader at all');
   assert.deepEqual(readRows({ ocr: true, ocr_reader: 'off' }).map((r) => r.what), ['Text reader', 'Reading model'], 'an older shell without the field');
