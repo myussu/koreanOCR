@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use maru_core::config::OcrBackend;
+use maru_core::reading::ReadTask;
 use maru_core::{Config, Paths};
 use maru_dict::Dictionary;
 use maru_lang::Analyzer;
@@ -20,7 +21,6 @@ use maru_srs::{SrsConfig, Vocab};
 use tokio::sync::watch;
 
 use crate::engine::{Engine, EngineParts};
-use crate::hybrid_ocr::HybridOcr;
 use crate::vision;
 use crate::vlm_ocr::{PADDLE_VL_PROMPT, VlmOcr};
 
@@ -136,19 +136,24 @@ pub fn kiwi_cache_dir(paths: &Paths) -> PathBuf {
 pub const PROBE_MARKER: &str = "probe.ok";
 /// Hidden command-line flag: run the Kiwi self-test and exit (see [`run_probe_if_requested`]).
 pub const PROBE_FLAG: &str = "--maru-probe-kiwi";
+/// The same self-test with typo correction on (Kiwi built with its basic typo set, every sample analysed with it).
+pub const PROBE_TYPO_FLAG: &str = "--maru-probe-kiwi-typo";
 
 /// Call first thing in `main` of every Maru program: if this process was started as the Kiwi
 /// self-test, run it and exit; otherwise return immediately.
 pub fn run_probe_if_requested() {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) != Some(PROBE_FLAG) || args.len() < 4 {
+    let typo = args.get(1).map(String::as_str) == Some(PROBE_TYPO_FLAG);
+    if !(typo || args.get(1).map(String::as_str) == Some(PROBE_FLAG)) || args.len() < 4 {
         return;
     }
-    let code = match maru_lang::kiwi::KiwiAnalyzer::spawn_from_paths(PathBuf::from(&args[2]), PathBuf::from(&args[3])) {
+    let setup = maru_lang::kiwi::KiwiSetup { dialects: 0, typo };
+    let options = maru_lang::AnalysisOptions { dialects: 0, typo };
+    let code = match maru_lang::kiwi::KiwiAnalyzer::spawn_from_paths_with(PathBuf::from(&args[2]), PathBuf::from(&args[3]), setup) {
         Ok(analyzer) => {
             use maru_lang::Morphology;
             let samples = ["안녕하세요, 한국어를 공부해요.", "저는 학교에서 친구랑 같이 영화를 봤어요!", "열심히 노력하면 꼭 성공할 수 있을 거예요", "Hello 2024 한국어"];
-            match samples.iter().map(|t| analyzer.tokenize(t)).collect::<Result<Vec<_>, _>>() {
+            match samples.iter().map(|t| analyzer.tokenize_with(t, options)).collect::<Result<Vec<_>, _>>() {
                 Ok(all) if all.iter().all(|t| !t.is_empty()) => {
                     println!("OK");
                     0
@@ -173,9 +178,14 @@ pub fn run_probe_if_requested() {
 
 /// Run the Kiwi self-test in a separate process so a crash cannot take this one down.
 pub fn probe_kiwi(library: &Path, model: &Path) -> Result<(), String> {
+    probe_kiwi_with(library, model, PROBE_FLAG)
+}
+
+/// [`probe_kiwi`] with one of the probe flags ([`PROBE_FLAG`], [`PROBE_TYPO_FLAG`]).
+pub fn probe_kiwi_with(library: &Path, model: &Path, flag: &str) -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut child = std::process::Command::new(exe)
-        .arg(PROBE_FLAG)
+        .arg(flag)
         .arg(library)
         .arg(model)
         .stdin(std::process::Stdio::null())
@@ -218,13 +228,36 @@ pub fn find_kiwi(paths: &Paths) -> Option<(PathBuf, PathBuf)> {
     })
 }
 
-fn load_analyzer(paths: &Paths, notes: &mut Vec<String>) -> Analyzer {
+/// What Kiwi must be built with for the programs' `dialects` and `typo_correction`. Typo correction is tried in a
+/// separate process first (as every Kiwi install is): with Kiwi 0.23.1 it crashes the process that analyses with it.
+fn kiwi_setup(cfg: &Config, lib: &std::path::Path, model: &std::path::Path, notes: &mut Vec<String>) -> maru_lang::kiwi::KiwiSetup {
+    let mut dialects = 0;
+    for p in &cfg.profiles {
+        let (mask, unknown) = maru_lang::dialect_mask(&p.dialects);
+        dialects |= mask;
+        if !unknown.is_empty() {
+            notes.push(format!("Korean analyser: unknown dialect name(s) {} in profile {}; known: {}.", unknown.join(", "), p.name, maru_lang::morph::DIALECTS.map(|d| d.0).join(", ")));
+        }
+    }
+    let wants_typo = cfg.profiles.iter().any(|p| p.typo_correction);
+    let typo = wants_typo && match probe_kiwi_with(lib, model, PROBE_TYPO_FLAG) {
+        Ok(()) => true,
+        Err(why) => {
+            notes.push(format!("Korean analyser: typo correction is off: this Kiwi failed a test with it ({why})."));
+            false
+        }
+    };
+    maru_lang::kiwi::KiwiSetup { dialects, typo }
+}
+
+fn load_analyzer(cfg: &Config, paths: &Paths, notes: &mut Vec<String>) -> Analyzer {
     use maru_lang::kiwi::KiwiAnalyzer;
     let Some((lib, model)) = find_kiwi(paths) else {
         notes.push("Korean analyser: simplified rules (word breakdown is approximate). Run `maru setup kiwi` for accurate grammar analysis.".into());
         return Analyzer::heuristic();
     };
-    match KiwiAnalyzer::spawn_from_paths(lib, model) {
+    let setup = kiwi_setup(cfg, &lib, &model, notes);
+    match KiwiAnalyzer::spawn_from_paths_with(lib, model, setup) {
         Ok(k) => {
             notes.push("Korean analyser: Kiwi".into());
             Analyzer::new(Arc::new(k))
@@ -259,7 +292,7 @@ fn open_dictionary(paths: &Paths, notes: &mut Vec<String>) -> Option<Arc<Diction
 }
 
 /// Longest image side the screen-scan detector sees at full size: a 1080p screen plus padding.
-const SCAN_DETECT_SIDE: u32 = 2048;
+pub const SCAN_DETECT_SIDE: u32 = 2048;
 
 #[cfg(feature = "paddle")]
 fn load_paddle(cfg: &Config, paths: &Paths, detect_side: Option<u32>) -> Result<Arc<dyn OcrEngine>, String> {
@@ -347,10 +380,10 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
 
     tracing::info!("boot: loading the Korean analyser");
     let analyzer = {
-        let paths = paths.clone();
+        let (paths, kiwi_cfg) = (paths.clone(), cfg.clone());
         match tokio::task::spawn_blocking(move || {
             let mut n = Vec::new();
-            let a = load_analyzer(&paths, &mut n);
+            let a = load_analyzer(&kiwi_cfg, &paths, &mut n);
             (a, n)
         })
         .await
@@ -382,8 +415,21 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         blocking.unwrap_or_else(|_| Platform::native())
     };
     tracing::info!("boot: loading OCR");
+    // Each task reads with its own pieces (`[reading]`, `reading_engines.rs`); captures' PP-OCR is the one chosen here.
+    let capture_read = maru_core::reading::resolve(&cfg, &paths, ReadTask::Capture, None);
+    let capture_cfg = Config { ocr: capture_read.ocr.clone(), ..cfg.clone() };
+    let readers = {
+        let (load_cfg, load_paths, analyzer) = (cfg.clone(), paths.clone(), analyzer.clone());
+        let load: crate::reading_engines::Loader = Arc::new(move |ocr: &maru_core::config::OcrConfig| {
+            let task_cfg = Config { ocr: ocr.clone(), ..load_cfg.clone() };
+            load_paddle(&task_cfg, &load_paths, None).map(|o| crate::respace::RespacingOcr::wrap(o, &analyzer))
+        });
+        Arc::new(crate::reading_engines::ReadingEngines::new(cfg.clone(), paths.clone(), load))
+    };
+    let live_read = readers.settings(ReadTask::Live, None);
+    notes.extend(capture_read.notes.iter().chain(&live_read.notes).cloned());
     let (ocr, scan_ocr) = {
-        let (blocking_cfg, blocking_paths) = (cfg.clone(), paths.clone());
+        let (blocking_cfg, blocking_paths) = (capture_cfg.clone(), paths.clone());
         let platform = platform.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut n = Vec::new();
@@ -402,29 +448,28 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         // built on first use, so sessions that never scan pay nothing. (With Windows OCR as the
         // engine there is nothing to tune: scans simply use it.)
         let scan = chosen.as_ref().filter(|o| o.name() == "paddle").map(|_| {
-            let (cfg, paths) = (cfg.clone(), paths.clone());
+            let (cfg, paths) = (capture_cfg.clone(), paths.clone());
             Arc::new(maru_ocr::LazyOcr::new(move || load_paddle(&cfg, &paths, Some(SCAN_DETECT_SIDE)))) as Arc<dyn OcrEngine>
         });
         (chosen.map(|o| crate::respace::RespacingOcr::wrap(o, &analyzer)), scan)
     };
 
-    let live_ocr = if cfg.continuous.cpu_ocr {
-        if cfg.ocr.device == "cpu" && ocr.as_ref().is_some_and(|o| o.name() == "paddle") {
-            ocr.clone()
-        } else {
-            let (mut live_cfg, live_paths) = (cfg.clone(), paths.clone());
-            live_cfg.ocr.device = "cpu".into();
-            let loaded = tokio::task::spawn_blocking(move || load_paddle(&live_cfg, &live_paths, None)).await.unwrap_or_else(|e| Err(e.to_string()));
-            match loaded {
-                Ok(o) => Some(crate::respace::RespacingOcr::wrap(o, &analyzer)),
+    // Live subtitles: their own PP-OCR when they name other pieces than captures, else the same one. Windows OCR (no
+    // PP-OCR) is the same engine for both.
+    let paddle = scan_ocr.is_some();
+    let live_ocr = match &ocr {
+        Some(base) if paddle => {
+            readers.remember(&capture_read.ocr, base.clone());
+            let (readers2, live_cfg) = (readers.clone(), live_read.ocr.clone());
+            match tokio::task::spawn_blocking(move || readers2.detector(&live_cfg, false)).await.unwrap_or_else(|e| Err(e.to_string())) {
+                Ok(o) => Some(o),
                 Err(why) => {
-                    notes.push(format!("Live CPU PP-OCR is unavailable ({why}); turn off continuous.cpu_ocr or run `maru setup ocr`."));
-                    None
+                    notes.push(format!("OCR: the line finder for live subtitles could not start ({why}); live subtitles use the captures' one, without the reading model."));
+                    Some(base.clone())
                 }
             }
         }
-    } else {
-        None
+        other => other.clone(),
     };
 
     // Screen-scan labels are remembered between sessions.
@@ -436,14 +481,21 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         }
     };
 
-    // Vision reader: interactive boot waits until snapshot OCR needs it; CLI boot stays eager.
+    // The reading model: one server for every task that uses it. The app starts it on the first request that needs it
+    // (live subtitles on PP-OCR alone never do); the command line starts it at once.
     let (vision_tx, vision_rx) = watch::channel(LlmStatus::Disabled);
     let vision_server: Arc<Mutex<Option<LlamaServer>>> = Arc::new(Mutex::new(None));
     let vision_ready = Arc::new(AtomicBool::new(false));
-    let reader_installed = vision::reader(&paths, &cfg.ocr).is_some();
-    let use_vision = opts.start_llm && cfg.ocr.vision_reader && ocr.is_some() && reader_installed;
+    let profiles_want_reader = cfg.profiles.iter().any(|p| p.reading.live.reader == Some(true) || p.reading.capture.reader == Some(true));
+    let reader_ocr = if capture_read.ocr.vision_reader || !live_read.ocr.vision_reader { capture_read.ocr.clone() } else { live_read.ocr.clone() };
+    if capture_read.ocr.vision_reader && live_read.ocr.vision_reader && capture_read.ocr.reader_dir != live_read.ocr.reader_dir {
+        notes.push("OCR: live subtitles and captures name different reading models; only one runs at a time, so both use the captures' one.".into());
+    }
+    let reader_wanted = capture_read.ocr.vision_reader || live_read.ocr.vision_reader || profiles_want_reader;
+    let reader_installed = vision::reader(&paths, &reader_ocr).is_some();
+    let use_vision = opts.start_llm && reader_wanted && ocr.is_some() && reader_installed;
     let deferred_vision = (use_vision && opts.defer_models).then(|| {
-        let (paths, llm, reader_cfg, server) = (paths.clone(), cfg.llm.clone(), cfg.ocr.clone(), vision_server.clone());
+        let (paths, llm, reader_cfg, server) = (paths.clone(), cfg.llm.clone(), reader_ocr.clone(), vision_server.clone());
         let stop_server = server.clone();
         crate::deferred_models::DeferredModel::restartable(vision_tx.clone(), move || {
             let (paths, llm, reader_cfg, server) = (paths.clone(), llm.clone(), reader_cfg.clone(), server.clone());
@@ -465,31 +517,33 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
             }
         })
     });
-    if cfg.ocr.vision_reader && ocr.is_some() && !reader_installed && opts.start_llm {
-        notes.push(match &cfg.ocr.reader_dir {
+    if reader_wanted && ocr.is_some() && !reader_installed && opts.start_llm {
+        notes.push(match &reader_ocr.reader_dir {
             Some(dir) => format!("OCR: no reading model in {} (it needs one .gguf and its mmproj .gguf); PP-OCR reads alone.", dir.display()),
             None => "OCR: PaddleOCR-VL is not installed; run `maru setup ocr-vl` for noticeably more accurate letters.".into(),
         });
     }
-    let ocr = if use_vision {
-        if opts.defer_models {
-            notes.push("OCR: PaddleOCR-VL loads on the first OCR request; the optional CPU live reader bypasses it.".into());
-        } else {
-            let _ = vision_tx.send(LlmStatus::Starting);
-            notes.push("OCR: PaddleOCR-VL reader is loading in the background (PP-OCR alone until it is ready)".into());
-        }
-        ocr.map(|detector| {
-            let url = format!("http://127.0.0.1:{}", vision::PORT);
-            let reader = Arc::new(VlmOcr::new(&url, &vision::base_config(&cfg.llm), cfg.ocr.reader_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT)).answering_html(cfg.ocr.reader_html));
-            let gated: Arc<dyn OcrEngine> = match &deferred_vision {
-                Some(model) => Arc::new(crate::deferred_models::DeferredOcr { inner: reader, model: model.clone() }),
-                None => Arc::new(vision::GatedOcr::new(reader, vision_ready.clone())),
-            };
-            Arc::new(HybridOcr::new(detector, gated)) as Arc<dyn OcrEngine>
-        })
+    let (ocr, live_ocr) = if use_vision {
+        notes.push(match (opts.defer_models, live_read.ocr.vision_reader) {
+            (true, false) => "OCR: the reading model (PaddleOCR-VL) loads on the first capture that needs it; live subtitles read with PP-OCR alone and never load it.".into(),
+            (true, true) => "OCR: the reading model (PaddleOCR-VL) loads on the first OCR request.".into(),
+            (false, _) => {
+                let _ = vision_tx.send(LlmStatus::Starting);
+                "OCR: PaddleOCR-VL reader is loading in the background (PP-OCR alone until it is ready)".to_string()
+            }
+        });
+        let url = format!("http://127.0.0.1:{}", vision::PORT);
+        let reader = Arc::new(VlmOcr::new(&url, &vision::base_config(&cfg.llm), reader_ocr.reader_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT)).answering_html(reader_ocr.reader_html));
+        let gated: Arc<dyn OcrEngine> = match &deferred_vision {
+            Some(model) => Arc::new(crate::deferred_models::DeferredOcr { inner: reader, model: model.clone() }),
+            None => Arc::new(vision::GatedOcr::new(reader, vision_ready.clone())),
+        };
+        readers.set_reader(gated);
+        (ocr.map(|d| readers.with_reader(d, &capture_read.ocr)), live_ocr.map(|d| readers.with_reader(d, &live_read.ocr)))
     } else {
-        ocr
+        (ocr, live_ocr)
     };
+    let live_ocr = live_ocr.map(|o| readers.live(o));
 
     // Language model: external endpoint, or our own supervised llama-server.
     let source = ModelSource::from_config(&cfg.llm);
@@ -599,6 +653,9 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         labels: Some(labels),
     });
     engine.set_routes(routes);
+    if paddle {
+        engine.set_reading_engines(readers);
+    }
     if opts.read_only {
         notes.push("Read-only run: the history, reading areas and screen labels are not saved.".into());
     } else {
@@ -608,7 +665,8 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         if let Err(e) = engine.open_history(&paths.data_dir.join("history.db")) {
             notes.push(e.to_string());
         }
-        engine.set_harvest_dir(paths.data_dir.join("evalset").join("raw"));
+        let own = cfg.continuous.save_reads_dir.clone().filter(|d| !d.as_os_str().is_empty());
+        engine.set_harvest_dir(own.unwrap_or_else(|| paths.default_evalset_dir()));
     }
     match engine.open_learner_dictionary(&paths.nikl_db()) {
         Ok(Some(stats)) => notes.push(format!("Learner's dictionary: 한국어기초사전, {} words (card meanings in English and Spanish)", stats.words)),
@@ -640,7 +698,7 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     }
 
     if use_vision && !opts.defer_models {
-        let (paths, llm, reader_cfg, server, ready) = (paths.clone(), cfg.llm.clone(), cfg.ocr.clone(), vision_server.clone(), vision_ready.clone());
+        let (paths, llm, reader_cfg, server, ready) = (paths.clone(), cfg.llm.clone(), reader_ocr.clone(), vision_server.clone(), vision_ready.clone());
         tokio::spawn(async move {
             let plans = vision::configured_plans(&paths, &reader_cfg, &llm);
             match vision::start(&paths, plans, |_, _| {}).await {

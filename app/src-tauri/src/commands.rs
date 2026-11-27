@@ -132,6 +132,8 @@ pub struct Status {
     pub live_area: Option<Rect>,
     /// The OCR reading model: `off`, `loading`, `ready` or `failed: …`.
     pub ocr_reader: String,
+    /// What each task reads the screen with and where it runs (Settings' "Read the screen" step).
+    pub reading: Vec<maru_engine::reading_engines::ReadingRow>,
     /// Screen labels (from a scan) are showing.
     pub scan_visible: bool,
     /// The lite (game) profile is in effect.
@@ -201,6 +203,7 @@ pub fn status(state: S) -> Status {
             LlmStatus::Ready => "ready".into(),
             LlmStatus::Failed(why) => format!("failed: {why}"),
         },
+        reading: e.reading_rows(),
     }
 }
 

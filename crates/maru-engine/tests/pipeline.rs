@@ -2022,9 +2022,9 @@ impl maru_ocr::OcrEngine for CountingOcr {
     }
 }
 
-fn ocr_engine(cpu_ocr: bool, normal: Arc<CountingOcr>, live: Option<Arc<CountingOcr>>) -> Engine {
-    let mut config = Config::default();
-    config.continuous.cpu_ocr = cpu_ocr;
+/// `live_reader`: whether `[reading.live]` keeps the reading model. `live` is the engine boot built for live subtitles.
+fn ocr_engine(live_reader: bool, normal: Arc<CountingOcr>, live: Option<Arc<CountingOcr>>) -> Engine {
+    let mut config = Config { reading: maru_core::reading::ReadingConfig { version: 1, live: maru_core::reading::ReadingRoute { reader: Some(live_reader), ..Default::default() }, ..Default::default() }, ..Default::default() };
     config.continuous.interval_ms = 50;
     config.continuous.stable_ms = 50;
     Engine::new(EngineParts {
@@ -2037,10 +2037,10 @@ fn ocr_engine(cpu_ocr: bool, normal: Arc<CountingOcr>, live: Option<Arc<Counting
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn opting_into_cpu_live_ocr_leaves_manual_region_ocr_on_its_original_engine() {
+async fn live_subtitles_read_with_their_own_engine_and_region_captures_keep_theirs() {
     let normal = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
-    let cpu = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
-    let engine = ocr_engine(true, normal.clone(), Some(cpu.clone()));
+    let live = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
+    let engine = ocr_engine(false, normal.clone(), Some(live.clone()));
     let region = maru_core::Rect::new(0.0, 0.0, 100.0, 30.0);
     engine.capture_region(region).await.unwrap();
     let before = normal.0.load(std::sync::atomic::Ordering::SeqCst);
@@ -2049,29 +2049,28 @@ async fn opting_into_cpu_live_ocr_leaves_manual_region_ocr_on_its_original_engin
     let event = tokio::time::timeout(Duration::from_secs(2), watcher.rx.recv()).await.unwrap().unwrap();
     watcher.stop();
     assert!(matches!(event, maru_engine::LiveEvent::Line(_)));
-    assert!(cpu.0.load(std::sync::atomic::Ordering::SeqCst) > 0);
-    assert_eq!(normal.0.load(std::sync::atomic::Ordering::SeqCst), before);
+    assert!(live.0.load(std::sync::atomic::Ordering::SeqCst) > 0);
+    assert_eq!(normal.0.load(std::sync::atomic::Ordering::SeqCst), before, "the captures' engine (with the reading model) is not used live");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn unavailable_cpu_live_ocr_is_reported_instead_of_silently_changing_recognition() {
+async fn a_missing_quick_reader_is_reported_instead_of_reading_live_lines_with_the_reading_model() {
     let normal = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
-    let engine = ocr_engine(true, normal, None);
-    let err = engine.start_continuous(maru_core::Rect::new(0.0, 0.0, 100.0, 30.0)).err().expect("missing CPU OCR");
-    assert!(err.to_string().contains("CPU PP-OCR for live subtitles is unavailable"));
+    let engine = ocr_engine(false, normal.clone(), None);
+    let err = engine.start_continuous(maru_core::Rect::new(0.0, 0.0, 100.0, 30.0)).err().expect("no live engine");
+    assert!(err.to_string().contains("quick reader for live subtitles is unavailable"), "{err}");
+    assert_eq!(normal.0.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn live_subtitles_keep_the_original_ocr_until_cpu_ocr_is_requested() {
+async fn live_subtitles_that_keep_the_reading_model_and_have_no_engine_of_their_own_read_with_the_captures_one() {
     let normal = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
-    let cpu = Arc::new(CountingOcr(std::sync::atomic::AtomicUsize::new(0)));
-    let engine = ocr_engine(false, normal.clone(), Some(cpu.clone()));
+    let engine = ocr_engine(true, normal.clone(), None);
     let mut watcher = engine.start_continuous(maru_core::Rect::new(0.0, 0.0, 100.0, 30.0)).unwrap();
     let event = tokio::time::timeout(Duration::from_secs(2), watcher.rx.recv()).await.unwrap().unwrap();
     watcher.stop();
     assert!(matches!(event, maru_engine::LiveEvent::Line(_)));
     assert!(normal.0.load(std::sync::atomic::Ordering::SeqCst) > 0);
-    assert_eq!(cpu.0.load(std::sync::atomic::Ordering::SeqCst), 0);
 }
 
 // ───────────── card meanings in English and Spanish from the learner's dictionary ─────────────

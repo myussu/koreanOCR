@@ -64,7 +64,7 @@ def check(root, outside, local):
     examples = []
     for p in pictures(root):
         truth = read(p.with_suffix(".txt"))
-        if truth is None or p.with_suffix(".unreadable").exists():
+        if truth is None or (p.with_suffix(".unreadable").exists() or p.with_suffix(".not-subtitle").exists()):
             continue
         labelled += 1
         text = agreed(draft(p, outside), [draft(p, t) for t in local])
@@ -111,7 +111,7 @@ def main():
     written = waiting = no_outside = aside = repeats = 0
     seen = {}
     for p in pictures(root):
-        if p.with_suffix(".unreadable").exists():
+        if (p.with_suffix(".unreadable").exists() or p.with_suffix(".not-subtitle").exists()):
             continue
         label = read(p.with_suffix(".txt"))
         if label is not None:

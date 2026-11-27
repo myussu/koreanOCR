@@ -190,6 +190,16 @@ enum Command {
         /// Compare this run, subtitle by subtitle, with a report saved earlier by `--save-report` (before and after a change).
         #[arg(long)]
         compare: Option<PathBuf>,
+        /// `paddle`: read each picture as the screen scan reads a whole screen (the detector looks at up to 2048 pixels).
+        #[arg(long)]
+        scan: bool,
+        /// Drop lines with no Hangul read beside the subtitle, as live subtitles do with `[continuous] drop_stray_lines`.
+        #[arg(long)]
+        drop_stray_lines: bool,
+        /// `hybrid`: a line PP-OCR read with at least this confidence keeps its text when the reader's differs by one
+        /// syllable (`[ocr] keep_sure_lines`).
+        #[arg(long, value_name = "CONFIDENCE")]
+        keep_sure: Option<f32>,
     },
     /// Print the comparison tables for reports saved by `eval-ocr --save-report`: the first report is the one the
     /// others are judged against, subtitle by subtitle.
@@ -388,7 +398,7 @@ enum ConfigCommand {
         #[arg(long)]
         force: bool,
     },
-    /// Write "one model per task" ([tasks]) into an older config file. A copy of the file is kept beside it
+    /// Write "one model per task" ([tasks]) and how each task reads the screen ([reading]) into an older config file. A copy of the file is kept beside it
     /// first; a file that already has the table is left alone. The app does the same when it starts.
     Migrate {
         /// Show what would be written without changing the file.
@@ -400,6 +410,18 @@ enum ConfigCommand {
 }
 
 /// The task table in words. Connection names and model names only: never an address or a key.
+fn print_reading(table: &maru_core::reading::ReadingConfig) {
+    let or = |v: &str| if v.trim().is_empty() { "as [ocr] says".to_string() } else { v.to_string() };
+    for (what, r) in [("Live subtitles", &table.live), ("Captures (scan: finder and letters)", &table.capture)] {
+        let reader = match r.reader {
+            Some(true) => format!("reading model {}", or(&r.reader_model)),
+            Some(false) => "no reading model".to_string(),
+            None => "reading model as [ocr] says".to_string(),
+        };
+        println!("  {what:<37} line finder {}, letters {}, {reader}", or(&r.detector), or(&r.recogniser));
+    }
+}
+
 fn print_tasks(tasks: &maru_core::tasks::TasksConfig) {
     let route = |connection: &str, model: &str| match (connection.trim(), model.trim()) {
         ("", _) => "none".to_string(),
@@ -469,7 +491,7 @@ enum EngineArg {
 /// What a hosted model is asked when it reads a subtitle picture for `--engine connection`.
 const HOSTED_READER_PROMPT: &str = "This picture is a strip cut from a video game's screen. Transcribe the Korean subtitle text in it exactly as it is written, \
 character for character, keeping its punctuation; put a two-line subtitle on two lines. Do not translate, correct, complete or explain anything. \
-Leave out interface labels and button hints that are not part of the subtitle. If there is no readable text, answer with nothing at all.";
+Leave out interface labels and button hints that are not part of the subtitle.";
 
 /// The reading model for `hybrid` and `paddle-vl`: the folder given with --reader-dir, else PaddleOCR-VL-1.5 (fetched if needed).
 async fn reader_attempts(reader_dir: Option<&std::path::Path>, paths: &Paths, llm: &maru_core::config::LlmConfig, extra: &[String]) -> Option<(String, Vec<maru_core::config::LlmConfig>)> {
@@ -499,7 +521,13 @@ fn parse_det_tuning(text: &str) -> Result<(f32, f32, f32)> {
 
 /// PP-OCR with the spacing repair the overlay applies, so scores reflect real use.
 fn load_pp_ocr(s: &Services, paths: &Paths) -> Option<(String, Arc<dyn maru_ocr::OcrEngine>)> {
-    let pc = maru_ocr::paddle::PaddleConfig::resolve(&s.engine.config().ocr, paths);
+    load_pp_ocr_at(s, paths, None)
+}
+
+/// PP-OCR as configured; `detect_side` lets the detector look at that many pixels on the longest side (the screen scan's 2048).
+fn load_pp_ocr_at(s: &Services, paths: &Paths, detect_side: Option<u32>) -> Option<(String, Arc<dyn maru_ocr::OcrEngine>)> {
+    let mut pc = maru_ocr::paddle::PaddleConfig::resolve(&s.engine.config().ocr, paths);
+    pc.detect_side = detect_side;
     match maru_ocr::paddle::PaddleOcr::load(&pc) {
         Ok(o) => {
             let o: Arc<dyn maru_ocr::OcrEngine> = Arc::new(o);
@@ -513,13 +541,14 @@ fn load_pp_ocr(s: &Services, paths: &Paths) -> Option<(String, Arc<dyn maru_ocr:
     }
 }
 
-/// Download PaddleOCR-VL's files (skipping any already there).
+/// Download PaddleOCR-VL's files (skipping any already there): 1.5, and 1.6 checked against its published hashes.
 async fn fetch_paddle_vl(paths: &Paths) -> Result<()> {
     let dir = maru_engine::vision::model_dir(paths);
     for file in maru_engine::vision::FILES {
         fetch_hf(maru_engine::vision::REPO, file, &dir).await.with_context(|| format!("downloading {file}"))?;
     }
-    Ok(())
+    println!("PaddleOCR-VL 1.6:");
+    setup::reader_16(paths).await
 }
 
 fn with_args(base: &maru_core::config::LlmConfig, args: &[String], extra: &[String]) -> maru_core::config::LlmConfig {
@@ -740,7 +769,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             // Nothing read *because* something is wrong is a failure; an honestly empty screen is not.
             Ok(if report.items.is_empty() && !report.errors.is_empty() { 1 } else { 0 })
         }
-        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, det, rec, dict, det_tuning, device, reader_dir, reader_html, connection, name: run_name, labels, scale, write_drafts, draft_tag, draft_labelled, keep_drafts, split, save_report, compare } => {
+        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, det, rec, dict, det_tuning, device, reader_dir, reader_html, connection, name: run_name, labels, scale, write_drafts, draft_tag, draft_labelled, keep_drafts, split, save_report, compare, scan, drop_stray_lines, keep_sure } => {
             use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};
             if (run_name.is_some() || draft_tag.is_some()) && engine.len() != 1 {
                 bail!("--name and --draft-tag name one engine: give a single --engine");
@@ -766,6 +795,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 "det": cfg.ocr.det_model.as_ref().map(|p| p.display().to_string()), "rec": cfg.ocr.rec_model.as_ref().map(|p| p.display().to_string()),
                 "dict": cfg.ocr.dict_path.as_ref().map(|p| p.display().to_string()), "det_tuning": det_tuning, "device": cfg.ocr.device,
                 "reader_dir": reader_dir.as_ref().map(|p| p.display().to_string()), "reader_html": reader_html, "vlm_prompt": vlm_prompt, "vlm_args": vlm_args,
+                "drop_stray_lines": drop_stray_lines, "keep_sure": keep_sure, "scan": scan,
             });
             let config = cfg.clone();
             // A hosted reader needs no engine on this PC; everything else does. Scoring must leave nothing behind in the data folder.
@@ -812,7 +842,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     let (saved, llm) = connections::resolve(&config, &connections::Target::parse(target))?;
                     let Some(url) = llm.endpoint.clone() else { bail!("--connection names a saved connection to a server; the model on this PC is read with --engine endpoint") };
                     println!("The pictures are sent to {saved} ({}).\n", llm.model_name);
-                    let reader = Arc::new(VlmOcr::new(&url, &llm, vlm_prompt.as_deref().unwrap_or(HOSTED_READER_PROMPT)).counting_tokens());
+                    let reader = Arc::new(VlmOcr::new(&url, &llm, vlm_prompt.as_deref().unwrap_or(HOSTED_READER_PROMPT)).counting_tokens().fenced());
                     hosted = Some(reader.clone());
                     (format!("{saved} · {}", llm.model_name), reader as Arc<dyn maru_ocr::OcrEngine>, None)
                 } else {
@@ -825,7 +855,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                             continue;
                         }
                     },
-                    EngineArg::Paddle => match load_pp_ocr(s, &paths) {
+                    EngineArg::Paddle => match load_pp_ocr_at(s, &paths, scan.then_some(maru_engine::bootstrap::SCAN_DETECT_SIDE)) {
                         Some(pair) => (pair.0, pair.1, None),
                         None => continue,
                     },
@@ -836,7 +866,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         match start_vision_server(&label, attempts, &paths, SERVER_READY).await {
                             Some((server, cfg)) => {
                                 let reader: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, vlm_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT)).answering_html(reader_html));
-                                let hybrid = maru_engine::hybrid_ocr::HybridOcr::new(detector, reader);
+                                let hybrid = maru_engine::hybrid_ocr::HybridOcr::new(detector, reader).keeping_sure_lines(keep_sure);
                                 let name = if reader_dir.is_some() { format!("PP-OCR + {label} (hybrid)") } else { "PP-OCR + PaddleOCR-VL (hybrid)".to_string() };
                                 (name, Arc::new(hybrid) as Arc<dyn maru_ocr::OcrEngine>, Some(server))
                             }
@@ -898,6 +928,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     }
                 };
                 let name = run_name.clone().unwrap_or(name);
+                let ocr = if drop_stray_lines { maru_ocr::stray::StrayLinesOcr::wrap(ocr) } else { ocr };
                 if write_drafts {
                     // clap names the engine the way the command line spells it (`paddle-vl`), which is what the review page lists it as.
                     let tag = draft_tag.clone().or_else(|| clap::ValueEnum::to_possible_value(&e).map(|v| v.get_name().to_string())).unwrap_or_else(|| "draft".into());
@@ -982,7 +1013,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 if found.is_empty() {
                     bail!("{} is not a report saved by --save-report", path.display());
                 }
-                if saved.get("labels").and_then(|l| l.as_str()).is_some_and(|l| l != "person") && tag.as_deref() != Some("gold") {
+                if saved.get("labels").and_then(|l| l.as_str()).is_some_and(|l| l != "person") && !matches!(tag.as_deref(), Some("gold" | evalreport::PERSON_TAG)) {
                     println!("PROVISIONAL: {} was scored against labels that include text no person has checked.", path.display());
                 }
                 runs.extend(found.into_iter().map(|r| evalreport::SavedRun { results: evalreport::keep(&r.results, split, tag.as_deref()), ..r }));
@@ -1144,6 +1175,17 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                             }
                             None => println!("There is no config file at {}; defaults are in use.", paths.config_file.display()),
                         }
+                    }
+                    // How each task reads the screen, from the file as written (not as lite mode would change it).
+                    let written = Config::load(&paths.config_file)?;
+                    if written.reading.version >= maru_core::reading::VERSION {
+                        println!("{} already says how each task reads the screen; nothing to do.", paths.config_file.display());
+                    } else if dry_run {
+                        println!("Would also write how each task reads the screen:");
+                        print_reading(&maru_core::reading::derive(&written));
+                    } else if let Some(done) = maru_core::reading::migrate_file(&paths.config_file, maru_srs::now_secs())? {
+                        println!("Wrote how each task reads the screen.\nThe file as it was: {}", done.backup.display());
+                        print_reading(&done.reading);
                     }
                 }
                 ConfigCommand::Tasks => print_tasks(&maru_core::tasks::effective(&cfg)),

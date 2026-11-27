@@ -146,6 +146,12 @@ fn main() {
                 Ok(None) => {}
                 Err(e) => tracing::warn!("config.toml could not be updated with a model per task ({e}); the older settings decide"),
             }
+            // The same for how each task reads the screen (`[reading]`).
+            match maru_core::reading::migrate_file(&paths.config_file, now) {
+                Ok(Some(done)) => tracing::info!("config.toml now says how each task reads the screen; the file as it was is {}", done.backup.display()),
+                Ok(None) => {}
+                Err(e) => tracing::warn!("config.toml could not be updated with how each task reads the screen ({e}); the older settings decide"),
+            }
             // YouTube captions switched on in the file by hand: the code the extension must send is written before the settings are read.
             captions::write_code_if_missing(&paths.config_file);
             let cfg = Config::load(&paths.config_file).unwrap_or_else(|e| {

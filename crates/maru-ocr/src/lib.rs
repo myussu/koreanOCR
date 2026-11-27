@@ -4,6 +4,7 @@
 //! the text came from PP-OCR (this crate) or Windows' built-in OCR (maru-platform).
 
 pub mod align;
+pub mod stray;
 mod geometry;
 #[cfg(feature = "paddle")]
 pub mod paddle;

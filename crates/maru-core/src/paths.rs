@@ -39,6 +39,17 @@ impl Paths {
         }
     }
 
+    /// The test set: where `[continuous] save_reads` keeps pictures unless `save_reads_dir` names another folder, and where
+    /// `tools/compare_ocr.py` looks by default. `Documents\maru-evalset\raw`, because browsers refuse to open folders under
+    /// AppData and `tools/label_review.html` must open it. With `MARU_HOME` (portable installs, tests) it stays inside.
+    pub fn default_evalset_dir(&self) -> PathBuf {
+        let inside = self.data_dir.join("evalset").join("raw");
+        if std::env::var_os("MARU_HOME").is_some() {
+            return inside;
+        }
+        directories::UserDirs::new().and_then(|u| u.document_dir().map(|d| d.join("maru-evalset").join("raw"))).unwrap_or(inside)
+    }
+
     pub fn vocab_db(&self) -> PathBuf {
         self.data_dir.join("vocab.db")
     }

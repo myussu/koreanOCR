@@ -71,7 +71,9 @@ request_timeout_secs = 60 # chat: waiting for response headers or stalled output
 backend = "auto"      # auto | paddle | windows
 device  = "cpu"       # cpu | directml:0 (any DirectX 12 GPU; Windows builds include it) | cuda:0 (needs a CUDA build)
 threads = 0           # CPU threads per PP-OCR read; 0 = every core. 4 leaves the rest to the game during live subtitles
-vision_reader = true  # pair PP-OCR with PaddleOCR-VL when installed (`maru setup ocr-vl`); ~2 GB VRAM
+vision_reader = true  # pair PP-OCR with PaddleOCR-VL when installed (`maru setup ocr-vl`); ~2 GB VRAM. Per task: [reading]
+keep_sure_lines = 0.9  # in the hybrid, a line PP-OCR read at least this sure keeps its text when the reading model
+                       # changes one syllable of it; 1.01 = the reading model always wins (docs/reports/run-4.md)
 # Other OCR pieces, all optional and off. Measure one on your own games before using it:
 # `python tools/compare_ocr.py <data folder>\evalset\raw` (docs/reports/run-3.md has the numbers so far).
 # det_model = "D:/maru-models/pp-ocrv5-mobile-det/det.onnx"   # another detector (ONNX)
@@ -126,7 +128,10 @@ launcher = true               # show floating controls at startup; tray/shortcut
 # Resource monitoring/recording controls are transient in the hub Resources tab, not config settings.
 
 [continuous]
-cpu_ocr = false       # experimental CPU PP-OCR for live only; skips the vision reader but leaves other features alone
+# save_reads_dir = "D:/maru-evalset/raw"  # where save_reads keeps them; unset = Documents\maru-evalset\raw (a folder the label page can open)
+drop_stray_lines = false  # leave out lines with no Hangul read beside a subtitle (M, 0, FIRST); Latin and digits
+                          # inside a Korean line stay. 0 subtitles worse in 468; see docs/reports/run-4.md
+cpu_ocr = false       # older switch: live subtitles without the reading model, now [reading.live] reader; true still keeps live PP-OCR on the CPU
 max_in_flight = 0     # 0 = existing behavior, 1 = ordered translations, 2 = at most two active; pending lines are retained
 filter_ocr_jitter = false # experimental: compare changed OCR readings with subtitle lettering; save and restart
 # Live subtitles: translation only, drawn just above or below the original line (never over it). Word breakdowns come from the history.
@@ -204,6 +209,28 @@ model = ""                    # the model name sent to `endpoint`, e.g. "superto
 [tasks.voice_cards]           # the voice on Anki cards (same three keys)
 voice = ""
 
+# How each task reads the screen. Maru writes this table into an older file the first time the new version starts
+# (a copy is kept beside it as config.toml.before-reading-<date>.bak; `maru config migrate` does the same). Whatever
+# the file already named stays: [ocr] det_model / rec_model / dict_path / reader_dir, and vision_reader = false.
+# Empty strings follow [ocr]. Measured on 468 labelled game subtitles (docs/reports/run-4.md).
+[reading]
+version = 1
+
+[reading.live]                # live subtitles
+detector = "pp-ocrv6-small"   # the line finder: standard | pp-ocrv6-small (`maru setup ocr`) | pp-ocrv6-medium |
+                              # pp-ocrv5-mobile | a path to an .onnx file. Not installed: the standard one, with a note.
+recogniser = "standard"       # the letter reader: standard | qota-ocr (a community model, not installed by Maru) | a path
+reader = false                # check the letters with the reading model; off read game subtitles better and faster,
+                              # and the reading model then never takes video memory for live subtitles
+reader_model = "paddleocr-vl-1.6"   # paddleocr-vl-1.5 | paddleocr-vl-1.6 (`maru setup ocr-vl`) | a folder (as [ocr] reader_dir)
+
+[reading.capture]             # selection fallback, region, hover; the screen scan uses its detector and recogniser
+detector = "standard"         # at full screen size and never the reading model
+recogniser = "standard"
+reader = true                 # loads with the first capture that needs it (that capture waits a few seconds)
+reader_model = "paddleocr-vl-1.6"   # only one reading model runs at a time; live subtitles use this one too.
+                              # Not installed: 1.5, with a note (`maru setup ocr-vl` installs both)
+
 # Per-application behaviour. `exe` is the program's file name.
 [[profile]]
 name = "RPG"
@@ -213,6 +240,12 @@ hint = "dialogue from a fantasy role-playing game"
 gloss_mode = "all"
 [profile.glossary]
 "이도현" = "Lee Do-hyun"
+# dialects = ["gyeongsang"]    # regional dialects the word splitter (Kiwi) may recognise in this program's lines:
+#                              # gyeongsang, jeolla, chungcheong, gangwon, gyeonggi, jeju, hwanghae, hamgyeong. Default: none.
+# typo_correction = false      # let Kiwi correct typos while it splits the lines; used only if Kiwi passes a test with it in
+#                              # a separate process (Kiwi 0.23.1 crashes with it, so it stays off; see docs/reports/run-4.md)
+# [profile.reading.live]      # this program reads live subtitles differently (any key of [reading.live]; the rest stay)
+# reader = true               # e.g. stylised lettering the reading model reads better
 
 [tts]
 # Hear Korean read aloud (for studying). `maru setup tts` installs the local voice and switches this on;

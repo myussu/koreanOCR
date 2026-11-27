@@ -1332,8 +1332,94 @@ subtitles; both are advanced settings). Nobody has clicked or saved either.
 processor core and about a seventh of the graphics card. Every engine was measured under the same load, so the
 comparison between them holds, but the absolute times per picture are probably a little slower than on an idle PC.
 
-1. Close every game, then `python tools\compare_ocr.py "%APPDATA%\maru\Maru\data\evalset\raw" --only "PP-OCR alone (also" "1.6"`.
+1. Close every game, then `python tools\compare_ocr.py --only "today"` (the set is now `Documents\maru-evalset\raw`).
 2. **Record** the p50 and p95 columns for today's setup and the two others, next to the report's.
+
+## M-55 Live subtitles on PP-OCR alone, captures with PaddleOCR-VL 1.6, in a real game
+
+**Needs:** `maru setup ocr` and `maru setup ocr-vl` run again (they add the small line finder and PaddleOCR-VL 1.6, or
+reuse the copies run 3 left), a game with Korean subtitles and a menu.
+
+**Why it is unverified:** the choice was measured on pictures cut from YouTube recordings (`maru eval-ocr`), and the app
+was only started on a temporary home whose live area showed no Korean (M-56). Nobody has played with it.
+
+1. Start Maru once: `config.toml` gets `[reading]` and `config.toml.before-reading-<date>.bak` appears beside it.
+   **Expect** `[reading.live] detector = "pp-ocrv6-small"`, `reader = false`; `[reading.capture] reader_model = "paddleocr-vl-1.6"`.
+2. Settings → Overview → **Read the screen**: three rows (Live subtitles: small and quick, no reading model, processor;
+   Captures: checked by PaddleOCR-VL 1.6, processor and graphics card; Screen scan).
+3. Play a cutscene with live subtitles on. **Expect** the same or better lines than before, and Task Manager showing no
+   `llama-server` holding about 2 GB while only live subtitles run.
+4. Make a region capture of a menu (`Ctrl+Alt+R`). **Expect** a notice that the first capture waits for the reading model,
+   then the translation; a second capture without the wait.
+5. With Xenoblade (stylised lettering), try `[profile.reading.live] reader = true` for its program and compare a scene.
+
+**Bring:** a scene's History → Live subtitles text before and after, any line read worse, the notice's wording as seen.
+
+## M-56 The reading model takes no video memory while only live subtitles run
+
+**Needs:** any Windows PC with an NVIDIA card; no game needed. **Run by the agent once** (see the results log), on a
+temporary home whose live area showed no Korean text, so the watcher read no lines.
+
+1. Start Maru, turn live subtitles on over a real subtitle, play a minute, and look at Task Manager → Performance → GPU and
+   Details (`llama-server.exe`).
+2. Make one capture. **Expect** `llama-server.exe` to appear then and not before, with about 2.2 GB of dedicated memory.
+
+**Bring:** the dedicated GPU memory before live, during live, and after the first capture.
+
+## M-57 Label the screen-scan set, then score captures and the scan on your labels
+
+**Needs:** `%USERPROFILE%\Documents\maru-run-4\scanset\raw` (73 full screens of the five games; 42 with only a channel
+watermark set aside in `scanset\set-aside`), Edge or Chrome.
+
+**Why it is unverified:** 70 screens carry *provisional* labels: only the lines (189) where the outside reader and one of
+today's local readers read the same letters, so they list part of each screen's text and favour today's readers.
+
+1. Open `tools\label_review.html`, pick `scanset\raw`. For each screen write **every** Korean text on it, one per line
+   (Shift+Enter), and Enter; **Alt+N** for a screen that has no game text worth reading.
+2. Run the engines again on your labels (from the repository folder):
+   `python tools\scan_lines.py score <set> <saved runs…>` with the runs in `maru-run-4\task3\` refreshed by
+   `python %USERPROFILE%\Documents\maru-run-4\scripts\task3_runs.py` after deleting the old `.json` files (it uses
+   `--labels provisional`; change it to `all` once you have labels).
+3. **Expect** PaddleOCR-VL 1.6 not worse than 1.5 for captures; for the scan, whether the v6 small line finder (6x faster)
+   still reads like today's.
+
+**Bring:** the two tables.
+
+## M-58 The label page: a Documents folder, the file name, provisional flags, "not a subtitle"
+
+**Needs:** Edge or Chrome. Checked by the agent only in headless Edge with the page's demo data.
+
+1. `tools\label_review.html` → **Open the folder…** → `Documents\maru-evalset\raw`. **Expect** the browser to open it
+   (it refused the old folder under AppData).
+2. **Expect** the header line to show `game/file.png`, and a flag on pictures with a provisional label.
+3. Tick **only pictures with no label at all**: only unlabelled pictures without a provisional label remain.
+4. Press **Not a subtitle** (Alt+N) on one picture: a `name.not-subtitle` file appears; the count line says "1 not a
+   subtitle"; `maru eval-ocr` no longer scores it.
+
+## M-59 Dialects for one game, and the Kiwi review page
+
+**Needs:** a game with Gyeongsang dialect (the Sekiro lines of run 2's review are), Edge or Chrome.
+
+**Why it is unverified:** the dialect option was measured on run 2's 50 lines; nobody judged the changed forms.
+
+1. Open `%USERPROFILE%\Documents\maru-run-4\kiwi-review\index.html`; mark each of the 10 rows (today / with option /
+   neither) and **Save marks**.
+2. If the option is right more often than not, add `dialects = ["gyeongsang"]` to that game's `[[profile]]`, restart,
+   and make cards from a dialect line: the word's dictionary form should follow the review.
+
+**Bring:** `kiwi-option-marks.json`.
+
+## M-60 The end-to-end check on your PC
+
+**Needs:** the app built (`cargo build --release --manifest-path app\src-tauri\Cargo.toml`), Node 22 or newer.
+
+1. Copy your `history.db` somewhere (never give the one Maru uses), then
+   `node tools\e2e_app.mjs --app app\src-tauri\target\release\maru-app.exe --out C:\temp\maru-e2e --history <the copy>`.
+2. **Expect** exit code 0 and `report.json` with eight sections walked, seven settings written, and Make cards opened.
+
+**What it does not click:** connections (add, edit, test, remove), each task's Test button and the voice tests, Make
+cards' Add / Retry / sounds (Anki is off there), the restart button, and every window other than the launcher and the hub
+(panel, live band, scan labels, picker, wheel). Those stay for a person (M-42, M-43, M-46).
 
 ## Results log
 
@@ -1360,3 +1446,10 @@ Add a line per test run. An empty log means **nothing below has been checked on 
 | 2026-11-26 | M-45 caption receiver on its own (`captions_listen` example and `curl` on a spare port) | run by the agent; no browser, no YouTube | passed for the receiver only | A Korean line was accepted and printed, the same cue again was answered `duplicate`, a wrong code got 401, a request with a web page's `Origin` got 403. The extension was never loaded in a browser. |
 | 2026-11-26 | M-51 a test set from recordings and the OCR candidates on it (`tools/find_subtitles.py`, `sample_subtitle_frames.py`, `maru eval-ocr`, `tools/provisional_labels.py`, `tools/compare_ocr.py`) | run by the agent; RTX 5070 Ti PC, PP-OCR on the CPU, a measuring home with default settings; a game left open (`ssbu.exe`) used about one core throughout; 544 pictures of five games: 89 with checked labels (30 Elden Ring lines), 408 with provisional labels nobody has looked at, 47 unlabelled | measured; provisional except the 30 lines | Nothing was adopted. On the 30 checked lines no candidate differs from today's hybrid beyond chance (hybrid 0.6% letter error, PP-OCR alone 0.3%). On provisional labels, held-out half (212 subtitles): PP-OCR alone better on 26 and worse on 13 than the hybrid (p = 0.053) at 98 ms against 166; the hybrid with PaddleOCR-VL-1.6 better on 17, worse on 6 (p = 0.035); PP-OCRv6 and v5 mobile detectors read like today's within chance and take 38 to 64 ms; GLM-OCR, Nanonets-OCR2 and Surya 2.5 as readers are worse. The agreement rule gave no wrong label on the checked lines (0 of 85 pictures). See `docs/reports/run-3.md`. Not checked: the provisional labels, times on an idle PC (M-54), any of this in the app (M-52) |
 | 2026-11-26 | M-53 the two test-set settings in Settings (`hub.html?demo=1&settings=live&q=…`) | run by the agent; headless Edge, demo values, mocked commands | loads | The search finds "Save the subtitles it reads" (a switch, off) and "Enlarge the subtitle area before reading it" (a number, 1) under Live subtitles. Nobody clicked or saved anything |
+| 2026-11-27 | Task 0 of run 4: the owner's saved runs printed again (`maru eval-report` on a copy of `Documents\maru-evalset\reports`) | run by the agent | reproduced | Letter error, median time and better/worse counts match the owner's figures for all six setups; "exact lines" differs by 0.4–0.6 points because the owner counted a subtitle exact only when every picture of it was (that count gives his 83.5 / 88.5 / 88.7 / 92.5 / 92.7 / 92.7 exactly). The held-out half agrees. |
+| 2026-11-27 | Run 4 subtitle measurements (`maru eval-ocr` on a copy of the labelled set, 537 pictures, 468 subtitles; dev to choose, held-out to judge) | run by the agent; RTX 5070 Ti PC, PP-OCR on the CPU; Brave, Notion and Anki open, no game | measured (148 person labels, 389 provisional) | v6 small + Qota-OCR against v6 small: held-out 15 better / 3 worse (p = 0.008), dev 7 / 6; stays off (community model). Stray lines dropped, v6 small: held-out 5 / 0 (p = 0.062), all 11 / 0; standard detector: held-out 10 / 0 (p = 0.002); not adopted for live (the default detector misses the bar). Keep sure lines 0.90 (chosen on dev among 0.80–0.98) with reader 1.6: held-out 16 / 4 (p = 0.012), same time; adopted. Tables: docs/reports/run-4.md. |
+| 2026-11-27 | Run 4 scan set (M-57): 115 full frames of the five games, 73 kept with Korean text, 70 with provisional labels (189 lines) | run by the agent; the outside reader was Claude Sonnet 5.5 through the owner's saved connection (pictures left this PC; USD 0.54); Steam open (no game) | measured, provisional | Captures: PaddleOCR-VL 1.6 against 1.5, 15 lines better / 12 worse (p = 0.70): not worse, adopted. Keep sure lines with 1.6 against 1.6 alone: 9 / 2. Scan: v6 small 1 better / 3 worse (p = 0.63) in 266 ms against 1,606 ms per screen, v6 medium the same counts in 681 ms; detector unchanged (provisional labels). |
+| 2026-11-27 | M-56 video memory with live subtitles, the real app | run by the agent; `maru-app` (built at 6a5c5ec) on a temporary home linked to the real models, translation server a dead address; the live area showed no Korean, so the watcher read no lines | measured | Card total 2,467 MiB before the app, 2,482 MiB after 30 s of live subtitles: no `llama-server`, only Maru's WebView windows (about 40–60 MB). The first capture (hover mode) started `llama-server` within about 4 s: 2,254 MB dedicated, card total 4,775 MiB. Quit stopped both. The app migrated the temporary `config.toml` (`[tasks]`, `[reading]`, two backups). Not checked: live subtitles reading real Korean lines, a game running. |
+| 2026-11-27 | M-60 end-to-end check (`node tools/e2e_app.mjs`) | run by the agent; release app at 904ffca, temporary home without OCR models (Windows OCR answered), Anki off, a copy of the owner's `history.db` (116 live lines, none starred) | passed | All 8 Settings sections walked; 7 settings changed by clicks in the real page and saved, each found in `config.toml`; Make cards opened on a live line (5 words; plain message that the server cannot be reached and the meanings are the dictionary's). A second launch with the models linked showed the Read the screen step with one row per task (screenshot in docs/reports/run-4/). Not clicked: see M-60. |
+| 2026-11-27 | M-58 label page (`tools/label_review.html?demo`) | run by the agent; headless Edge, the page's own demo items | loaded | File name in the header, "only pictures with no label at all", "Not a subtitle" and its count are shown. Not checked: opening `Documents\maru-evalset\raw` with the folder picker, writing `name.not-subtitle`. |
+| 2026-11-27 | Kiwi options on run 2's 50 review lines (`examples/kiwi_options`, `tools/build_kiwi_review.py changes`) | run by the agent; Kiwi 0.23.1 (the installed one) | measured, not judged | Today's analysis equals run 2's file in all 239 words. Gyeongsang allowed: 10 dictionary forms change (0 standard text, 4 dialect, 6 broken OCR); 주꾸마 → 주다 in all three lines, 잡그래이 unchanged. Typo correction crashed Kiwi on the first line (both kiwi-rs versions); Kiwi 0.23.2, 0.24.0, 0.24.1 and 0.25.0 crash Maru's plain self-test. |

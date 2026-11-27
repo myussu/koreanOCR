@@ -82,6 +82,24 @@ function partState(s) {
 }
 const part = (what, state, uses, open, where = PLACES.this_pc) => ({ what, uses, where: partState(state) === 'off' ? '' : where, dot: stateDot(partState(state)), open });
 
+const READ_SECTION = { live: 'live', capture: 'captures', scan: 'captures' };
+
+/** One row per task that reads pixels (the `reading` field of the status), or the older two rows when it is missing. */
+export function readRows(s) {
+  if (!s.ocr) return [part('Text reader', false, 'not installed', 'captures')];
+  if (!Array.isArray(s.reading) || !s.reading.length) {
+    return [part('Text reader', true, 'PP-OCR', 'captures'), part('Reading model', s.ocr_reader ?? null, partState(s.ocr_reader ?? null) === 'off' ? 'not in use' : 'PaddleOCR-VL', 'captures')];
+  }
+  return s.reading.map((r) => {
+    const reader = partState(s.ocr_reader ?? null);
+    const state = !r.reader ? 'working' : reader === 'off' ? 'not_loaded' : reader;
+    // Waiting to load is how it should be, not a problem: said in the row, not in the warning-coloured note.
+    const later = r.reader && s.ocr_reader === 'loads on demand' ? ', which loads with the first capture' : '';
+    const uses = r.reader ? `${r.uses} · checked by ${r.reader}${later}` : `${r.uses} · no reading model`;
+    return { what: r.what, uses, where: r.place, dot: stateDot(state), open: READ_SECTION[r.task] ?? 'captures' };
+  });
+}
+
 /**
  * The overview: the four steps a line goes through, each with what it uses now. `status` is the `status`
  * command's answer, `tasks` the `task_status` one, `values` the settings.
@@ -95,11 +113,8 @@ export function flowSteps(status, tasks, values) {
     {
       id: 'read',
       title: 'Read the screen',
-      about: 'Selected text is read exactly; pixels are read by the text reader.',
-      rows: [
-        part('Text reader', !!s.ocr, s.ocr ? 'PP-OCR' : 'not installed', 'captures'),
-        part('Reading model', s.ocr_reader ?? null, partState(s.ocr_reader ?? null) === 'off' ? 'not in use' : 'PaddleOCR-VL', 'captures'),
-      ],
+      about: 'Selected text is read exactly; pixels are read by the text reader, and for captures also by the reading model.',
+      rows: readRows(s),
     },
     {
       id: 'translate',

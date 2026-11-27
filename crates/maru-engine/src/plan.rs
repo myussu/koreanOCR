@@ -174,8 +174,8 @@ impl Step {
                 runtime + if plan.lite { 5_000 } else { 7_500 }
             }
             Step::Kiwi => 150,
-            Step::Ocr => 150,
-            Step::OcrVl => 1_800,
+            Step::Ocr => 160, // with the small line finder for live subtitles
+            Step::OcrVl => 3_600, // PaddleOCR-VL 1.5 and 1.6
             Step::Dictionary => 600,
             Step::Tts => 2_500,
         }
@@ -319,7 +319,7 @@ mod tests {
         let full = recommend(&nvidia("NVIDIA GeForce RTX 4070", 12_282, Some((12, 4))));
         let all = steps(&full, true, true);
         let total = total_download_mb(&all, &full);
-        assert_eq!(total, 900 + 7_500 + 150 + 150 + 1_800 + 600 + 2_500);
+        assert_eq!(total, 900 + 7_500 + 150 + 160 + 3_600 + 600 + 2_500);
         assert!(disk_warning(total, Some(500_000)).is_none());
         assert!(disk_warning(total, Some(8_000)).unwrap().contains("free"));
         assert!(disk_warning(total, None).is_none(), "unknown free space is not a warning");

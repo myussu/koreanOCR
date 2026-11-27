@@ -47,7 +47,7 @@ test('there are three kinds of control, and a choice is never a drop-down', () =
   assert.equal(controlKind(field('learning.gloss_mode')), 'choice');
   assert.equal(controlKind(field('tasks.live.connection')), 'choice');
   assert.equal(controlKind(field('tasks.capture.while_live')), 'choice');
-  assert.equal(controlKind(field('ocr.vision_reader')), 'switch');
+  assert.equal(controlKind(field('reading.capture.reader')), 'switch');
   for (const path of ['learning.anki.deck', 'continuous.linger_ms', 'learning.anki.tags', 'hotkeys.scan', 'tts.api_key', 'learning.desired_retention']) assert.equal(controlKind(field(path)), 'typed', path);
   assert.ok(ALL_FIELDS.every((f) => f.type !== 'select' && f.type !== 'range'));
   assert.deepEqual([...new Set(ALL_FIELDS.map(controlKind))].sort(), ['choice', 'switch', 'typed']);

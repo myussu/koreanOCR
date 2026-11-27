@@ -5,6 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import build_kiwi_review as r
 from build_kiwi_review import GROUPS, bare, build, main, rows, score, totals
 
 
@@ -114,6 +115,20 @@ class KiwiReviewTests(unittest.TestCase):
         self.assertIn("rows: standard text 3, dialect 2, broken OCR 2; flagged as known failures: 1", printed.getvalue())
         self.assertIn("  dialect: 0 right, 1 wrong, 1 not marked", printed.getvalue())
         self.assertIn("  verb: 0 right, 1 wrong, 1 not marked", printed.getvalue())
+
+
+class Changes(unittest.TestCase):
+    def test_only_words_whose_dictionary_form_changed_are_listed_by_group_with_known_failures_noted(self):
+        line = lambda no, text, words: {"line_no": no, "line": text, "eojeols": [{"index": i, "surface": s, "lemma": l} for i, (s, l) in enumerate(words)]}
+        base = [line(1, "주꾸마, 고마워", [("주꾸마,", "꾸다"), ("고마워", "고맙다")]), line(2, "학교에 가", [("학교에", "학교"), ("가", "가다")])]
+        other = [line(1, "주꾸마, 고마워", [("주꾸마,", "주다"), ("고마워", "고맙다")]), line(2, "학교에 가", [("학교에", "학교"), ("가", "가다")])]
+        groups = {"lines": {"1": {"group": "dialect"}, "2": {"group": "standard text"}}}
+        rows = r.changed_rows(base, other, groups, [{"surface": "주꾸마", "lemma": "꾸다", "note": "reported wrong in run 1"}])
+        self.assertEqual(rows, [("dialect", 1, "주꾸마, 고마워", "주꾸마,", "꾸다", "주다", "reported wrong in run 1")])
+        page = r.changes_page(base, [("Gyeongsang", other), ("Typo correction", "Kiwi crashed")], groups)
+        self.assertIn("주다", page)
+        self.assertIn("Not measured: Kiwi crashed", page)
+        self.assertNotIn("학교에</td>", page, "unchanged words are not listed")
 
 
 if __name__ == "__main__":

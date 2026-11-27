@@ -28,6 +28,8 @@ pub struct Config {
     pub tasks: crate::tasks::TasksConfig,
     /// Captions sent by the browser extension (`captions.rs`). Off unless switched on.
     pub captions: crate::captions::CaptionsConfig,
+    /// How live subtitles and captures each read the screen (`reading.rs`). Without it the older `[ocr]` keys decide.
+    pub reading: crate::reading::ReadingConfig,
     #[serde(rename = "profile")]
     pub profiles: Vec<AppProfile>,
 }
@@ -66,6 +68,13 @@ impl Config {
         }
         let lite = self.lite_profile.clone();
         self.ocr.vision_reader = false;
+        // The per-task table and the programs' overrides may name the reading model too.
+        self.reading.live.reader = Some(false);
+        self.reading.capture.reader = Some(false);
+        for p in &mut self.profiles {
+            p.reading.live.reader = None;
+            p.reading.capture.reader = None;
+        }
         self.llm.parallel = lite.parallel.max(1);
         self.llm.ctx_size = lite.ctx_size.max(512);
         let own_model = self.llm.model_path.is_some() || self.llm.endpoint.is_some();
@@ -286,6 +295,10 @@ pub struct OcrConfig {
     pub reader_args: Vec<String>,
     /// That model answers in HTML (Surya does): Maru takes the tags out.
     pub reader_html: bool,
+    /// In the hybrid, a line PP-OCR read with at least this confidence (0..1) keeps its own text when the reading
+    /// model's differs from it by a single syllable; above 1, the reading model's text always wins. Run 4: 0.90 was
+    /// better on 16 subtitles and worse on 4 of the held-out half, and not worse on full game screens.
+    pub keep_sure_lines: Option<f32>,
 }
 
 impl Default for OcrConfig {
@@ -306,6 +319,7 @@ impl Default for OcrConfig {
             reader_prompt: None,
             reader_args: Vec::new(),
             reader_html: false,
+            keep_sure_lines: Some(0.90),
         }
     }
 }
@@ -515,15 +529,20 @@ pub struct ContinuousConfig {
     /// worse on 4 of 13 (an earlier "gain" was punctuation). Measure it on your own game (`maru eval-ocr <folder> --scale 2
     /// --compare <report>`) before turning it on.
     pub ocr_scale: f32,
-    /// Keep a picture and a draft text file of every line the watcher reads, under `<data>/evalset/raw/<game>/`, so you can
+    /// Keep a picture and a draft text file of every line the watcher reads, under `<test set>/<game>/`, so you can
     /// write down what the subtitles really say and score OCR changes on your own games. Off by default; nothing leaves the
     /// PC. See docs/MANUAL_TESTS.md (M-48).
     pub save_reads: bool,
+    /// Where `save_reads` keeps them. Unset: `Documents\maru-evalset\raw` (a folder the label page can open).
+    pub save_reads_dir: Option<PathBuf>,
+    /// Drop lines with no Hangul read beside a subtitle (`M`, `0`, `FIRST`: marks of the background), keeping Latin
+    /// letters and digits inside a Korean line and a number cut off the end of one (see `maru_ocr::stray`).
+    pub drop_stray_lines: bool,
 }
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false, translation: Default::default(), ocr_scale: 1.0, save_reads: false }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false, translation: Default::default(), ocr_scale: 1.0, save_reads: false, save_reads_dir: None, drop_stray_lines: false }
     }
 }
 
@@ -646,6 +665,14 @@ pub struct AppProfile {
     pub anki_deck: Option<String>,
     /// Extra Anki tags for words met in this program.
     pub anki_tags: Vec<String>,
+    /// How this program's live subtitles and captures read the screen, where it differs from `[reading]`.
+    pub reading: crate::reading::ProfileReading,
+    /// Regional dialects the word splitter (Kiwi) may recognise in this program's lines: `gyeongsang`, `jeolla`,
+    /// `chungcheong`, `gangwon`, `gyeonggi`, `jeju`, `hwanghae`, `hamgyeong`. Empty (the default): standard Korean only.
+    pub dialects: Vec<String>,
+    /// Let Kiwi correct typos and misread letters while it splits this program's lines. Off by default; used only when
+    /// Kiwi passes a test with it in a separate process (Kiwi 0.23.1 does not on the owner's PC: it crashes).
+    pub typo_correction: bool,
 }
 
 #[cfg(test)]

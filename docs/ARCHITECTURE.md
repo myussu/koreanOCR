@@ -820,7 +820,10 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
   tests) → `apply_config` (edits `config.toml` in place) → `execute` (runs the installers in `setup.rs`/`tts.rs`; each skips
   what is installed; a failure does not stop the others) → `maru doctor --deep`. End of input aborts.
 * `setup.rs`: llama.cpp release picking (backend, newest CUDA the driver can run, `--force` clears old files), Kiwi, OCR models,
-  Hugging Face downloads. The model on another PC is **not** part of the wizard: it is Settings → Translation model (`[llm].endpoint`).
+  Hugging Face downloads. Files with a known size and SHA-256 (`Pinned`, `install_pinned`: kept if right, else copied from
+  where an earlier run left a copy that hashes right, else downloaded; a file that does not hash right is never installed):
+  `maru setup ocr` adds the PP-OCRv6 small detector (`models/ocr/pp-ocrv6-small/det.onnx`), `maru setup ocr-vl` adds
+  PaddleOCR-VL-1.6 (`models/vlm/paddleocr-vl-1.6/`), both from PaddlePaddle's own Hugging Face repositories. The model on another PC is **not** part of the wizard: it is Settings → Translation model (`[llm].endpoint`).
 * **Tests:** `hardware.rs`, `plan.rs`, `wizard.rs`, `setup.rs`, `main.rs` (`cli_tests`).
 * **Real-PC check:** M-1, M-2.
 
@@ -837,8 +840,35 @@ ONNX Runtime's intra-op threads (`paddle::session_config`). Measured and checked
 `lite = true` (`Config::effective`, also `MARU_LITE=1`) turns the reading model off and swaps in the smaller translation model
 and one slot, for use beside a game. `bootstrap.rs` assembles all of this from what is installed.
 
-Every piece can be swapped by a setting, all unset by default (run 3 measured the candidates; nothing was adopted, see
-`docs/reports/run-3.md`): `[ocr] det_model` / `rec_model` / `dict_path` name other ONNX files; `det_score_threshold`,
+**Each task reads with its own pieces (`[reading]`, run 4).** `maru-core/src/reading.rs`: `[reading.live]` and
+`[reading.capture]` name a line finder (`detector`: `standard`, `pp-ocrv6-small`, `pp-ocrv6-medium`, `pp-ocrv5-mobile` or a
+path), a letter reader (`recogniser`: `standard`, `qota-ocr` or a path), `reader` on/off and `reader_model`
+(`paddleocr-vl-1.5`, `paddleocr-vl-1.6` or a folder); empty fields follow `[ocr]`. Named files are looked for where
+`maru setup` installs them, then where run 3 left them (`models/ocr-candidates`); a named piece that is not installed falls
+back to the standard one with a note. `resolve(cfg, paths, task, exe)` gives the `[ocr]` settings a task's engines are built
+from; a `[[profile]]`'s `[profile.reading.live|capture]` overrides any field for its program. Defaults (measured on the
+owner's 468 labelled subtitles and a 73-screen scan set, `docs/reports/run-4.md`): live subtitles = PP-OCR alone with the
+PP-OCRv6 small detector, no reading model; captures = standard PP-OCR + PaddleOCR-VL-1.6 (1.5 when 1.6 is missing). Older
+files: `derive` keeps whatever the file names (`det_model`, `rec_model`/`dict_path`, `reader_dir`, `vision_reader = false`)
+and gives what was left at its default the new defaults; `migrate`/`migrate_file` write the table once (`version = 1`) after
+a copy `config.toml.before-reading-<stamp>.bak` (the app at start-up, after `[tasks]`; `maru config migrate`). `cpu_ocr`
+still parses and keeps live PP-OCR on the processor. Lite mode takes the reading model off every task and profile.
+`maru-engine/src/reading_engines.rs` builds the engines: one PP-OCR per distinct set of pieces (shared between tasks that
+name the same), one reading-model server for every task that uses it (only one reading model runs at a time: captures'
+when both name one), a profile's live engine built when live subtitles start in that program (`Engine::start_continuous`
+asks the foreground program) and loaded on its first read. Live subtitles on PP-OCR alone never ask the reading model, so
+with `defer_models` it takes no video memory until a capture needs it (measured: none with live running; 2,254 MB after the
+first capture); the first region capture that waits for it shows a plain notice (`reader_wait_notice`). The screen scan
+reads with the captures' detector and recogniser at 2048 px and never used the reading model. `Engine::reading_rows` feeds
+Settings' "Read the screen" step (one row per task: what reads, where it runs). In the hybrid, `[ocr] keep_sure_lines`
+(default 0.90) keeps a line PP-OCR read with that confidence when the reader changes one syllable of it
+(`HybridOcr::keeping_sure_lines`). Live subtitles can drop separate lines without Hangul read beside the subtitle
+(`maru_ocr::stray`, `[continuous] drop_stray_lines`, off). Tests: `reading.rs` (defaults, fallbacks, explicit choices,
+profiles, migration, backup, idempotence, lite, the documented table), `reading_engines.rs` (routing, sharing, profiles,
+on-demand loading, rows, the wait notice, stray lines), `stray.rs`, `hybrid_ocr.rs`, `tests/pipeline.rs` (live engine
+choice), `settings-flow.test.mjs`. Real app: M-55, M-56.
+
+Every piece can also be swapped through `[ocr]` (run 3 measured the candidates, see `docs/reports/run-3.md`): `[ocr] det_model` / `rec_model` / `dict_path` name other ONNX files; `det_score_threshold`,
 `det_box_threshold`, `det_unclip_ratio` (`paddle::DetTuning`) are the detector's tuning for a detector published with other
 values (giving oar-ocr any of them switches off the ones it applies to general text itself, so `PaddleOcr::load` repeats
 those: 0.3, 0.6, 2.0, longest side 960); `reader_dir` names a folder with another reading model
@@ -856,7 +886,17 @@ Tests: interactive bootstrap regression, deferred loader concurrency/cancellatio
 
 ### 4.12 Per-program behaviour
 `[[profile]]` entries match the foreground `.exe` (`Config::profile_for`): a `glossary` (fixed translations, never sent to the
-model), a `hint` for the prompts, `register`, `gloss_mode`, and Anki deck/tags.
+model), a `hint` for the prompts, `register`, `gloss_mode`, and Anki deck/tags; `[profile.reading.live|capture]` (4.11);
+`dialects` and `typo_correction` for the word splitter. `maru-lang`: `AnalysisOptions` (Kiwi's dialect bit mask, typo
+correction) reach Kiwi per analysis (`Morphology::tokenize_with`, `Analyzer::analyze_with`; default = standard Korean, as
+before); `kiwi::KiwiSetup` builds Kiwi with the dialects any profile names and, only when a profile asks for typo
+correction, a second instance with Kiwi's basic typo set (the bindings attach typo correction at build time only).
+`engine::analysis_options(cfg, exe)` is used by captures and live lines (`pipeline.rs`), Make cards (`mining.rs`) and the
+screen scan. Typo correction is enabled only after `--maru-probe-kiwi-typo` passes in a child process: with Kiwi 0.23.1
+(the newest release that passes the plain probe here; 0.23.2-0.25.0 crash it with kiwi-rs 2026.8.26 and 2026.10.17) it
+crashes, so it stays off with a note. Tests: `maru-lang` (options reach the analyser, dialect names), `engine.rs`
+(`analysis_options`). `crates/maru-cli/examples/kiwi_options.rs` + `tools/build_kiwi_review.py changes` compare
+analyses with and without an option (run 4: Gyeongsang changes 10 of 239 dictionary forms on run 2's review lines).
 
 ### 4.13 Resource monitoring and debug sessions
 * **Flow:** `app/src-tauri/resources.rs` wires the engine's `resource_monitor::ResourceService`; `resource_targets.rs`
@@ -1075,6 +1115,8 @@ feedback adds no setting or database field; normal translation cache/history ret
 | `models/` | installers | OCR, reading model, TTS models; GGUF models are cached by `llama-server` |
 | `bin/` | `setup llm` | llama.cpp (**loose files only**; `kiwi/` and `tts/` are subfolders and must never be mixed in — their DLLs would replace llama.cpp's) |
 | `tts-cache/` | `maru-tts` | spoken sentences |
+| `config.toml` `[reading]` and `config.toml.before-reading-<stamp>.bak` (config dir) | `maru-core::reading` | how each task reads the screen; written once into an older file after a copy is saved beside it; older `[ocr]` keys keep parsing |
+| `Documents\maru-evalset\raw\<game>\` (not the data dir) | `maru-engine::harvest`, `Paths::default_evalset_dir` | the test set since run 4: where `save_reads` writes unless `[continuous] save_reads_dir` names another folder (browsers refuse to open folders under AppData, and `tools/label_review.html` must); with `MARU_HOME` it stays in `data/evalset/raw`. Beside a picture: `.txt` (a person's label, wins over `.provisional.txt`), `.unreadable`, `.not-subtitle` (both left out of scoring), drafts `.<reader>.txt` (one line per line read) |
 | `evalset/raw/<game>/` | `maru-engine::harvest` | with `[continuous] save_reads`: `<secs>-<n>.png` (the picture the reader saw) + `.json` (draft text, program, window title, timings). Labels (`.txt`) are written by a person, never by Maru |
 | `evalset/raw/<game>/` (tools) | `tools/sample_subtitle_frames.py`, `maru eval-ocr --write-drafts`, `tools/provisional_labels.py` | pictures cut from a recording (`<prefix><nn>_s001_0.png`; `.txt` only for rows of a transcript a person checked, `.tags` beside them), `name.<reader>.txt` drafts, `name.provisional.txt` (two readers agreed; never read as a label unless `--labels provisional` or `all` is asked for) |
 | `evalset/set-aside/`, `evalset/reports/` | `tools/provisional_labels.py --set-aside`, `tools/compare_ocr.py` | pictures taken out of the set (no Korean in any reading, repeats) with their drafts; one saved run (`.json`, `.log`) per engine compared |

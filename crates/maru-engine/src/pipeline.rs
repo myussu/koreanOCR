@@ -100,13 +100,13 @@ pub(crate) fn gloss_words(eojeols: &[Eojeol], skip_known: bool) -> Vec<GlossWord
 }
 
 /// Analyse Korean text, annotate it with what we know offline, and emit the breakdown.
-async fn analyze_and_emit(inner: &Arc<Inner>, em: &Emitter, side: Side, text: &str, words: Vec<WordBox>) -> Vec<Eojeol> {
+async fn analyze_and_emit(inner: &Arc<Inner>, em: &Emitter, side: Side, text: &str, words: Vec<WordBox>, options: maru_lang::AnalysisOptions) -> Vec<Eojeol> {
     let t = Instant::now();
     let work = {
         let inner = inner.clone();
         let text = text.to_string();
         move || {
-            let mut analysis = inner.analyzer.analyze(&text);
+            let mut analysis = inner.analyzer.analyze_with(&text, options);
             annotate::assign_rects(&mut analysis.eojeols, &words);
             annotate::annotate(&mut analysis.eojeols, inner.dict.as_deref(), Some(&inner.vocab), 3);
             analysis
@@ -287,7 +287,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
     let words = capture.words.clone();
 
     if let Some(hit) = cached {
-        let eojeols = replay(&inner, &em, direction, register, &text, words, &hit).await;
+        let eojeols = replay(&inner, &em, direction, register, &text, words, &hit, crate::engine::analysis_options(&inner.cfg, Some(&app_exe))).await;
         let side = if direction == Direction::KoToEn { Side::Source } else { Side::Target };
         let missing: Vec<_> = gloss_words(&eojeols, skip_known).into_iter()
             .filter(|w| !hit.glosses.iter().any(|(s, g)| *s == side && g.index == w.index)).collect();
@@ -314,7 +314,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
 
     match direction {
         Direction::KoToEn => {
-            let eojeols = analyze_and_emit(&inner, &em, Side::Source, &text, words).await;
+            let eojeols = analyze_and_emit(&inner, &em, Side::Source, &text, words, crate::engine::analysis_options(&inner.cfg, Some(&app_exe))).await;
             let Some((llm, native)) = snapshot_model(&inner, &em, active).await else {
                 em.timing(Stage::Total, started);
                 em.done();
@@ -387,7 +387,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
             // gloss it while the other registers are still streaming.
             let follow_up = async {
                 let Ok(korean) = primary_rx.await else { return };
-                let eojeols = analyze_and_emit(&inner, &em, Side::Target, &korean, Vec::new()).await;
+                let eojeols = analyze_and_emit(&inner, &em, Side::Target, &korean, Vec::new(), Default::default()).await;
                 let list = gloss_words(&eojeols, skip_known);
                 run_glosses(&llm, &em, &collected, Side::Target, &korean, &list, &ctx).await;
             };
@@ -595,6 +595,8 @@ pub(crate) async fn live(inner: Arc<Inner>, id: u64, line: LiveLine, tx: EventTx
 
 /// Re-send a cached result as the same event stream, re-annotating so your
 /// current vocabulary state is shown (it may have changed since).
+// A cached result is replayed with the same pieces its first run had, the program's analysis options among them.
+#[allow(clippy::too_many_arguments)]
 async fn replay(
     inner: &Arc<Inner>,
     em: &Emitter,
@@ -603,15 +605,16 @@ async fn replay(
     text: &str,
     words: Vec<WordBox>,
     hit: &Cached,
+    options: maru_lang::AnalysisOptions,
 ) -> Vec<Eojeol> {
     let eojeols = match direction {
         Direction::KoToEn => {
-            analyze_and_emit(inner, em, Side::Source, text, words).await
+            analyze_and_emit(inner, em, Side::Source, text, words, options).await
         }
         Direction::EnToKo => {
             let primary = Variant::from_register(register);
             if let Some((_, korean)) = hit.translations.iter().find(|(v, _)| *v == primary) {
-                analyze_and_emit(inner, em, Side::Target, korean, Vec::new()).await
+                analyze_and_emit(inner, em, Side::Target, korean, Vec::new(), Default::default()).await
             } else { Vec::new() }
         }
     };
@@ -641,8 +644,10 @@ pub(crate) async fn lookup(inner: Arc<Inner>, id: u64, capture: Capture, tx: Eve
     let mut capture = capture;
     capture.text = text.clone();
     let words = capture.words.clone();
+    let capture_exe = capture.app.as_ref().map(|a| a.exe.clone());
     em.send(Event::Started { id, direction: Direction::KoToEn, capture, cached: false });
-    analyze_and_emit(&inner, &em, Side::Source, &text, words).await;
+    let options = crate::engine::analysis_options(&inner.cfg, capture_exe.as_deref());
+    analyze_and_emit(&inner, &em, Side::Source, &text, words, options).await;
     em.timing(Stage::Total, started);
     em.done();
 }

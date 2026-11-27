@@ -138,6 +138,9 @@ pub(crate) struct Inner {
     pub(crate) live_recent: Mutex<crate::live_merge::Recent>,
     /// Saved live history (`history.db`); `None` until opened, and in tests.
     pub(crate) history_store: Mutex<Option<crate::history_store::HistoryStore>>,
+    /// Which engine each task reads with, for live subtitles in a program with its own `[profile.reading]`
+    /// (`reading_engines.rs`); `None` in tests and without PP-OCR.
+    pub(crate) reading_engines: Mutex<Option<Arc<crate::reading_engines::ReadingEngines>>>,
     /// The learner's dictionary for card meanings (`senses.rs`); unset until its file is opened.
     pub(crate) nikl: std::sync::OnceLock<Arc<maru_dict::Nikl>>,
     /// Lines starred before their translation finished (`live_star.rs`).
@@ -209,6 +212,7 @@ impl Engine {
             server_rest: Mutex::new(None),
             live_recent: Mutex::new(Default::default()),
             history_store: Mutex::new(None),
+            reading_engines: Mutex::new(None),
             nikl: std::sync::OnceLock::new(),
             pending_stars: Mutex::new(Default::default()),
             live_counts: Arc::new(crate::live_lane::Counters::default()),
@@ -320,10 +324,16 @@ impl Engine {
 
     /// Watch `region` and emit a capture whenever its text changes.
     pub fn start_continuous(&self, region: Rect) -> Result<ContinuousHandle> {
-        let ocr = if self.inner.cfg.continuous.cpu_ocr {
-            self.inner.live_ocr.clone().ok_or_else(|| EngineError::Other("CPU PP-OCR for live subtitles is unavailable. Run `maru setup ocr`, or turn off continuous.cpu_ocr.".into()))?
-        } else {
-            self.inner.ocr.clone().ok_or(CaptureError::NoOcr)?
+        // The program in front decides, when its profile reads live subtitles differently (`[profile.reading.live]`).
+        let program = self.inner.platform.screen.foreground_app().map(|a| a.exe);
+        let own = program.as_deref().and_then(|exe| lock(&self.inner.reading_engines).clone().and_then(|r| r.for_program(exe)));
+        let ocr = match (own, self.inner.live_ocr.clone()) {
+            (Some(ocr), _) | (None, Some(ocr)) => ocr,
+            // Reading live lines with the reading model when they were meant to go without it would load it unasked.
+            (None, None) if !crate::reading_engines::uses_reader(&self.inner.cfg, maru_core::reading::ReadTask::Live) => {
+                return Err(EngineError::Other("The quick reader for live subtitles is unavailable. Run `maru setup ocr`.".into()));
+            }
+            (None, None) => self.inner.ocr.clone().ok_or(CaptureError::NoOcr)?,
         };
         tracing::info!(ocr = ocr.name(), cpu_ocr = self.inner.cfg.continuous.cpu_ocr,
             max_in_flight = self.inner.cfg.continuous.max_in_flight,
@@ -336,6 +346,21 @@ impl Engine {
             None
         };
         Ok(continuous::spawn_with(&self.inner.runtime, self.inner.platform.screen.clone(), ocr, self.inner.cfg.continuous.clone(), region, harvest))
+    }
+
+    /// What each task reads the screen with and where it runs, for Settings. Empty without PP-OCR.
+    pub fn reading_rows(&self) -> Vec<crate::reading_engines::ReadingRow> {
+        lock(&self.inner.reading_engines).as_ref().map(|r| r.rows()).unwrap_or_default()
+    }
+
+    /// How the word splitter reads the lines of `exe`: the dialects and typo correction its profile allows.
+    pub fn analysis_options(&self, exe: Option<&str>) -> maru_lang::AnalysisOptions {
+        crate::engine::analysis_options(&self.inner.cfg, exe)
+    }
+
+    /// Which engine each task reads with (set once at boot).
+    pub fn set_reading_engines(&self, engines: Arc<crate::reading_engines::ReadingEngines>) {
+        *lock(&self.inner.reading_engines) = Some(engines);
     }
 
     /// Where `[continuous] save_reads` keeps what the live watcher read (see [`crate::harvest`]).
@@ -541,5 +566,28 @@ impl Engine {
 
     pub fn started_at() -> Instant {
         Instant::now()
+    }
+}
+
+/// What `[[profile]] dialects` and `typo_correction` ask of the word splitter for `exe` (standard Korean otherwise).
+pub(crate) fn analysis_options(cfg: &Config, exe: Option<&str>) -> maru_lang::AnalysisOptions {
+    match exe.and_then(|e| cfg.profile_for(e)) {
+        Some(p) => maru_lang::AnalysisOptions { dialects: maru_lang::dialect_mask(&p.dialects).0, typo: p.typo_correction },
+        None => maru_lang::AnalysisOptions::default(),
+    }
+}
+
+#[cfg(test)]
+mod analysis_option_tests {
+    use super::*;
+
+    #[test]
+    fn a_programs_profile_decides_which_dialects_and_whether_typos_are_corrected() {
+        let mut cfg = Config::default();
+        cfg.profiles.push(maru_core::config::AppProfile { name: "Sekiro".into(), exe: vec!["sekiro.exe".into()], dialects: vec!["gyeongsang".into()], typo_correction: true, ..Default::default() });
+        let there = analysis_options(&cfg, Some("Sekiro.exe"));
+        assert_eq!((there.dialects, there.typo), (1 << 3, true));
+        assert_eq!(analysis_options(&cfg, Some("other.exe")), maru_lang::AnalysisOptions::default());
+        assert_eq!(analysis_options(&cfg, None), maru_lang::AnalysisOptions::default(), "no program: standard Korean, as before");
     }
 }
