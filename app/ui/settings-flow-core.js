@@ -93,10 +93,10 @@ export function readRows(s) {
   return s.reading.map((r) => {
     const reader = partState(s.ocr_reader ?? null);
     const state = !r.reader ? 'working' : reader === 'off' ? 'not_loaded' : reader;
-    const uses = r.reader ? `${r.uses} · checked by ${r.reader}` : `${r.uses} · no reading model`;
-    const row = { what: r.what, uses, where: r.place, dot: stateDot(state), open: READ_SECTION[r.task] ?? 'captures' };
-    if (r.reader && s.ocr_reader === 'loads on demand') row.note = 'The reading model loads with the first capture that needs it.';
-    return row;
+    // Waiting to load is how it should be, not a problem: said in the row, not in the warning-coloured note.
+    const later = r.reader && s.ocr_reader === 'loads on demand' ? ', which loads with the first capture' : '';
+    const uses = r.reader ? `${r.uses} · checked by ${r.reader}${later}` : `${r.uses} · no reading model`;
+    return { what: r.what, uses, where: r.place, dot: stateDot(state), open: READ_SECTION[r.task] ?? 'captures' };
   });
 }
 
