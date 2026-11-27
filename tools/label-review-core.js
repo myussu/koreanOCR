@@ -43,13 +43,22 @@
   /** Where a picture with only one reading goes among those that disagree (above agreeing ones, below clear disagreements). */
   const UNKNOWN_WEIGHT = 0.05;
 
-  /** Every reading the page has for one picture: the live reader's draft first, then the other readers by name. */
+  /** The text has at least one Hangul syllable. */
+  function hasHangul(text) {
+    return /[\uac00-\ud7a3]/.test(String(text || ''));
+  }
+
+  /**
+   * Every reading the page has for one picture: the live reader's draft first, then the other readers by name. A reading
+   * from outside this PC without any Hangul is a comment, not a reading (run 3: "The strip cuts off the subtitle"), so it
+   * is left out.
+   */
   function readings(item) {
     const out = [];
     if (item.draft != null && String(item.draft).trim() !== '') out.push({ from: 'live', text: String(item.draft).trim() });
     for (const tag of Object.keys(item.drafts || {}).sort()) {
       const text = String(item.drafts[tag] || '').trim();
-      if (text !== '') out.push({ from: tag, text });
+      if (text !== '' && !(tag === 'outside' && !hasHangul(text))) out.push({ from: tag, text });
     }
     return out;
   }
@@ -61,7 +70,8 @@
    */
   function startingText(item, prefer = ['provisional', 'outside', 'paddle-vl', 'hybrid', 'live']) {
     if (item.label != null) return { text: item.label, from: 'label' };
-    const all = readings(item);
+    // A reading with no Hangul is never offered as a start (a stray "0 0" or a comment).
+    const all = readings(item).filter((r) => hasHangul(r.text));
     for (const name of prefer) {
       const hit = all.find((r) => r.from === name);
       if (hit) return { text: hit.text, from: hit.from };
@@ -69,9 +79,19 @@
     return all.length ? { text: all[0].text, from: all[0].from } : { text: '', from: 'none' };
   }
 
-  /** Not done yet (no label, not marked unreadable). */
+  /** Not done yet (no label, not marked unreadable or not a subtitle). */
   function pending(item) {
-    return item.label == null && !item.unreadable;
+    return item.label == null && !item.unreadable && !item.notSubtitle;
+  }
+
+  /** Two readers agreed on it (`name.provisional.txt`), but no person has looked. */
+  function provisional(item) {
+    return Boolean(item.drafts && item.drafts.provisional);
+  }
+
+  /** Nothing at all yet: no label of a person's, no provisional one, no mark. */
+  function unlabelled(item) {
+    return pending(item) && !provisional(item);
   }
 
   /**
@@ -92,12 +112,13 @@
   /**
    * Sort the file names found in one folder into pictures and what sits beside them:
    * `a.png`, `a.json` (the live reader's draft and facts), `a.txt` (the label), `a.<reader>.txt` (another reader's draft),
-   * `a.unreadable` (marked unusable) and `a.tags` (tags the person gave it).
+   * `a.unreadable` (marked unusable), `a.not-subtitle` (not a subtitle: a map, a menu, a logo) and `a.tags` (tags the
+   * person gave it).
    */
   function groupFiles(names) {
     const groups = new Map();
     const get = (id) => {
-      if (!groups.has(id)) groups.set(id, { id, png: null, json: null, label: null, drafts: {}, unreadable: null, tags: null });
+      if (!groups.has(id)) groups.set(id, { id, png: null, json: null, label: null, drafts: {}, unreadable: null, notSubtitle: null, tags: null });
       return groups.get(id);
     };
     for (const name of names) {
@@ -107,28 +128,33 @@
       else if ((m = /^([^.]+)\.txt$/i.exec(name))) get(m[1]).label = name;
       else if ((m = /^([^.]+)\.([a-z0-9-]+)\.txt$/i.exec(name))) get(m[1]).drafts[m[2].toLowerCase()] = name;
       else if ((m = /^([^.]+)\.unreadable$/i.exec(name))) get(m[1]).unreadable = name;
+      else if ((m = /^([^.]+)\.not-subtitle$/i.exec(name))) get(m[1]).notSubtitle = name;
       else if ((m = /^([^.]+)\.tags$/i.exec(name))) get(m[1]).tags = name;
     }
     // A sidecar without a picture is of no use.
     return [...groups.values()].filter((g) => g.png).sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   }
 
-  /** A label is written as one line: line breaks become spaces, runs of spaces become one. */
+  /**
+   * A label as written to disk: each line with single spaces, empty lines dropped. Subtitles are scored on their letters
+   * only, so their line breaks change nothing; a whole screen keeps one piece of text per line (`tools/scan_lines.py`).
+   */
   function cleanLabel(text) {
-    return String(text || '').replace(/\s+/g, ' ').trim();
+    return String(text || '').split(/\r?\n/).map((l) => l.replace(/\s+/g, ' ').trim()).filter(Boolean).join('\n');
   }
 
   /** How the work is going. `edited` counts labels that differ from what the box started with, in letters. */
   function progress(items, edits = {}) {
     const total = items.length;
     const unreadable = items.filter((i) => i.unreadable).length;
+    const notSubtitle = items.filter((i) => i.notSubtitle && !i.unreadable).length;
     const labelled = items.filter((i) => i.label != null).length;
     const changed = Object.values(edits).filter(Boolean).length;
     const confirmed = Object.keys(edits).length;
-    return { total, labelled, unreadable, left: total - labelled - unreadable, confirmed, changed };
+    return { total, labelled, unreadable, notSubtitle, left: total - labelled - unreadable - notSubtitle, confirmed, changed };
   }
 
-  const api = { normalize, distance, difference, disagreement, readings, startingText, pending, order, groupFiles, cleanLabel, progress };
+  const api = { normalize, distance, difference, disagreement, hasHangul, readings, startingText, pending, provisional, unlabelled, order, groupFiles, cleanLabel, progress };
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
   else root.LabelCore = api;
 })(typeof window !== 'undefined' ? window : this);

@@ -128,6 +128,7 @@ launcher = true               # show floating controls at startup; tray/shortcut
 # Resource monitoring/recording controls are transient in the hub Resources tab, not config settings.
 
 [continuous]
+# save_reads_dir = "D:/maru-evalset/raw"  # where save_reads keeps them; unset = Documents\maru-evalset\raw (a folder the label page can open)
 drop_stray_lines = false  # leave out lines with no Hangul read beside a subtitle (M, 0, FIRST); Latin and digits
                           # inside a Korean line stay. 0 subtitles worse in 468; see docs/reports/run-4.md
 cpu_ocr = false       # older switch: live subtitles without the reading model, now [reading.live] reader; true still keeps live PP-OCR on the CPU

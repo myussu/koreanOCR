@@ -438,7 +438,8 @@ pub fn load_images(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
 }
 
 /// `name.png` + `name.txt` (the true text) pairs found in `dir` and the folders below it, sorted by name.
-/// A picture marked `name.unreadable` (see `tools/label_review.html`) is left out.
+/// A picture marked `name.unreadable` or `name.not-subtitle` (see `tools/label_review.html`) is left out. A picture with both a
+/// person's `name.txt` and a `name.provisional.txt` is scored on the person's label.
 #[cfg(test)]
 pub fn load_cases(dir: &Path) -> Result<Vec<(std::path::PathBuf, std::path::PathBuf)>> {
     Ok(load_cases_labelled(dir, crate::evalreport::Labels::Person)?.into_iter().map(|(p, truth, _)| (p, truth)).collect())
@@ -450,7 +451,7 @@ pub fn load_cases_labelled(dir: &Path, labels: crate::evalreport::Labels) -> Res
     use crate::evalreport::Labels;
     let cases: Vec<_> = load_images(dir)?
         .into_iter()
-        .filter(|p| !p.with_extension("unreadable").exists())
+        .filter(|p| !p.with_extension("unreadable").exists() && !p.with_extension("not-subtitle").exists())
         .filter_map(|p| {
             let (person, provisional) = (p.with_extension("txt"), p.with_extension("provisional.txt"));
             match (labels, person.exists(), provisional.exists()) {
@@ -490,7 +491,7 @@ pub struct DraftRules {
 pub fn write_drafts_with(tag: &str, engine: &dyn maru_ocr::OcrEngine, images: &[std::path::PathBuf], scale: f32, rules: DraftRules) -> Result<usize> {
     let todo: Vec<_> = images
         .iter()
-        .filter(|p| (rules.labelled_too || !p.with_extension("txt").exists()) && !p.with_extension("unreadable").exists())
+        .filter(|p| (rules.labelled_too || !p.with_extension("txt").exists()) && !p.with_extension("unreadable").exists() && !p.with_extension("not-subtitle").exists())
         .filter(|p| !(rules.keep_existing && p.with_extension(format!("{tag}.txt")).exists()))
         .collect();
     let mut written = 0;
@@ -612,6 +613,21 @@ mod tests {
             image::RgbImage::new(8, 8).save(root.join(game).join(format!("{id}.png"))).unwrap();
         }
         root
+    }
+
+    #[test]
+    fn a_persons_label_wins_over_a_provisional_one_and_pictures_that_are_not_subtitles_are_left_out() {
+        let root = test_set("person-wins");
+        std::fs::write(root.join("yuzu/1-001.txt"), "사람이 쓴 것\n").unwrap();
+        std::fs::write(root.join("yuzu/1-001.provisional.txt"), "두 리더가 맞춘 것\n").unwrap();
+        std::fs::write(root.join("yuzu/1-002.provisional.txt"), "가나\n").unwrap();
+        std::fs::write(root.join("yuzu/1-002.not-subtitle"), "").unwrap();
+        let infos = load_case_infos_labelled(&root, None, crate::evalreport::Labels::All).unwrap();
+        let first = infos.iter().find(|i| i.img.ends_with("1-001.png")).expect("labelled picture");
+        assert_eq!(first.truth.trim(), "사람이 쓴 것");
+        assert!(!first.tags.iter().any(|t| t == crate::evalreport::PROVISIONAL_TAG), "a person's label is not provisional");
+        assert!(!infos.iter().any(|i| i.img.ends_with("1-002.png")), "not a subtitle: not scored");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

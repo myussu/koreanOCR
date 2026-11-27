@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Score today's OCR and every candidate on a labelled test set, and print the comparison tables.
 
-    python tools/compare_ocr.py <data folder>\\evalset\\raw
+    python tools/compare_ocr.py [test set]      (default: Documents\\maru-evalset\\raw)
 
 It runs `maru eval-ocr` once per engine in CANDIDATES (the first is today's setup, the one the others are judged
 against), saves each run's per-picture results under `--out` (default: `reports` beside the test set), and then prints,
@@ -9,8 +9,9 @@ with `maru eval-report`: every engine overall and game by game, and each engine 
 with a sign test. A candidate whose model files are not on this PC is skipped and named.
 
 `--labels person` (the default) scores only pictures a person labelled: these are the numbers a decision may rest on.
-`--labels all` also uses provisional labels (`tools/provisional_labels.py`) and prints the tables separately for the
-pictures tagged `gold` and for the provisional ones; everything from provisional labels is marked as such.
+`--labels all` also uses provisional labels (`tools/provisional_labels.py`) where no person has labelled (a person's
+`name.txt` always wins over `name.provisional.txt`). It prints the whole set first, then the pictures a person labelled
+(whole, and each half), then the provisional ones apart; everything that includes provisional labels is marked.
 
 `--tables` prints the tables again from the saved runs without reading a picture. `--only NAME ...` runs a few engines.
 One engine at a time, and nothing else heavy running, or the times and memory figures mean little.
@@ -28,8 +29,14 @@ OCR = "ocr-candidates"
 V6_TUNING = "0.2,0.45,1.4"  # the values PP-OCRv6 detectors are published with (score, box, unclip)
 
 # (name, eval-ocr arguments, model files it needs below the models folder). `{m}` is the models folder.
+SMALL = "ocr/pp-ocrv6-small/det.onnx"  # where `maru setup ocr` installs it
+# A file `maru setup` installs, and where run 3 left the same file: either will do.
+ALSO = {SMALL: OCR + "/pp-ocrv6-small-det/det.onnx"}
+
 CANDIDATES = [
-    ("today: hybrid (PP-OCR + PaddleOCR-VL-1.5)", ["--engine", "hybrid"], []),
+    ("today, live subtitles: PP-OCR alone, v6 small detector", ["--engine", "paddle", "--det", "{m}/" + SMALL], [SMALL]),
+    ("today, captures: hybrid, reader PaddleOCR-VL-1.6, keep sure lines 0.90", ["--engine", "hybrid", "--reader-dir", "{m}/" + VL16, "--keep-sure", "0.90"], [VL16]),
+    ("before run 4: hybrid (PP-OCR + PaddleOCR-VL-1.5)", ["--engine", "hybrid"], []),
     ("PP-OCR alone (also live CPU PP-OCR mode)", ["--engine", "paddle"], []),
     ("PP-OCR alone on the graphics card", ["--engine", "paddle", "--device", "directml:0"], []),
     ("PaddleOCR-VL-1.5 alone", ["--engine", "paddle-vl"], []),
@@ -38,7 +45,8 @@ CANDIDATES = [
     ("hybrid, reader PaddleOCR-VL-1.6", ["--engine", "hybrid", "--reader-dir", "{m}/" + VL16], [VL16]),
     ("PP-OCR alone, v5 server detector (official file)", ["--engine", "paddle", "--det", "{m}/" + OCR + "/pp-ocrv5-server-det/det.onnx"], [OCR + "/pp-ocrv5-server-det/det.onnx"]),
     ("PP-OCR alone, v5 mobile detector", ["--engine", "paddle", "--det", "{m}/" + OCR + "/pp-ocrv5-mobile-det/det.onnx"], [OCR + "/pp-ocrv5-mobile-det/det.onnx"]),
-    ("PP-OCR alone, v6 small detector", ["--engine", "paddle", "--det", "{m}/" + OCR + "/pp-ocrv6-small-det/det.onnx"], [OCR + "/pp-ocrv6-small-det/det.onnx"]),
+    ("PP-OCR alone, v6 small detector, stray lines dropped", ["--engine", "paddle", "--det", "{m}/" + SMALL, "--drop-stray-lines"], [SMALL]),
+    ("PP-OCR alone, v6 small detector + Qota-OCR recogniser", ["--engine", "paddle", "--det", "{m}/" + SMALL, "--rec", "{m}/" + OCR + "/qota-ocr/rec.onnx", "--dict", "{m}/" + OCR + "/qota-ocr/dict.txt"], [SMALL, OCR + "/qota-ocr/rec.onnx", OCR + "/qota-ocr/dict.txt"]),
     ("PP-OCR alone, v6 small detector, its own tuning", ["--engine", "paddle", "--det", "{m}/" + OCR + "/pp-ocrv6-small-det/det.onnx", "--det-tuning", V6_TUNING], [OCR + "/pp-ocrv6-small-det/det.onnx"]),
     ("PP-OCR alone, v6 medium detector", ["--engine", "paddle", "--det", "{m}/" + OCR + "/pp-ocrv6-medium-det/det.onnx"], [OCR + "/pp-ocrv6-medium-det/det.onnx"]),
     ("PP-OCR alone, v6 medium detector, its own tuning", ["--engine", "paddle", "--det", "{m}/" + OCR + "/pp-ocrv6-medium-det/det.onnx", "--det-tuning", V6_TUNING], [OCR + "/pp-ocrv6-medium-det/det.onnx"]),
@@ -64,11 +72,15 @@ def available(candidates, models, only=None):
     for name, args, needs in candidates:
         if only and not any(o.lower() in name.lower() for o in only):
             continue
-        missing = [n for n in needs if not (Path(models) / n).exists()]
+        swap = {n: ALSO[n] for n in needs if not (Path(models) / n).exists() and n in ALSO and (Path(models) / ALSO[n]).exists()}
+        missing = [n for n in needs if n not in swap and not (Path(models) / n).exists()]
         if missing:
             skipped.append((name, missing))
         else:
-            usable.append((name, [a.replace("{m}", str(models)) for a in args]))
+            def fill(a):
+                rel = a[len("{m}/"):] if a.startswith("{m}/") else None
+                return "{m}/" + swap[rel] if rel in swap else a
+            usable.append((name, [fill(a).replace("{m}", str(models)) for a in args]))
     return usable, skipped
 
 
@@ -80,12 +92,22 @@ def table_views(labels):
     """`(heading, eval-report arguments)` for each table to print."""
     if labels == "person":
         return [("Every labelled picture", []), ("The half to tune on (dev)", ["--split", "dev"]), ("The half to judge on (held-out)", ["--split", "held-out"])]
-    views = [("Pictures labelled by a person or from a checked transcript (tag gold)", ["--tag", "gold"])]
-    if labels == "all":
-        views += [("PROVISIONAL labels, the half to tune on (dev)", ["--tag", "provisional", "--split", "dev"]), ("PROVISIONAL labels, the half to judge on (held-out)", ["--tag", "provisional", "--split", "held-out"])]
-    else:
-        views = [("PROVISIONAL labels, the half to tune on (dev)", ["--split", "dev"]), ("PROVISIONAL labels, the half to judge on (held-out)", ["--split", "held-out"])]
-    return views
+    if labels == "provisional":
+        return [("PROVISIONAL labels, the half to tune on (dev)", ["--split", "dev"]), ("PROVISIONAL labels, the half to judge on (held-out)", ["--split", "held-out"])]
+    return [
+        ("The whole set: a person's label wherever there is one, else the provisional one (PROVISIONAL)", []),
+        ("The whole set, the half to judge on (held-out) (PROVISIONAL)", ["--split", "held-out"]),
+        ("Pictures a person labelled", ["--tag", "person"]),
+        ("Pictures a person labelled, the half to tune on (dev)", ["--tag", "person", "--split", "dev"]),
+        ("Pictures a person labelled, the half to judge on (held-out)", ["--tag", "person", "--split", "held-out"]),
+        ("PROVISIONAL labels only, the half to tune on (dev)", ["--tag", "provisional", "--split", "dev"]),
+        ("PROVISIONAL labels only, the half to judge on (held-out)", ["--tag", "provisional", "--split", "held-out"]),
+    ]
+
+
+def default_set():
+    """`Documents\\maru-evalset\\raw`, where Maru saves the pictures it reads and the label page can open them."""
+    return Path.home() / "Documents" / "maru-evalset" / "raw"
 
 
 def default_models():
@@ -95,7 +117,7 @@ def default_models():
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("set", help="the test set folder (one folder per game below it)")
+    ap.add_argument("set", nargs="?", default=str(default_set()), help="the test set folder, one folder per game below it (default: Documents\\maru-evalset\\raw)")
     ap.add_argument("--maru", default=str(Path("target") / "release" / ("maru.exe" if os.name == "nt" else "maru")), help="the maru program (default: target/release/maru)")
     ap.add_argument("--home", help="run maru with this --home (default: your own)")
     ap.add_argument("--models", help="Maru's models folder, where the candidates' files are (default: the one in your data folder)")

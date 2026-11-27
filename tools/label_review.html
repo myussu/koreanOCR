@@ -64,13 +64,14 @@
     <button id="open" class="primary">Open the folder…</button>
     <label class="check"><input type="checkbox" id="byDisagreement" checked> disagreements first</label>
     <label class="check"><input type="checkbox" id="onlyTodo" checked> only what is left</label>
+    <label class="check"><input type="checkbox" id="onlyUnlabelled"> only pictures with no label at all</label>
     <div class="grow">
       <div class="meter"><div id="meterFill"></div></div>
       <div class="count" id="count">Nothing open yet.</div>
     </div>
   </div>
 
-  <div id="stage"><div class="card empty" id="emptyMsg">Open the folder that holds the saved subtitle pictures (the <code>evalset\raw</code> folder, or one game's folder in it). The page needs Microsoft Edge or Google Chrome, and reads and writes only that folder.</div></div>
+  <div id="stage"><div class="card empty" id="emptyMsg">Open the folder that holds the saved pictures: <code>Documents\maru-evalset\raw</code> (or one game's folder in it), where Maru saves them. Browsers refuse folders under AppData and other system folders, so the test set lives in Documents. The page needs Microsoft Edge or Google Chrome, and reads and writes only that folder.</div></div>
   <div class="status" id="status" role="status"></div>
 </main>
 
@@ -203,6 +204,7 @@
     const keepId = current ? current.item.id : null;
     let ordered = L.order(items, { disagreementsFirst: $('byDisagreement').checked });
     if ($('onlyTodo').checked) ordered = ordered.filter((i) => L.pending(i) || i.id === keepId);
+    if ($('onlyUnlabelled').checked) ordered = ordered.filter((i) => L.unlabelled(i) || i.id === keepId);
     queue = ordered;
     at = keepId ? Math.max(0, queue.findIndex((i) => i.id === keepId)) : 0;
     show();
@@ -210,8 +212,8 @@
 
   function meter() {
     const p = L.progress(items, edits);
-    $('meterFill').style.width = p.total ? `${((p.labelled + p.unreadable) / p.total) * 100}%` : '0';
-    const parts = [`${p.labelled} labelled`, `${p.unreadable} unreadable`, `${p.left} left`];
+    $('meterFill').style.width = p.total ? `${((p.labelled + p.unreadable + p.notSubtitle) / p.total) * 100}%` : '0';
+    const parts = [`${p.labelled} labelled`, `${p.unreadable} unreadable`, `${p.notSubtitle} not a subtitle`, `${p.left} left`];
     if (p.confirmed) parts.push(`you changed ${p.changed} of ${p.confirmed} drafts this session`);
     $('count').textContent = parts.join(' · ');
   }
@@ -243,8 +245,9 @@
 
     const meta = document.createElement('div');
     meta.className = 'meta';
-    const bits = [`${at + 1} of ${queue.length}`, item.info.game, item.info.title, item.info.confidence != null ? `reader confidence ${Math.round(item.info.confidence * 100)}%` : '', item.label != null ? 'already labelled' : '', item.unreadable ? 'marked unreadable' : ''];
+    const bits = [`${at + 1} of ${queue.length}`, `${item.game}/${item.png}`, item.info.game, item.info.title, item.info.confidence != null ? `reader confidence ${Math.round(item.info.confidence * 100)}%` : '', item.label != null ? 'already labelled' : '', item.unreadable ? 'marked unreadable' : '', item.notSubtitle ? 'marked not a subtitle' : ''];
     for (const b of bits.filter(Boolean)) { const s = document.createElement('span'); s.textContent = b; meta.append(s); }
+    if (L.provisional(item) && item.label == null) { const f = document.createElement('span'); f.className = 'flag'; f.textContent = 'provisional label: two readers agreed, nobody checked'; meta.append(f); }
     if (gap != null && gap > 0.02) { const f = document.createElement('span'); f.className = 'flag'; f.textContent = 'the readers disagree'; meta.append(f); }
 
     const list = document.createElement('div');
@@ -269,17 +272,18 @@
     const back = button('← Back', () => go(-1), 'Alt+←');
     back.disabled = at === 0;
     const skip = button('Skip →', () => go(1), 'Alt+→');
-    const bad = button('Unreadable', markUnreadable, 'Alt+U');
+    const bad = button('Unreadable', () => mark('unreadable'), 'Alt+U');
+    const notSub = button('Not a subtitle', () => mark('not-subtitle'), 'Alt+N');
     const tags = document.createElement('input');
     tags.className = 'tags'; tags.id = 'tags'; tags.placeholder = 'tags, e.g. outlined, busy'; tags.value = lastTags; tags.setAttribute('aria-label', 'tags');
     tags.addEventListener('input', () => { lastTags = tags.value; });
     const sp = document.createElement('span'); sp.className = 'spacer';
     const ok = button('Confirm ↵', confirm, 'Enter'); ok.classList.add('primary');
-    row.append(back, skip, bad, tags, sp, ok);
+    row.append(back, skip, bad, notSub, tags, sp, ok);
 
     const hint = document.createElement('div');
     hint.className = 'hint';
-    hint.innerHTML = '<kbd>Enter</kbd> saves the box as this picture’s label and moves on · type one line, joining two rows with a space · punctuation is optional · <kbd>Alt+U</kbd> if you cannot make out the text';
+    hint.innerHTML = '<kbd>Enter</kbd> saves the box as this picture’s label and moves on · <kbd>Shift+Enter</kbd> starts a new line: for a whole screen, one piece of text per line · punctuation is optional · <kbd>Alt+U</kbd> if you cannot make out the text · <kbd>Alt+N</kbd> if it is not a subtitle (a map, a menu, a logo)';
 
     card.append(shot, meta, list, box, row, hint);
     stage.append(card);
@@ -304,6 +308,7 @@
     try {
       await store.write(item, `${item.base}.txt`, text + '\n');
       if (item.unreadable) { await store.remove(item, item.unreadable); item.unreadable = null; }
+      if (item.notSubtitle) { await store.remove(item, item.notSubtitle); item.notSubtitle = null; }
       const tags = $('tags').value.trim();
       if (tags) await store.write(item, `${item.base}.tags`, tags + '\n');
       item.label = text;
@@ -313,14 +318,18 @@
     } catch (e) { status('Could not save: ' + (e.message || e), true); }
   }
 
-  async function markUnreadable() {
+  /** `unreadable` (cannot make out the text) or `not-subtitle` (a map, a menu, a logo): either way the picture is not scored. */
+  async function mark(kind) {
     if (!current) return;
     const { item } = current;
+    const field = kind === 'unreadable' ? 'unreadable' : 'notSubtitle';
+    const other = kind === 'unreadable' ? 'notSubtitle' : 'unreadable';
     try {
-      await store.write(item, `${item.base}.unreadable`, '');
+      await store.write(item, `${item.base}.${kind}`, '');
       if (item.label != null) { await store.remove(item, `${item.base}.txt`); item.label = null; }
-      item.unreadable = `${item.base}.unreadable`;
-      status('Marked unreadable; it will not be used.');
+      if (item[other]) { await store.remove(item, item[other]); item[other] = null; }
+      item[field] = `${item.base}.${kind}`;
+      status(kind === 'unreadable' ? 'Marked unreadable; it will not be used.' : 'Marked not a subtitle; it will not be used.');
       go(1);
     } catch (e) { status('Could not save: ' + (e.message || e), true); }
   }
@@ -330,12 +339,14 @@
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); confirm(); }
     else if (e.altKey && e.key === 'ArrowRight') { e.preventDefault(); go(1); }
     else if (e.altKey && e.key === 'ArrowLeft') { e.preventDefault(); go(-1); }
-    else if (e.altKey && (e.key === 'u' || e.key === 'U')) { e.preventDefault(); markUnreadable(); }
+    else if (e.altKey && (e.key === 'u' || e.key === 'U')) { e.preventDefault(); mark('unreadable'); }
+    else if (e.altKey && (e.key === 'n' || e.key === 'N')) { e.preventDefault(); mark('not-subtitle'); }
   });
 
   $('open').addEventListener('click', open);
   $('byDisagreement').addEventListener('change', rebuild);
   $('onlyTodo').addEventListener('change', rebuild);
+  $('onlyUnlabelled').addEventListener('change', rebuild);
   if (params.has('demo')) open();
   window.__labelReview = { get queue() { return queue; }, get items() { return items; } }; // for the browser check only
 })();

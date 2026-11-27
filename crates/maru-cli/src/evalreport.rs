@@ -410,8 +410,12 @@ pub fn saved_runs(report: &serde_json::Value) -> Vec<SavedRun> {
 }
 
 /// The pictures of a run that are in `split` (when one is asked for) and carry `tag` (when one is asked for).
+/// The tag that stands for "labelled by a person": every picture without the [`PROVISIONAL_TAG`].
+pub const PERSON_TAG: &str = "person";
+
 pub fn keep(results: &[CaseResult], split: Option<Split>, tag: Option<&str>) -> Vec<CaseResult> {
-    results.iter().filter(|r| split.is_none_or(|s| s == r.split) && tag.is_none_or(|t| r.tags.iter().any(|x| x == t))).cloned().collect()
+    let tagged = |r: &CaseResult, t: &str| if t == PERSON_TAG { !r.tags.iter().any(|x| x == PROVISIONAL_TAG) } else { r.tags.iter().any(|x| x == t) };
+    results.iter().filter(|r| split.is_none_or(|s| s == r.split) && tag.is_none_or(|t| tagged(r, t))).cloned().collect()
 }
 
 /// The comparison of several saved runs as Markdown tables: every engine overall, every engine game by game, and each
@@ -530,6 +534,18 @@ pub fn print_comparison(before_name: &str, after_name: &str, c: &Comparison) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_person_tag_keeps_every_picture_a_person_labelled_whatever_its_other_tags() {
+        let mut gold = result("g", "가", "가");
+        gold.tags = vec!["gold".into()];
+        let mut mine = result("g", "나", "나");
+        mine.tags = vec![];
+        let mut prov = result("g", "다", "다");
+        prov.tags = vec![PROVISIONAL_TAG.into()];
+        let kept = keep(&[gold, mine, prov], None, Some(PERSON_TAG));
+        assert_eq!(kept.iter().map(|r| r.truth.as_str()).collect::<Vec<_>>(), ["가", "나"]);
+    }
 
     fn info(game: &str, truth: &str) -> CaseInfo {
         CaseInfo { img: PathBuf::from("x.png"), rel: format!("{game}/x.png"), game: game.into(), tags: vec![], split: Split::Dev, truth: truth.into() }

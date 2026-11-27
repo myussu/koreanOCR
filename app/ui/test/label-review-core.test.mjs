@@ -37,9 +37,9 @@ test('the readings of a picture are the live draft first, then the other readers
 
 test('the box starts with the label if there is one, else the strongest reader that read something, else the live draft', () => {
   assert.deepEqual(L.startingText({ label: '내 글', draft: 'x', drafts: { 'paddle-vl': 'y' } }), { text: '내 글', from: 'label' });
-  assert.deepEqual(L.startingText({ draft: 'live', drafts: { 'paddle-vl': 'vl' } }), { text: 'vl', from: 'paddle-vl' });
-  assert.deepEqual(L.startingText({ draft: 'live', drafts: { 'paddle-vl': '' } }), { text: 'live', from: 'live' });
-  assert.deepEqual(L.startingText({ drafts: { windows: 'w' } }), { text: 'w', from: 'windows' });
+  assert.deepEqual(L.startingText({ draft: '라이브', drafts: { 'paddle-vl': '브이엘' } }), { text: '브이엘', from: 'paddle-vl' });
+  assert.deepEqual(L.startingText({ draft: '라이브', drafts: { 'paddle-vl': '' } }), { text: '라이브', from: 'live' });
+  assert.deepEqual(L.startingText({ drafts: { windows: '윈도' } }), { text: '윈도', from: 'windows' });
   assert.deepEqual(L.startingText({}), { text: '', from: 'none' });
   assert.equal(L.startingText({ label: '' }).from, 'label', 'an empty label that was written is still a label');
 });
@@ -86,11 +86,36 @@ test('file names in a folder are grouped by picture, and a file with no picture 
 });
 
 test('a label is one line with single spaces', () => {
-  assert.equal(L.cleanLabel('  오,\n하고   있구나 \r\n'), '오, 하고 있구나');
+  assert.equal(L.cleanLabel('  오,\n하고   있구나 \r\n'), '오,\n하고 있구나', 'line breaks stay: a whole screen is labelled one piece per line');
+  assert.equal(L.cleanLabel('\n\n 체력   100 \n\n장비\n'), '체력 100\n장비');
   assert.equal(L.cleanLabel(null), '');
 });
 
 test('progress counts what is labelled, unreadable and left, and how many of this session\'s labels were changed', () => {
   const items = [{ label: 'a' }, { label: 'b' }, { unreadable: 'x' }, {}, {}];
-  assert.deepEqual(L.progress(items, { one: true, two: false, three: false }), { total: 5, labelled: 2, unreadable: 1, left: 2, confirmed: 3, changed: 1 });
+  assert.deepEqual(L.progress(items, { one: true, two: false, three: false }), { total: 5, labelled: 2, unreadable: 1, notSubtitle: 0, left: 2, confirmed: 3, changed: 1 });
+});
+
+test('a picture can be marked as not a subtitle, apart from unreadable, and is then done', () => {
+  const groups = L.groupFiles(['m.png', 'm.not-subtitle', 'u.png', 'u.unreadable', 'p.png', 'p.provisional.txt', 'n.png', 'n.outside.txt']);
+  const by = Object.fromEntries(groups.map((g) => [g.id, g]));
+  assert.equal(by.m.notSubtitle, 'm.not-subtitle');
+  assert.equal(by.m.unreadable, null);
+  assert.ok(!L.pending(by.m) && !L.pending(by.u));
+  assert.deepEqual(L.progress(groups), { total: 4, labelled: 0, unreadable: 1, notSubtitle: 1, left: 2, confirmed: 0, changed: 0 });
+});
+
+test('pictures with a provisional label are told apart, and "no label at all" leaves them out', () => {
+  const prov = { id: 'p', label: null, drafts: { provisional: '원숭이가 셋…' } };
+  const none = { id: 'n', label: null, drafts: { outside: '원숭이가 셋' } };
+  const done = { id: 'd', label: '네', drafts: {} };
+  assert.ok(L.provisional(prov) && !L.provisional(none));
+  assert.deepEqual([prov, none, done].filter(L.unlabelled).map((i) => i.id), ['n']);
+});
+
+test('an outside reading without Hangul is a comment: never listed, never the starting text', () => {
+  const item = { label: null, drafts: { outside: 'The strip shows only a dark background.', paddle: '0 0' } };
+  assert.deepEqual(L.readings(item).map((r) => r.from), ['paddle'], 'a local reading stays listed');
+  assert.deepEqual(L.startingText(item), { text: '', from: 'none' }, 'but no reading without Hangul starts the box');
+  assert.equal(L.startingText({ label: null, drafts: { outside: '폐하?', paddle: '떼하?' } }).text, '폐하?');
 });
