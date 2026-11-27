@@ -190,6 +190,13 @@ enum Command {
         /// Compare this run, subtitle by subtitle, with a report saved earlier by `--save-report` (before and after a change).
         #[arg(long)]
         compare: Option<PathBuf>,
+        /// Drop lines with no Hangul read beside the subtitle, as live subtitles do with `[continuous] drop_stray_lines`.
+        #[arg(long)]
+        drop_stray_lines: bool,
+        /// `hybrid`: a line PP-OCR read with at least this confidence keeps its text when the reader's differs by one
+        /// syllable (`[ocr] keep_sure_lines`).
+        #[arg(long, value_name = "CONFIDENCE")]
+        keep_sure: Option<f32>,
     },
     /// Print the comparison tables for reports saved by `eval-ocr --save-report`: the first report is the one the
     /// others are judged against, subtitle by subtitle.
@@ -753,7 +760,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             // Nothing read *because* something is wrong is a failure; an honestly empty screen is not.
             Ok(if report.items.is_empty() && !report.errors.is_empty() { 1 } else { 0 })
         }
-        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, det, rec, dict, det_tuning, device, reader_dir, reader_html, connection, name: run_name, labels, scale, write_drafts, draft_tag, draft_labelled, keep_drafts, split, save_report, compare } => {
+        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, det, rec, dict, det_tuning, device, reader_dir, reader_html, connection, name: run_name, labels, scale, write_drafts, draft_tag, draft_labelled, keep_drafts, split, save_report, compare, drop_stray_lines, keep_sure } => {
             use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};
             if (run_name.is_some() || draft_tag.is_some()) && engine.len() != 1 {
                 bail!("--name and --draft-tag name one engine: give a single --engine");
@@ -779,6 +786,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 "det": cfg.ocr.det_model.as_ref().map(|p| p.display().to_string()), "rec": cfg.ocr.rec_model.as_ref().map(|p| p.display().to_string()),
                 "dict": cfg.ocr.dict_path.as_ref().map(|p| p.display().to_string()), "det_tuning": det_tuning, "device": cfg.ocr.device,
                 "reader_dir": reader_dir.as_ref().map(|p| p.display().to_string()), "reader_html": reader_html, "vlm_prompt": vlm_prompt, "vlm_args": vlm_args,
+                "drop_stray_lines": drop_stray_lines, "keep_sure": keep_sure,
             });
             let config = cfg.clone();
             // A hosted reader needs no engine on this PC; everything else does. Scoring must leave nothing behind in the data folder.
@@ -849,7 +857,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                         match start_vision_server(&label, attempts, &paths, SERVER_READY).await {
                             Some((server, cfg)) => {
                                 let reader: Arc<dyn maru_ocr::OcrEngine> = Arc::new(VlmOcr::new(&format!("http://127.0.0.1:{}", cfg.port), &cfg, vlm_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT)).answering_html(reader_html));
-                                let hybrid = maru_engine::hybrid_ocr::HybridOcr::new(detector, reader);
+                                let hybrid = maru_engine::hybrid_ocr::HybridOcr::new(detector, reader).keeping_sure_lines(keep_sure);
                                 let name = if reader_dir.is_some() { format!("PP-OCR + {label} (hybrid)") } else { "PP-OCR + PaddleOCR-VL (hybrid)".to_string() };
                                 (name, Arc::new(hybrid) as Arc<dyn maru_ocr::OcrEngine>, Some(server))
                             }
@@ -911,6 +919,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     }
                 };
                 let name = run_name.clone().unwrap_or(name);
+                let ocr = if drop_stray_lines { maru_ocr::stray::StrayLinesOcr::wrap(ocr) } else { ocr };
                 if write_drafts {
                     // clap names the engine the way the command line spells it (`paddle-vl`), which is what the review page lists it as.
                     let tag = draft_tag.clone().or_else(|| clap::ValueEnum::to_possible_value(&e).map(|v| v.get_name().to_string())).unwrap_or_else(|| "draft".into());

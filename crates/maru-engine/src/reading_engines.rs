@@ -88,9 +88,14 @@ impl ReadingEngines {
     /// `detector` paired with the shared reading model when `ocr` asks for one and there is one.
     pub(crate) fn with_reader(&self, detector: Arc<dyn OcrEngine>, ocr: &OcrConfig) -> Arc<dyn OcrEngine> {
         match (ocr.vision_reader, crate::engine::lock(&self.reader).clone()) {
-            (true, Some(reader)) => Arc::new(HybridOcr::new(detector, reader)),
+            (true, Some(reader)) => Arc::new(HybridOcr::new(detector, reader).keeping_sure_lines(ocr.keep_sure_lines)),
             _ => detector,
         }
+    }
+
+    /// Live subtitles' engine with what only they do to a reading: `[continuous] drop_stray_lines`.
+    pub(crate) fn live(&self, engine: Arc<dyn OcrEngine>) -> Arc<dyn OcrEngine> {
+        if self.cfg.continuous.drop_stray_lines { maru_ocr::stray::StrayLinesOcr::wrap(engine) } else { engine }
     }
 
     /// The engine live subtitles read with in `exe`, when its `[[profile]]` reads differently from the usual live
@@ -112,7 +117,7 @@ impl ReadingEngines {
             tracing::warn!("{note}");
         }
         let detector = self.detector(&there.ocr, true).map_err(|e| tracing::warn!("live subtitles in {exe}: {e}")).ok()?;
-        let engine = self.with_reader(detector, &there.ocr);
+        let engine = self.live(self.with_reader(detector, &there.ocr));
         tracing::info!(program = %exe, ocr = engine.name(), "live subtitles read as this program's profile says");
         crate::engine::lock(&self.programs).push((exe, engine.clone()));
         Some(engine)
@@ -317,6 +322,30 @@ mod tests {
         assert_eq!(reader_wait_notice(true, true, &LlmStatus::Ready), None);
         assert_eq!(reader_wait_notice(false, true, &LlmStatus::Disabled), None, "captures without the reading model");
         assert_eq!(reader_wait_notice(true, false, &LlmStatus::Disabled), None, "started at boot, not on demand");
+    }
+
+    /// A subtitle with a mark of the background read as a line of its own.
+    struct WithStray;
+    impl OcrEngine for WithStray {
+        fn name(&self) -> &'static str {
+            "paddle"
+        }
+        fn recognize(&self, _: &RgbImage) -> maru_ocr::Result<OcrOutput> {
+            let line = |t: &str, y: f32, h: f32| OcrLine { text: t.into(), rect: maru_core::Rect::new(100.0, y, 200.0, h), confidence: 0.9, words: vec![] };
+            Ok(OcrOutput { lines: vec![line("FIRST", 0.0, 100.0), line("원숭이가 셋…", 120.0, 35.0)] })
+        }
+    }
+
+    #[test]
+    fn live_subtitles_drop_stray_lines_only_when_asked() {
+        let (off, root) = engines(Config::default(), Arc::new(AtomicUsize::new(0)));
+        assert_eq!(read(&off.live(Arc::new(WithStray))), "FIRST\n원숭이가 셋…");
+        std::fs::remove_dir_all(root).ok();
+        let mut cfg = Config::default();
+        cfg.continuous.drop_stray_lines = true;
+        let (on, root) = engines(cfg, Arc::new(AtomicUsize::new(1)));
+        assert_eq!(read(&on.live(Arc::new(WithStray))), "원숭이가 셋…");
+        std::fs::remove_dir_all(root).ok();
     }
 
     #[test]

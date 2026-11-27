@@ -295,6 +295,9 @@ pub struct OcrConfig {
     pub reader_args: Vec<String>,
     /// That model answers in HTML (Surya does): Maru takes the tags out.
     pub reader_html: bool,
+    /// In the hybrid, a line PP-OCR read with at least this confidence (0..1) keeps its own text when the reading
+    /// model's differs from it by a single syllable. Unset: the reading model's text always wins.
+    pub keep_sure_lines: Option<f32>,
 }
 
 impl Default for OcrConfig {
@@ -315,6 +318,7 @@ impl Default for OcrConfig {
             reader_prompt: None,
             reader_args: Vec::new(),
             reader_html: false,
+            keep_sure_lines: None,
         }
     }
 }
@@ -528,11 +532,14 @@ pub struct ContinuousConfig {
     /// write down what the subtitles really say and score OCR changes on your own games. Off by default; nothing leaves the
     /// PC. See docs/MANUAL_TESTS.md (M-48).
     pub save_reads: bool,
+    /// Drop lines with no Hangul read beside a subtitle (`M`, `0`, `FIRST`: marks of the background), keeping Latin
+    /// letters and digits inside a Korean line and a number cut off the end of one (see `maru_ocr::stray`).
+    pub drop_stray_lines: bool,
 }
 
 impl Default for ContinuousConfig {
     fn default() -> Self {
-        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false, translation: Default::default(), ocr_scale: 1.0, save_reads: false }
+        Self { region: None, interval_ms: 100, stable_ms: 150, diff_threshold: 0.01, history_len: 300, linger_ms: 1500, context_lines: 4, cpu_ocr: false, max_in_flight: 0, filter_ocr_jitter: false, translation: Default::default(), ocr_scale: 1.0, save_reads: false, drop_stray_lines: false }
     }
 }
 
