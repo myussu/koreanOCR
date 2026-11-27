@@ -240,6 +240,10 @@ hint = "dialogue from a fantasy role-playing game"
 gloss_mode = "all"
 [profile.glossary]
 "이도현" = "Lee Do-hyun"
+# dialects = ["gyeongsang"]    # regional dialects the word splitter (Kiwi) may recognise in this program's lines:
+#                              # gyeongsang, jeolla, chungcheong, gangwon, gyeonggi, jeju, hwanghae, hamgyeong. Default: none.
+# typo_correction = false      # let Kiwi correct typos while it splits the lines; used only if Kiwi passes a test with it in
+#                              # a separate process (Kiwi 0.23.1 crashes with it, so it stays off; see docs/reports/run-4.md)
 # [profile.reading.live]      # this program reads live subtitles differently (any key of [reading.live]; the rest stay)
 # reader = true               # e.g. stylised lettering the reading model reads better
 
