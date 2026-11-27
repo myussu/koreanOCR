@@ -75,7 +75,7 @@ cd app\src-tauri; cargo run --release      # the overlay (lives in the system tr
 | An AMD or Intel graphics card | Vulkan with the small model (Windows does not report their memory; turn `lite` off in Settings if the card has 12 GB or more) |
 | Only integrated graphics, or no card | CPU with the small model; it warns if memory is low |
 
-It asks: whether to use that recommendation (if not, which build and which model), whether to add the OCR reading model (about 1.8 GB, only offered with the full model) and the Korean voice (about 2.5 GB, off unless you say yes), then shows what will be downloaded, how much, and whether the disk has room. Nothing is installed before you confirm, and ending the input (Ctrl+D) cancels. It writes your choices into `config.toml` (an existing file keeps its comments and other settings), installs, and finishes with the full check. A step that fails (usually the network) does not stop the others; run `maru setup` again and it skips what is already installed.
+It asks: whether to use that recommendation (if not, which build and which model), whether to add the OCR reading model (about 3.6 GB: PaddleOCR-VL 1.5 and 1.6, only offered with the full model) and the Korean voice (about 2.5 GB, off unless you say yes), then shows what will be downloaded, how much, and whether the disk has room. Nothing is installed before you confirm, and ending the input (Ctrl+D) cancels. It writes your choices into `config.toml` (an existing file keeps its comments and other settings), installs, and finishes with the full check. A step that fails (usually the network) does not stop the others; run `maru setup` again and it skips what is already installed.
 
 `maru setup wizard --dry-run` shows what it found and what it would do, without changing anything. `--yes` takes every recommendation without asking, `--backend cuda|vulkan|cpu` replaces the recommended llama.cpp build, and `--force` downloads llama.cpp again even if a `llama-server` already works (needed to switch a PC from one build to another; quit Maru first). Each step is also its own command (`maru setup llm`, `kiwi`, `ocr`, `ocr-vl`, `tts`, and `maru dict download`) if you prefer to run them yourself.
 
@@ -168,8 +168,30 @@ the partial one. Lines of under four syllables must match exactly, and lines tha
 dropped from the line's ends, and a reading with no Korean at all (a game's own `AUTO`/`LOG` label left alone when the
 subtitle goes) counts as an empty subtitle area. A line typing out letter by letter is listed once, as the full line.
 A line that replaces another without a gap is still read as new when it adds or drops a negation or changes a number,
-however alike the rest is (`오늘은 성에 간다` → `오늘은 성에 안 간다`). In the first seconds after live subtitles start, while the
-PaddleOCR-VL reader loads, lines are read by PP-OCR alone instead of being missed (a little less accurately).
+however alike the rest is (`오늘은 성에 간다` → `오늘은 성에 안 간다`).
+
+**How each task reads the screen.** Live subtitles read with PP-OCR alone and its small line finder (PP-OCRv6 small): on
+468 labelled game subtitles that misread fewer lines than PP-OCR with the PaddleOCR-VL reading model, in about a fifth of
+the time, and the reading model then never takes video memory while you play. Captures (a selection that has to be read
+from pixels, a region, hover) keep the reading model, now PaddleOCR-VL 1.6, which helps with menus and stylised lettering;
+it loads with the first capture that needs it, and that capture says it is waiting. The screen scan reads the whole
+screen with PP-OCR at full size. **Settings → Live subtitles** and **Settings → Captures** choose the line finder, the
+letter reader and the reading model for each; the overview's **Read the screen** step shows what each task uses and
+where it runs. A game whose lettering the reading model reads better can keep it for live subtitles alone:
+
+```toml
+[[profile]]
+name = "Xenoblade"
+exe = ["yuzu.exe"]
+[profile.reading.live]
+reader = true
+```
+
+Run `maru setup ocr` and `maru setup ocr-vl` again after updating: they add the small line finder and PaddleOCR-VL 1.6
+(checked against their published hashes; files an earlier measurement left on the PC are reused). Until then Maru uses
+what is installed and says so. Your `config.toml` gets a `[reading]` table the first time the new version starts
+(the file as it was is kept beside it as `config.toml.before-reading-<date>.bak`); a detector, recogniser or reading model
+you had set yourself stays.
 Live lines are saved in `history.db` in Maru's data folder, so
 **History → Live subtitles** still shows your last cutscene after a restart.
 
@@ -246,9 +268,10 @@ if the GPU cannot run it, Maru uses the CPU. To stay on the CPU but leave cores 
 
 For live speed comparisons, **Settings → Live subtitles** has experimental options (save and restart Maru):
 
-* **Use CPU PP-OCR for live subtitles** (`continuous.cpu_ocr = true`) skips PaddleOCR-VL requests for the live area. Manual translation,
-  hover and scans keep their configured OCR. The reading model stays loaded for those features; this option does not free its VRAM.
-  PP-OCR must already be installed. Recognition can differ, so compare the captured Korean as well as the English on your own game.
+* **Drop marks read beside the subtitle** (`continuous.drop_stray_lines`, Advanced, off): leaves out separate lines with no Hangul
+  that PP-OCR reads from the background (`M`, `0`, `FIRST`); Latin letters and digits inside a Korean line stay. No subtitle read
+  worse in 468, but with the small line finder too few were better to call it proven, so it is off. The older
+  `continuous.cpu_ocr` switch is now what live subtitles do by default; it still keeps live PP-OCR on the processor.
 * **Active live translations** (`continuous.max_in_flight`): `0` keeps the existing detached requests, `1` queues lines in capture order
   so each can see the previous completed answer, and `2` permits two overlapping translations. Waiting lines are retained for history,
   rather than discarded. With `2`, a request can start before the preceding answer is available as context.
@@ -530,15 +553,19 @@ controller behavior and manual-reading feedback checks.
 
 To find out whether an OCR change really helps *your* games, you need a few hundred subtitles with their true text. Turn on
 Settings → Live subtitles → Advanced → **Save the subtitles it reads** (`[continuous] save_reads = true`), restart live mode and play: every line
-the watcher reads is saved as a picture plus the reader's draft text under `<data folder>\evalset\raw\<game>\` (`maru doctor` prints the data folder).
+the watcher reads is saved as a picture plus the reader's draft text under `Documents\maru-evalset\raw\<game>\` (browsers refuse to open
+folders under AppData, and the label page has to; **Folder for the subtitles it saves** names another one).
 Nothing leaves your PC and nothing is saved while the setting is off. The pictures are the raw material; the true text is still written by you:
 
-1. *(Optional, recommended)* Get a second opinion on every picture: `maru eval-ocr <data folder>\evalset\raw --engine paddle-vl --write-drafts`
+1. *(Optional, recommended)* Get a second opinion on every picture: `maru eval-ocr Documents\maru-evalset\raw --engine paddle-vl --write-drafts`
    (needs `maru setup ocr-vl`; it writes `name.paddle-vl.txt` beside each unlabelled picture and scores nothing).
-2. Open `tools\label_review.html` in Edge or Chrome, press **Open the folder…** and pick `evalset\raw`. For each picture the box starts with the
-   strongest reading; fix it so it says exactly what is on screen and press **Enter**. Pictures where the readers disagree come first, because
-   that is where a draft is most likely to be wrong. **Alt+U** marks a picture you cannot read. Labels are saved as `name.txt` next to the picture.
-3. Score on it: `maru eval-ocr <data folder>\evalset\raw --engine paddle` (it reads the game folders below it).
+2. Open `tools\label_review.html` in Edge or Chrome, press **Open the folder…** and pick `Documents\maru-evalset\raw`. For each picture the
+   box starts with the strongest reading that has Hangul; fix it so it says exactly what is on screen and press **Enter** (**Shift+Enter** for a
+   new line: a whole screen is labelled one piece of text per line). Pictures where the readers disagree come first. The header shows the file
+   name and flags a provisional label; **only pictures with no label at all** hides those. **Alt+U** marks a picture you cannot read, **Alt+N**
+   one that is not a subtitle (a map, a menu); both are left out of scoring. Labels are saved as `name.txt` next to the picture and always win
+   over a provisional one.
+3. Score on it: `maru eval-ocr Documents\maru-evalset\raw --engine paddle` (it reads the game folders below it).
 
 `tools/sample_subtitle_frames.py` makes the same kind of pictures from a screen recording (and covers subtitles the watcher never noticed).
 
@@ -561,13 +588,23 @@ readers agree on are the easy ones. `maru eval-ocr` ignores it unless you ask (`
 so on every table. `tools\label_review.html` starts each box with it, so confirming is one press of **Enter**; what you confirm
 becomes `name.txt` and counts as yours.
 
-**Comparing OCR pieces.** `python tools/compare_ocr.py <data folder>\evalset\raw` scores today's setup and every candidate
+**Whole screens.** Menus and HUDs have many texts in no fixed order, so `python tools/scan_lines.py label <set>` and
+`score <set> a.json b.json` work line by line (a label lists the screen's Korean lines; each is looked for anywhere in
+what an engine read); `maru eval-ocr <set> --engine paddle --scan` reads as the screen scan does.
+
+**Comparing OCR pieces.** `python tools/compare_ocr.py` (default set: `Documents\maru-evalset\raw`) scores today's two setups and every candidate
 whose files are on this PC, one after another, and prints for each: letter error, exact lines, missed lines, lost digits,
 flipped negations, time per picture (median and 95th percentile), peak memory and video memory, game by game, and how many
 subtitles it reads better and worse than today's with a sign test. It takes about half an hour for 550 pictures;
 `--tables` prints the tables again from the saved runs, `--only NAME` runs a few (`maru eval-report today.json other.json
 --split held-out` does the same for any reports saved with `--save-report`). Close games first, or the times mean
-little. What was measured so far, and why nothing was switched on, is in [docs/reports/run-3.md](docs/reports/run-3.md).
+little. With `--labels all` it prints the whole set first, then the pictures you labelled, then the provisional ones. What
+was measured and decided is in [docs/reports/run-3.md](docs/reports/run-3.md) and [docs/reports/run-4.md](docs/reports/run-4.md).
+
+**Checking the app end to end.** `node tools\e2e_app.mjs --app app\src-tauri\target\release\maru-app.exe --out <empty folder>
+[--history <a copy of history.db>]` starts the app with a temporary home (Anki off, no model), walks every Settings section
+through the app's own windows, changes and saves one setting in each, checks `config.toml`, and opens Make cards on a
+starred line. It never moves the mouse or presses keys on the desktop.
 
 ## Game menus: screen labels
 
@@ -581,6 +618,10 @@ Press `Ctrl+Alt+S` and Maru reads the whole screen the pointer is on (borderless
 * **Separate a joined label.** Right-click → **Separate joined label** restores the original boxes and forgets the join, including saved joins from earlier sessions and joins you corrected. Selecting a joined label also offers **Separate** on the chip. Existing collapsed joins are rebuilt with word boundaries on rescan; they do not need to be recreated before separating. Sentence joins use the full snapshot analysis, with individually clickable words and deep dives.
 * **Fixed translations.** Put game terms in an app profile's `glossary` and they are used verbatim and never sent to the model.
 * **Try it on a screenshot first:** `maru scan menu.png --boxes found.png` lists what is found and labelled, and outlines it, without any overlay.
+* **Dialects.** `dialects = ["gyeongsang"]` in a game's `[[profile]]` lets the word splitter (Kiwi) recognise that dialect in
+  its lines (`jeolla`, `chungcheong`, `gangwon`, `gyeonggi`, `jeju`, `hwanghae`, `hamgyeong` too); off by default.
+  `typo_correction = true` asks Kiwi to correct typos, but only takes effect if Kiwi passes a test with it first: the Kiwi
+  Maru uses (0.23.1) does not, so it stays off.
 * **Lighter beside a game.** `lite = true` in `config.toml` (or `MARU_LITE=1` for one run) turns the OCR reading model off and swaps in a smaller translation model; see `[lite_profile]`.
 
 ## The command line
