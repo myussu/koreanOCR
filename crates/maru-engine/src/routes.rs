@@ -441,27 +441,65 @@ impl Engine {
         if first.is_local() && self.inner.live_active.load(Ordering::Acquire) && !first.loaded() {
             let mut status = self.status_of(task, &order);
             status.state = State::NotLoaded;
-            status.message = "This PC's model is not loaded while live subtitles run. Test it after they stop.".into();
+            status.message = NOT_BESIDE_LIVE.into();
             return status;
         }
+        let (problem, took) = self.ask_once(&first).await;
+        let mut status = self.status_of(task, &order);
+        if problem.is_none() {
+            status.message = format!("{} answered in {took:.1} s.", first.name());
+        }
+        status
+    }
+
+    /// Settings' Test for a connection picked on the page but not saved yet ("Test your choice"), by its name:
+    /// `local` or a saved connection. Nothing is saved or restarted; the answer is remembered like any other, so the
+    /// connection's dot is right once it is chosen. This PC's model is not loaded beside live subtitles.
+    pub async fn test_connection(&self, connection: &str) -> ConnectionCheck {
+        let wanted = connection.trim();
+        let Some(route) = self.inner.routes().all.iter().find(|r| r.connection.eq_ignore_ascii_case(wanted)).cloned() else {
+            let message = if wanted.eq_ignore_ascii_case(LOCAL) { "This PC has no model set up (Settings → Connections).".to_string() } else { format!("There is no saved connection called {wanted}; save it first.") };
+            return ConnectionCheck { connection: wanted.to_string(), model: String::new(), place: None, state: State::Off, message };
+        };
+        let check = |state: State, message: String| ConnectionCheck { connection: route.connection.clone(), model: route.model.clone(), place: Some(route.place), state, message };
+        if route.is_local() && self.inner.live_active.load(Ordering::Acquire) && !route.loaded() {
+            return check(State::NotLoaded, NOT_BESIDE_LIVE.into());
+        }
+        match self.ask_once(&route).await {
+            (None, took) => check(State::Working, format!("{} answered in {took:.1} s.", route.name())),
+            (Some(problem), _) => check(problem.into(), sentence(route.name(), problem)),
+        }
+    }
+
+    /// One short fixed question to `route`, remembered; the problem, if any, and the seconds it took.
+    async fn ask_once(&self, route: &Route) -> (Option<Problem>, f32) {
         let started = Instant::now();
         let opts = ChatOpts { max_tokens: Some(16), ..Default::default() };
-        let asked = tokio::time::timeout(Duration::from_secs(90), first.client.stream_chat_reply(&[Message::user("안녕")], &opts, &mut |_| {})).await;
+        let asked = tokio::time::timeout(Duration::from_secs(90), route.client.stream_chat_reply(&[Message::user("안녕")], &opts, &mut |_| {})).await;
         let problem = match asked {
             Ok(Ok(_)) => None,
             Ok(Err(error)) => {
-                tracing::warn!("testing {} ({}): {error}", first.connection, first.model);
+                tracing::warn!("testing {} ({}): {error}", route.connection, route.model);
                 Some(classify(&error))
             }
             Err(_) => Some(Problem::Unreachable),
         };
-        remember(&self.inner, &first, problem);
-        let mut status = self.status_of(task, &order);
-        if problem.is_none() {
-            status.message = format!("{} answered in {:.1} s.", first.name(), started.elapsed().as_secs_f32());
-        }
-        status
+        remember(&self.inner, route, problem);
+        (problem, started.elapsed().as_secs_f32())
     }
+}
+
+const NOT_BESIDE_LIVE: &str = "This PC's model is not loaded while live subtitles run. Test it after they stop.";
+
+/// What asking one connection found ("Test your choice" in Settings).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct ConnectionCheck {
+    pub connection: String,
+    pub model: String,
+    pub place: Option<Place>,
+    pub state: State,
+    /// One plain sentence.
+    pub message: String,
 }
 
 #[cfg(test)]

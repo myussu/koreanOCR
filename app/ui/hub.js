@@ -6,6 +6,10 @@ import { resourcesView } from './resources.js';
 import { readingView } from './reading.js';
 import { mineSheet } from './mine.js';
 import { captionsLine } from './captions-core.js';
+import { canMine, sameLine, withPendingLine } from './history-core.js';
+import { routeLine, shortcutText } from './launcher-core.js';
+
+const TASK_NAMES = { live: 'Live subtitles', capture: 'Captures', card_meanings: 'Card meanings', card_sentence: 'Card sentence translation' };
 
 const view = document.getElementById('view');
 const tabs = [...document.querySelectorAll('#tabs button')];
@@ -101,9 +105,11 @@ async function ankiReview(s) {
 let historyMode = 'all'; // 'all' (newest first), 'live' (subtitles, in the order they were said) or 'starred'
 
 async function history() {
-  const [all, starred] = await Promise.all([invoke('history'), invoke('history_starred').catch(() => [])]);
+  const [all, starred, pending] = await Promise.all([invoke('history'), invoke('history_starred').catch(() => []), invoke('take_pending_cards').catch(() => null)]);
+  // The panel's "Make cards" sent a line: show everything and open that line's sheet.
+  if (pending) historyMode = 'all';
   const live = liveHistory(all);
-  const items = historyRows(historyMode, all, starred);
+  const items = withPendingLine(historyRows(historyMode, all, starred), pending);
   const chip = (mode, label) => h('button', { class: 'chip', 'aria-pressed': String(historyMode === mode), text: label, onclick: () => { historyMode = mode; show('history'); } });
   const bar = h('div', { class: 'chips' }, chip('all', 'Everything'), chip('live', `Live subtitles (${live.length})`), chip('starred', `★ Starred (${starred.length})`));
   if (!items.length) {
@@ -118,9 +124,9 @@ async function history() {
       class: 'star', 'aria-pressed': String(!!i.starred), title: i.starred ? 'Take the star off' : 'Star this line to study it later', text: i.starred ? '★' : '☆',
       onclick: (e) => { e.stopPropagation(); invoke('history_star', { savedId: i.saved_id, starred: !i.starred }).then(() => show('history')).catch((err) => alert(String(err))); },
     });
-  // "Make cards" opens the mining sheet (mine.js) under its line; one at a time.
+  // "Make cards" opens the mining sheet (mine.js) under its line; one at a time. Captures get it as well as live lines.
   const mine = (i) =>
-    i.live &&
+    canMine(i) &&
     h('button', {
       class: i.mined ? 'mine-open done' : 'mine-open', title: 'Make Anki cards from this line: its words and the line itself', text: i.mined ? '✓ Cards made' : 'Make cards',
       onclick: (e) => {
@@ -149,6 +155,10 @@ async function history() {
   const rows = items.map(row);
   // hub.html?mine#history opens the cards sheet of the first live line (how the sheet is photographed with demo data).
   if (new URLSearchParams(location.search).has('mine')) setTimeout(() => rows.find((r) => r.querySelector('.mine-open'))?.querySelector('.mine-open').click(), 0);
+  if (pending) {
+    const at = items.findIndex((i) => sameLine(i, pending));
+    setTimeout(() => { const open = rows[at]?.querySelector('.mine-open'); open?.click(); rows[at]?.scrollIntoView?.({ block: 'start' }); }, 0);
+  }
   return [bar, ...rows];
 }
 
@@ -161,14 +171,22 @@ async function status() {
   const area = s.live_area && `${Math.round(s.live_area.w)}×${Math.round(s.live_area.h)} at (${Math.round(s.live_area.x)}, ${Math.round(s.live_area.y)})`;
   // Captions the browser extension sends (docs/YOUTUBE_CAPTIONS.md).
   const captions = captionsLine(await invoke('captions_status').catch(() => null));
+  // Who answers each task right now, as Settings names it (the place to look when something is slow).
+  const tasks = await invoke('task_status').catch(() => []);
+  const who = (t) => {
+    const r = routeLine({ tasks }, t.task);
+    return r && h('span', { title: r.title }, h('b', { text: r.text }), r.where ? ` · ${r.where}` : '', h('span', { class: `flag ${r.kind === 'ok' ? 'on' : r.kind === 'bad' ? 'bad' : 'off'}`, text: ` · ${r.state}` }));
+  };
+  const keyRow = (label, keys) => row(label, keys ? h('kbd', { text: shortcutText(keys) }) : h('span', { class: 'status', text: 'none set (Settings → Shortcuts)' }));
   return [
     h('h4', { text: 'Right now' }),
     h('table', {}, row('Hover mode', [on(s.hover_mode), ' ', h('kbd', { text: k.hover })]), row('Live subtitles', [on(s.live_mode, area), ' ', h('kbd', { text: k.continuous })]), row('YouTube captions', captions.on ? on(true, captions.text) : captions.text), row('Screen labels', [on(s.scan_visible), ' ', h('kbd', { text: k.scan })]), row('Lite (game) profile', s.lite ? on(true, 'lighter models') : 'off'), row('Speech', s.tts === 'ready' ? on(true, s.tts_source === 'local' ? 'voice on this PC' : 'voice from a server') : s.tts === 'off' ? 'off (Settings → Speech)' : s.tts), row('OCR reading model', s.ocr_reader === 'ready' ? on(true, 'PP-OCR + PaddleOCR-VL') : s.ocr_reader === 'off' ? 'not in use (PP-OCR only)' : s.ocr_reader)),
     s.vocab && h('p', {}, [['words', s.vocab.total], ['saved', s.vocab.saved], ['known', s.vocab.known], ['due', s.vocab.due_now]].map(([l, v]) => h('span', { class: 'stat' }, h('b', { text: v }), l))),
+    ...(tasks.length ? [h('h4', { text: 'Who answers' }), h('table', {}, tasks.map((t) => row(TASK_NAMES[t.task] ?? t.label, who(t) ?? t.message)))] : []),
     h('h4', { text: 'Components' }),
-    h('table', {}, row('Reviews', s.anki ? 'in Anki' : 'in Maru'), row('Language model', s.llm), row('Korean analyser', s.analyser), row('Dictionary', s.dictionary ? 'installed' : 'not installed (maru dict download)'), row('OCR', s.ocr ? 'ready' : 'not available (maru setup ocr)')),
+    h('table', {}, row('Reviews', s.anki ? 'in Anki' : 'in Maru'), row("This PC's model", s.llm), row('Korean analyser', s.analyser), row('Dictionary', s.dictionary ? 'installed' : 'not installed (maru dict download)'), row('OCR', s.ocr ? 'ready' : 'not available (maru setup ocr)')),
     h('h4', { text: 'Shortcuts' }),
-    h('table', {}, row('Translate selection', h('kbd', { text: k.translate })), row('Pick a region', h('kbd', { text: k.region })), row('Hover mode', h('kbd', { text: k.hover })), row('Continuous mode', h('kbd', { text: k.continuous })), row('Continuous: choose area', h('kbd', { text: k.continuous_area })), row('Label all Korean text on screen', h('kbd', { text: k.scan })), row('Translate and read aloud', h('kbd', { text: k.speak })), row('History', h('kbd', { text: k.history })), row('Star the live subtitle line', h('kbd', { text: k.star || '—' })), row('Dismiss panel', h('kbd', { text: k.dismiss }))),
+    h('table', {}, keyRow('Live subtitles on / off', k.continuous), keyRow('Live subtitles: choose the area', k.continuous_area), keyRow('Star the live subtitle line', k.star), keyRow('Snapshot a region', k.region), keyRow('Translate the selection', k.translate), keyRow('Hover lookup on / off', k.hover), keyRow('Label all Korean on screen', k.scan), keyRow('Translate and read aloud', k.speak), keyRow('Read the saved game area again', k.reading_again), keyRow('History', k.history), keyRow('Hide the panel and labels', k.dismiss), keyRow('Floating controls', k.launcher), keyRow('Controls wheel', k.wheel)),
     h('h4', { text: 'Notes' }),
     ...s.notes.map((n) => h('p', { class: 'status', text: n })),
   ];
@@ -241,6 +259,7 @@ if (!inTauri) {
     restart_app: () => {},
     task_status: () => ['live', 'capture', 'card_meanings', 'card_sentence'].map((task) => demoTask(task, false)),
     task_test: ({ task }) => new Promise((resolve) => setTimeout(() => resolve(demoTask(task, true)), 500)),
+    connection_test: ({ connection }) => new Promise((resolve) => setTimeout(() => resolve({ connection, model: 'gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL', place: 'this_pc', state: 'working', message: "This PC's model answered in 2.1 s." }), 500)),
     connection_check: ({ name, endpoint }) => new Promise((resolve) => setTimeout(() => resolve(name === 'Gemini' ? { state: 'quota', message: 'Gemini has no quota left.', endpoint: null } : /^https?:\/\//.test(endpoint) ? { state: 'working', message: `${name || 'The server'} answered in 0.4 s.`, endpoint } : { state: 'input', message: 'Enter a complete server address, such as http://192.168.1.20:11434.', endpoint: null }), 450)),
     anki_check: () => 'Anki is reachable (AnkiConnect v6); the note type "Maru Korean" is ready; 7 decks.',
     anki_sync: () => null,
@@ -279,9 +298,11 @@ if (!inTauri) {
     mine_sentence_translation: ({ ask }) => new Promise((resolve) => setTimeout(() => resolve(ask?.connection ? { translation: 'I thought I would never get to see you again.', answered: { connection: ask.connection, model: 'demo', place: 'network' }, attempts: [], note: null } : { translation: null, answered: null, attempts: [], note: null }), 400)),
     mine_add: ({ request }) => new Promise((resolve) => setTimeout(() => resolve({ audio_note: null, outcomes: [...request.words.map((w, n) => n === 1 ? { what: w.key, kind: 'word', result: 'failed', detail: 'Another Anki add is still running; wait for it to finish.' } : { what: w.key, kind: 'word', result: 'added', detail: request.reverse ? `2 cards: ${request.deck}, reverse in ${request.deck}::Reverse` : `1 card in ${request.deck}` }), ...(request.sentence_card ? [{ what: request.sentence, kind: 'sentence', result: 'added', detail: `sentence card in ${request.sentence_deck}` }] : [])] }), 700)),
     history_star: ({ savedId, starred }) => { if (starred) demoStars.add(savedId); else demoStars.delete(savedId); },
+    // hub.html?cards#history: the panel's "Make cards" handed over a capture that History does not list.
+    take_pending_cards: (() => { let once = new URLSearchParams(location.search).has('cards'); return () => (once ? ((once = false), { id: 9, sentence: '상자를 열면 열쇠가 나옵니다', translation: 'If you open the box, a key comes out.', app: 'eden.exe' }) : null); })(),
     history_open: () => {},
     captions_status: () => ({ enabled: true, listening: true, port: 18098, problem: null, accepted: 12, dropped: 3, refused: 0 }),
-    status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'loads on demand', analyser: 'kiwi', ocr: true, dictionary: true, learner_dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape', star: 'Ctrl+Alt+B' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, anki: false, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'loads on demand', tts: 'loads on demand', tts_source: 'local',
+    status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'loads on demand', analyser: 'kiwi', ocr: true, dictionary: true, learner_dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape', star: 'Ctrl+Alt+B', launcher: 'Ctrl+Alt+M', wheel: 'Ctrl+Alt+Q', reading_again: '' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, anki: false, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'loads on demand', tts: 'loads on demand', tts_source: 'local',
       reading: [
         { task: 'live', what: 'Live subtitles', uses: 'Line finder: Small and quick · letters: Standard', reader: null, place: 'This PC · processor' },
         { task: 'capture', what: 'Captures', uses: 'Line finder: Standard · letters: Standard', reader: 'PaddleOCR-VL 1.6', place: 'This PC · processor and graphics card' },

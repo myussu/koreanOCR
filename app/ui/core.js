@@ -58,6 +58,9 @@ export function reduce(prev, event) {
       case 'error':
         d.errors.push(event.message);
         break;
+      case 'answering':
+        d.answering = answeringOf(event);
+        break;
       case 'done':
         d.finished = true;
         break;
@@ -96,6 +99,9 @@ export function reduce(prev, event) {
     case 'note':
       state.notes.push(event.text);
       break;
+    case 'answering':
+      state.answering = answeringOf(event);
+      break;
     case 'timing':
       state.timings[event.stage] = event.ms;
       break;
@@ -110,6 +116,23 @@ export function reduce(prev, event) {
       break;
   }
   return state;
+}
+
+const answeringOf = (e) => ({ connection: e.connection, model: e.model, place: e.place });
+
+const PLACE_WORD = { this_pc: 'this PC', network: 'another computer', hosted: 'hosted service' };
+
+/** A model's name short enough for the panel: no repository owner, folder or file extension. */
+export function shortModel(model) {
+  const last = String(model ?? '').split(/[\\/]/).pop();
+  return last.replace(/\.gguf$/i, '');
+}
+
+/** Who answered, as the panel's footer says it: "NAS · gemma4-12b", with where it runs for a tooltip. */
+export function answeringText(a) {
+  if (!a) return null;
+  const name = a.connection === 'local' ? 'This PC' : a.connection;
+  return { text: `${name} · ${shortModel(a.model)}`, title: `Answered by ${name} (${a.model}), on ${PLACE_WORD[a.place] ?? 'a server'}. Settings → Captures chooses it.` };
 }
 
 /** Open the deep-dive card for a word. */
@@ -130,6 +153,18 @@ export function autoDeepTarget(state, id) {
 }
 
 export const closeDeep = (prev) => ({ ...structuredClone(prev), deep: null });
+
+/**
+ * The line the panel can make Anki cards from (History's cards sheet opens with it): a Korean capture whose
+ * translation has finished. `null` while it streams, for English → Korean, and when there is no text.
+ */
+export function cardsLine(state) {
+  if (state.id == null || state.direction !== 'ko_to_en' || !state.done.primary) return null;
+  const sentence = String(state.capture?.text ?? '').trim();
+  const translation = String(state.translations.primary ?? '').trim();
+  if (!sentence || !translation) return null;
+  return { id: state.id, sentence, translation, app: state.capture?.app?.exe ?? null };
+}
 
 /** Only captured OCR snapshots can be corrected from the panel's right-click menu. */
 export function snapshotCorrectionId(state) {

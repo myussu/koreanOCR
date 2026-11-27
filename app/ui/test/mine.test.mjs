@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 
 import { addLabel, ankiIsOff, answeredText, applySense, askFor, comesUp, deckOptions, formChoice, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, queueLines, redraft, retryChoices, senseIndex, senseLabel } from '../mine-core.js';
+import { typedFormNote } from '../mine-core.js';
 
 const sheet = (over = {}) => ({
   sentence: '다시는 못 볼 줄 알았어요',
@@ -190,4 +191,21 @@ test('a dictionary form the model corrects is shown beside the splitter’s, and
   assert.deepEqual(formChoice(word, d.words[0]), { text: "The card will ask 주다 (the model's reading); the word splitter read 꾸다.", button: 'Use 꾸다', next: '꾸다' });
   assert.equal(formChoice({ key: '학교' }, { key: '학교' }), null);
   assert.equal(formChoice({ key: '학교', corrected: '학교' }, { key: '학교' }), null);
+});
+
+test('a dictionary form fixed by hand makes the card for it and says the meanings were chosen for the old one', () => {
+  const word = { key: '꾸다', surface: '주꾸마', corrected: null };
+  assert.equal(typedFormNote(word, { key: '꾸다' }), null, 'unchanged');
+  assert.equal(typedFormNote({ ...word, corrected: '주다' }, { key: '주다' }), null, "the model's reading is already explained");
+  assert.match(typedFormNote(word, { key: '주다' }), /ask 주다\. The meanings were chosen for 꾸다/);
+  assert.match(typedFormNote(word, { key: ' ' }), /Type the dictionary form/);
+  const sheet = { words: [word], word_deck: 'K', sentence_deck: 'K', reverse: 'off', audio: false };
+  const draft = mineDraft(sheet);
+  draft.words[0].picked = true;
+  draft.words[0].meaning = 'to give';
+  draft.words[0].key = '';
+  assert.equal(mineBlocker(draft, sheet), 'A picked word has no dictionary form.');
+  draft.words[0].key = '주다';
+  assert.equal(mineBlocker(draft, sheet), null);
+  assert.equal(mineRequest(draft, { saved_id: null }, { sentence: 's', app: null }).words[0].key, '주다', 'the card is made for the typed form');
 });

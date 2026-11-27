@@ -59,28 +59,36 @@ fn init_logging() {
 /// The tray menu, with the shortcuts as currently configured.
 pub fn tray_menu(app: &tauri::AppHandle, state: &AppState) -> tauri::Result<Menu<tauri::Wry>> {
     let keys = state.cfg().hotkeys;
-    let item = |id: &str, label: String| MenuItem::with_id(app, id, label, true, None::<&str>);
+    // Grouped like the floating controls: live subtitles, captures, windows, the controls themselves. A shortcut
+    // shows only when one is set, so an unassigned action does not end in an empty tab.
+    let item = |id: &str, label: &str, key: &str| {
+        let text = if key.trim().is_empty() { label.to_string() } else { format!("{label}\t{}", key.replace('|', " or ")) };
+        MenuItem::with_id(app, id, text, true, None::<&str>)
+    };
     Menu::with_items(
         app,
         &[
-            &item("translate", format!("Translate selection\t{}", keys.translate))?,
-            &item("region", format!("Pick a region…\t{}", keys.region))?,
-            &item("reading_again", format!("Read saved area again\t{}", keys.reading_again))?,
-            &item("reading", "Saved reading areas…".into())?,
-            &item("hover", format!("Toggle hover mode\t{}", keys.hover))?,
-            &item("continuous", format!("Toggle live subtitles\t{}", keys.continuous))?,
-            &item("continuous_area", format!("Live subtitles: choose area…\t{}", keys.continuous_area))?,
-            &item("star", format!("Star the live subtitle line\t{}", keys.star))?,
-            &item("scan", format!("Label all Korean text on screen\t{}", keys.scan))?,
-            &item("speak", format!("Translate and read aloud\t{}", keys.speak))?,
+            &item("continuous", "Live subtitles on / off", &keys.continuous)?,
+            &item("continuous_area", "Live subtitles: choose the area…", &keys.continuous_area)?,
+            &item("star", "Star the live subtitle line", &keys.star)?,
             &PredefinedMenuItem::separator(app)?,
-            &item("review", "Review & history…".into())?,
-            &item("status", "Status…".into())?,
-            &item("settings", "Settings…".into())?,
-            &item("launcher", format!("Show / hide floating controls\t{}", keys.launcher))?,
-            &item("wheel", format!("Controls wheel\t{}", keys.wheel))?,
+            &item("region", "Snapshot a region…", &keys.region)?,
+            &item("translate", "Translate the selection", &keys.translate)?,
+            &item("hover", "Hover lookup on / off", &keys.hover)?,
+            &item("scan", "Label all Korean on screen", &keys.scan)?,
+            &item("speak", "Translate and read aloud", &keys.speak)?,
+            &item("reading_again", "Read the saved game area again", &keys.reading_again)?,
             &PredefinedMenuItem::separator(app)?,
-            &item("quit", "Quit".into())?,
+            &item("history", "History and cards…", &keys.history)?,
+            &item("review", "Review…", "")?,
+            &item("reading", "Saved game areas…", "")?,
+            &item("settings", "Settings…", "")?,
+            &item("status", "Status…", "")?,
+            &PredefinedMenuItem::separator(app)?,
+            &item("launcher", "Show / hide the floating controls", &keys.launcher)?,
+            &item("wheel", "Controls wheel", &keys.wheel)?,
+            &PredefinedMenuItem::separator(app)?,
+            &item("quit", "Quit Maru", "")?,
         ],
     )
 }
@@ -110,6 +118,9 @@ fn build_tray(app: &tauri::AppHandle, state: &Arc<AppState>) -> tauri::Result<()
             "speak" => flow::speak_selection(app, state),
             "review" => {
                 let _ = windows::open_hub(&app, "review");
+            }
+            "history" => {
+                let _ = windows::open_hub(&app, "history");
             }
             "status" => {
                 let _ = windows::open_hub(&app, "status");
@@ -260,8 +271,11 @@ fn main() {
             mining::mine_queue,
             mining::task_status,
             mining::task_test,
+            mining::connection_test,
             mining::mine_add,
             mining::anki_fill_sounds,
+            mining::open_cards,
+            mining::take_pending_cards,
             commands::status,
             commands::resize_panel,
             commands::dismiss_panel,

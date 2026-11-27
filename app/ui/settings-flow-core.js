@@ -215,3 +215,25 @@ export function pendingSummary(paths, labelFor, limit = 6) {
   const names = [...new Set((paths ?? []).map(labelFor))];
   return names.length > limit ? `${names.slice(0, limit).join(', ')} and ${names.length - limit} more` : names.join(', ');
 }
+
+/**
+ * How the Test button under a connection field checks the card that is picked, saved or not ("I clicked another
+ * model and could only test the one in use"): this PC's model is asked by name (`connection_test`), a saved
+ * connection with what the page has for it, edits included (`connection_check`). Nothing is saved or restarted.
+ * Returns `{ kind: 'local' | 'server' | 'later' | 'none', label, server?, message? }`.
+ */
+export function routeTestPlan(field, chosen, value) {
+  const name = String(chosen ?? '').trim();
+  if (!name) return { kind: 'none', label: '', message: field.none ? `${field.none}: nothing to test.` : 'Nothing is picked.' };
+  if (sameName(name, LOCAL)) {
+    const translationOnly = field.path === 'tasks.live.connection' && String(value('tasks.live.model') ?? '').trim();
+    if (translationOnly) return { kind: 'later', label: 'This PC', message: 'A translation-only model loads when live subtitles start: save, restart and turn them on to try it.' };
+    return { kind: 'local', label: 'This PC' };
+  }
+  const server = (value('llm.servers') ?? []).find((s) => sameName(s.name, name));
+  if (!server) return { kind: 'none', label: name, message: `There is no connection called ${name}: add it under Connections.` };
+  return { kind: 'server', label: server.name, server };
+}
+
+/** Saving these changes needs a restart before they are in use (the save bar then offers "Save and restart"). */
+export const needsRestart = (draft, appliesLive) => Object.keys(draft ?? {}).some((path) => !appliesLive(path));

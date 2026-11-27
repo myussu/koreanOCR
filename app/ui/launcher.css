@@ -1,4 +1,63 @@
-:root{color-scheme:dark;font-family:Segoe UI,system-ui,sans-serif;color:#eef1f8}*{box-sizing:border-box}html,body{margin:0;background:transparent;overflow:hidden}button{font:inherit;color:inherit;cursor:pointer}button:focus-visible{outline:2px solid #a9a0ff;outline-offset:3px}[hidden]{display:none!important}#controls{padding:8px;width:100%}#maru{display:block;margin-left:auto;width:48px;height:48px;border:1px solid #696584;border-radius:16px;background:#28243c;box-shadow:0 4px 16px #0005;position:relative;touch-action:none;user-select:none}#maru span{font-size:23px;font-weight:600}#dot{position:absolute;right:5px;bottom:5px;width:9px;height:9px;background:#9da6b7;border-radius:50%;box-shadow:0 0 0 2px #28243c}#dot.on{background:#69d9ac}#dot.busy{background:#e5be70}#dot.error{background:#f58a8a}#menu{margin-top:8px;padding:15px;background:#171b28fa;border:1px solid #3d4258;border-radius:16px;box-shadow:0 8px 24px #0004}header,footer{display:flex;align-items:center;justify-content:space-between}header strong{font-size:17px}header button{border:0;background:transparent;font-size:24px}p{margin:9px 0;font-size:13px}small{display:block;color:#aab2c9;font-size:11px;line-height:1.4;margin:4px 0;overflow-wrap:anywhere}#actions{display:grid;grid-template-columns:1fr 1fr;gap:5px;margin-top:13px}#actions button{text-align:left;background:#242a3b;border:1px solid #343c52;border-radius:8px;padding:9px 8px;font-size:12px;min-height:38px}#actions button:hover{background:#343c52}#actions button[aria-pressed=true]{border-color:#70cfac;background:#233b35}#actions button:first-child{grid-column:1/-1;font-weight:600}#actions button:first-child span{float:right;font-size:11px;color:#8cdeb8}footer{border-top:1px solid #343c52;margin-top:12px;padding-top:9px;gap:10px}footer button{border:0;background:transparent;font-size:12px;color:#b8b4ee;padding:5px}#quit{color:#d2a0a5}#error{color:#f4a5a5;font-size:11px;max-height:50px;overflow:auto}
+:root{color-scheme:dark;font-family:Segoe UI,system-ui,sans-serif;color:#eef1f8}*{box-sizing:border-box}html,body{margin:0;background:transparent;overflow:hidden}button{font:inherit;color:inherit;cursor:pointer}button:focus-visible,summary:focus-visible{outline:2px solid #a9a0ff;outline-offset:3px}[hidden]{display:none!important}#controls{padding:8px;width:100%}#maru{display:block;margin-left:auto;width:48px;height:48px;border:1px solid #696584;border-radius:16px;background:#28243c;box-shadow:0 4px 16px #0005;position:relative;touch-action:none;user-select:none}#maru span{font-size:23px;font-weight:600}#dot{position:absolute;right:5px;bottom:5px;width:9px;height:9px;background:#9da6b7;border-radius:50%;box-shadow:0 0 0 2px #28243c}#dot.on{background:#69d9ac}#dot.busy{background:#e5be70}#dot.error{background:#f58a8a}
 
-html,body{height:100%}#controls{height:100%;display:flex;flex-direction:column}.up#controls{flex-direction:column-reverse;justify-content:flex-start}.up #menu{margin-top:0;margin-bottom:8px}.left #maru{margin-left:0;margin-right:auto}#menu{max-height:calc(100% - 56px);overflow:auto}
-#actions button:disabled{opacity:.5;cursor:default}#preparation{color:#b8b4ee;font-size:12px;margin-bottom:3px}#model-message{color:#c1c8dc}#queue{color:#c1c8dc}
+html,body{height:100%}#controls{height:100%;display:flex;flex-direction:column}.up#controls{flex-direction:column-reverse;justify-content:flex-start}.up #menu{margin-top:0;margin-bottom:8px}.left #maru{margin-left:0;margin-right:auto}
+
+/* The menu: a header with the state, then one section per thing you do. */
+#menu{margin-top:8px;padding:12px 12px 10px;background:#171b28fa;border:1px solid #3d4258;border-radius:16px;box-shadow:0 8px 24px #0004;max-height:calc(100% - 56px);overflow:auto;scrollbar-width:thin}
+header{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+header .title strong{font-size:16px}
+header button{border:0;background:transparent;font-size:22px;line-height:1;padding:0 4px;color:#c8cbe0}
+#state{margin:2px 0 0;font-size:12px;color:#aab2c9}
+p{margin:6px 0;font-size:12.5px}
+small{display:block;color:#aab2c9;font-size:11px;line-height:1.4;margin:3px 0;overflow-wrap:anywhere}
+
+.group{margin-top:10px;padding-top:9px;border-top:1px solid #2c3246}
+.group h3,.group summary{margin:0 0 6px;font-size:10.5px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:#8f97b3}
+.actions{display:grid;grid-template-columns:1fr 1fr;gap:5px}
+.actions button{display:flex;flex-direction:column;align-items:flex-start;justify-content:center;gap:1px;text-align:left;background:#242a3b;border:1px solid #343c52;border-radius:8px;padding:6px 8px;min-height:38px}
+.actions button:hover{background:#343c52}
+.actions button:disabled{opacity:.5;cursor:default}
+.actions .label{font-size:12px;line-height:1.25}
+.actions .keys{font:10.5px/1.2 ui-monospace,Consolas,monospace;color:#8f97b3;overflow-wrap:anywhere}
+.actions button[aria-pressed=true]{border-color:#70cfac;background:#233b35}
+.actions button[aria-pressed=true] .label::after{content:" · on";color:#8cdeb8;font-size:11px}
+/* The main switch of each group spans the row. */
+.live .actions button:first-child{grid-column:1/-1;flex-direction:row;justify-content:space-between;align-items:center;font-weight:600}
+
+/* Who translates for the group, as Settings names it. */
+.route{display:flex;flex-wrap:wrap;align-items:center;gap:4px 6px;margin-top:6px;font-size:11px;color:#c1c8dc}
+.route .dot{width:7px;height:7px;border-radius:50%;background:#9da6b7;flex:none}
+.route .dot.ok{background:#69d9ac}.route .dot.bad{background:#f58a8a}
+.route .who{font-weight:600}
+.route .where{color:#8f97b3}
+.route .state.bad{color:#f4a5a5}.route .state.idle{color:#8f97b3}
+
+/* Models and memory: folded until wanted. */
+details.group summary{cursor:pointer;display:flex;align-items:center;gap:6px;list-style:none;margin:0}
+details.group[open] summary{margin-bottom:6px}
+details.group summary::-webkit-details-marker{display:none}
+details.group summary::before{content:"▸";font-size:10px}
+details.group[open] summary::before{content:"▾"}
+details.models .vram-short{margin-left:auto;text-transform:none;letter-spacing:0;font-weight:500;color:#aab2c9}
+details.models .actions{margin-top:6px}
+.preparation{color:#b8b4ee;font-size:12px;margin:4px 0 2px}
+.model-message{color:#c1c8dc}
+
+/* Other windows: one row of small buttons. */
+.open .actions{display:flex;flex-wrap:wrap;gap:4px}
+.open .actions button{min-height:0;padding:4px 8px;flex-direction:row;align-items:baseline;gap:5px;border-radius:999px}
+.open .actions .keys{font-size:10px}
+
+footer{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #2c3246;margin-top:10px;padding-top:7px;gap:10px}
+footer button{border:0;background:transparent;font-size:12px;color:#b8b4ee;padding:4px}
+#quit{color:#d2a0a5}
+#error{color:#f4a5a5;font-size:11px;max-height:50px;overflow:auto;margin:6px 0 0}
+#error:empty{display:none}
+#tip{margin-top:4px;color:#7d859f}
+/* The saved game area inside the menu: flatter than on its own page. */
+.area .reading-controls{margin:0;padding:8px 9px;border-radius:8px}
+.area .reading-controls p{margin:3px 0}
+.area .reading-controls select{margin:5px 0;padding:5px}
+.area .reading-buttons{gap:4px}
+.area .reading-buttons button,.area .reading-controls>button{padding:5px 8px;font-size:11.5px}
+.area .reading-controls>button{margin-top:4px}

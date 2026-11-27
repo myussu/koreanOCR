@@ -27,8 +27,11 @@ const LIVE_SMALL = { path: 'tasks.live.model', in: SMALL_LIVE.map((m) => m.id), 
 const SPEECH_SERVER = { path: 'tts.provider', value: 'endpoint' };
 // How each task reads the screen (`[reading]`): the names are the ones `maru_core::reading` knows.
 const FINDERS = opts(['pp-ocrv6-small', 'Small and quick', 'Measured best on game subtitles'], ['standard', 'Standard', 'The one Maru has always used'], ['pp-ocrv6-medium', 'Medium', 'Only if it is on this PC']);
+// The measured choice is marked on the page; the reason shows when the pointer rests on the card.
+const recommend = (options, value, why) => options.map((o) => (o.value === value ? { ...o, recommended: why } : o));
+const LIVE_FINDERS = recommend(FINDERS, 'pp-ocrv6-small', 'Read your labelled game subtitles as well as the standard one, 35–60 % faster (runs 3 and 4)');
 const LETTERS = opts(['standard', 'Standard'], ['qota-ocr', 'Qota-OCR', 'A community model; only if it is on this PC']);
-const READERS = opts(['paddleocr-vl-1.5', 'PaddleOCR-VL 1.5'], ['paddleocr-vl-1.6', 'PaddleOCR-VL 1.6', 'Install it with maru setup ocr-vl']);
+const READERS = recommend(opts(['paddleocr-vl-1.5', 'PaddleOCR-VL 1.5'], ['paddleocr-vl-1.6', 'PaddleOCR-VL 1.6', 'Install it with maru setup ocr-vl']), 'paddleocr-vl-1.6', 'Better than 1.5 on game subtitles in run 3 (17 lines better, 6 worse), at the same speed');
 const SPEECH_LOCAL = { path: 'tts.provider', value: 'local' };
 
 export const SECTIONS = [
@@ -47,7 +50,7 @@ export const SECTIONS = [
         options: [{ value: null, label: 'Wait for the server', detail: 'No model is loaded on this PC' }, ...SMALL_LIVE.map((m) => ({ value: m.id, label: m.name, detail: 'Loads when live subtitles start; its file must be set' }))] },
       { path: 'continuous.context_lines', label: 'Earlier lines the model sees', help: 'Keeps names and pronouns consistent from one line to the next.', type: 'number', min: 0, max: 20, step: 1, unit: 'lines', uses: [LIVE] },
       { path: 'continuous.linger_ms', label: 'Keep the translation after the line is gone', help: 'How long the translation stays on screen once the original has disappeared.', type: 'number', min: 0, max: 5000, step: 100, unit: 'ms', uses: [LIVE] },
-      { path: 'reading.live.detector', label: 'Find subtitle lines with', help: 'The part of the text reader that finds the lines; on game subtitles the small one misread the fewest and is the quickest.', type: 'choice', uses: [LIVE], options: FINDERS },
+      { path: 'reading.live.detector', label: 'Find subtitle lines with', help: 'The part of the text reader that finds the lines; on game subtitles the small one misread the fewest and is the quickest.', type: 'choice', uses: [LIVE], options: LIVE_FINDERS },
       { path: 'reading.live.reader', label: 'Check live letters with the reading model', help: 'Off is the measured setting, since the text reader alone misread fewer game subtitles; on, it takes about 2 GB of video memory while live subtitles run.', type: 'toggle', uses: [LIVE] },
       { path: 'reading.live.reader_model', label: 'Reading model for live subtitles', help: 'Only one reading model runs at a time, so when captures use one too, live subtitles use theirs.', type: 'choice', uses: [LIVE], when: { path: 'reading.live.reader', value: true }, options: READERS, advanced: true },
       { path: 'reading.live.recogniser', label: 'Read the letters of live subtitles with', help: 'The part of the text reader that reads the letters in each line.', type: 'choice', uses: [LIVE], options: LETTERS, advanced: true },
@@ -114,7 +117,7 @@ export const SECTIONS = [
     action: 'anki',
     fields: [
       { path: 'tasks.card_meanings.connection', label: 'Choose word meanings with', help: "Asked first for the meaning of each word in its line; if it cannot answer, this PC's model is asked, then the dictionary is used.", type: 'route', task: 'card_meanings', uses: [CARDS] },
-      { path: 'tasks.card_sentence.connection', label: 'Translate the sentence again with', help: 'A fresh translation for the sentence card, instead of the one made while you played.', type: 'route_optional', none: 'Keep the translation the line has', uses: [CARDS] },
+      { path: 'tasks.card_sentence.connection', label: 'Translate the sentence again with', help: 'A fresh translation for the sentence card, instead of the one made when the line was read.', type: 'route_optional', none: 'Keep the translation the line has', uses: [CARDS] },
       { path: 'learning.anki.enabled', label: 'Send cards to Anki', help: 'Anki must be open with the AnkiConnect add-on (code 2055492159).', type: 'toggle', uses: [CARDS, REVIEW] },
       { path: 'learning.anki.deck', label: 'Deck for word cards', help: 'Where a card for a word goes unless you choose another deck when adding.', type: 'text', uses: [CARDS] },
       { path: 'learning.anki.sentence_deck', label: 'Deck for sentence cards', help: 'Where a card for a whole line goes; empty uses the deck for word cards.', type: 'text', uses: [CARDS] },
@@ -205,6 +208,46 @@ export const SECTIONS = [
     ],
   },
 ];
+
+/**
+ * Subheadings inside the longer sections, so each reads as a few short lists: who answers, how the screen is read,
+ * how things look. Fields keep their place in the file; the page shows them in this order, any field not named here
+ * last under "Other".
+ */
+export const GROUPS = {
+  live: [
+    ['Who translates', ['tasks.live.connection', 'tasks.live.model', ...SMALL_LIVE.map((m) => m.path), 'continuous.translation.device', 'continuous.translation.backup_model', 'continuous.context_lines']],
+    ['Reading the subtitles', ['reading.live.detector', 'reading.live.reader', 'continuous.linger_ms']],
+    ['YouTube', ['captions.enabled', 'captions.token']],
+  ],
+  captures: [
+    ['Who translates', ['tasks.capture.connection', 'tasks.capture.while_live', 'learning.register']],
+    ['Reading the screen', ['reading.capture.reader', 'reading.capture.reader_model', 'capture.use_accessibility', 'capture.use_clipboard_fallback', 'capture.use_ocr_fallback', 'capture.ocr_radius_px']],
+    ['The panel', ['learning.gloss_mode', 'ui.font_size_px', 'ui.max_width_px', 'ui.theme', 'ui.placement', 'ui.show_romanization', 'ui.show_pronunciation', 'ui.show_grammar_formula']],
+    ['Floating controls', ['ui.launcher']],
+  ],
+  cards: [
+    ['Who chooses the meanings', ['tasks.card_meanings.connection', 'tasks.card_sentence.connection']],
+    ['Anki', ['learning.anki.enabled', 'learning.anki.deck', 'learning.anki.sentence_deck', 'learning.anki.new_words_per_day', 'learning.anki.new_sentences_per_day', 'learning.anki.reverse', 'learning.anki.audio', 'learning.anki.sync_after_add', 'learning.anki.auto_tags', 'learning.anki.tags']],
+    ['Words you look up', ['learning.track_lookups', 'learning.auto_save_after_lookups']],
+  ],
+  voice: [
+    ['The voice', ['tts.enabled', 'tts.provider', 'tts.endpoint', 'tts.api_key', 'tts.model', 'tts.voice']],
+    ['Reading and cards apart', ['tasks.voice_reading.endpoint', 'tasks.voice_reading.voice', 'tasks.voice_cards.voice']],
+  ],
+};
+for (const section of SECTIONS) {
+  const groups = GROUPS[section.id];
+  if (!groups) continue;
+  const at = new Map(groups.flatMap(([title, paths], g) => paths.map((path, i) => [path, { title, order: g * 100 + i }])));
+  for (const f of section.fields) if (!f.advanced) f.group = at.get(f.path)?.title ?? 'Other';
+  const rank = (f) => (f.advanced ? 1e6 : at.get(f.path)?.order ?? 1e5);
+  section.fields = section.fields.map((f, i) => [f, i]).sort(([a, i], [b, j]) => rank(a) - rank(b) || i - j).map(([f]) => f);
+}
+
+/** The features a section is about: its rows say "Also used by" only for the others. */
+export const OWN_FEATURES = { live: [LIVE], captures: [SNAP, SCAN, HOVER], cards: [CARDS, REVIEW], voice: [VOICE] };
+export const otherUses = (field) => (field.uses ?? []).filter((u) => !(OWN_FEATURES[field.section] ?? []).includes(u));
 
 /** The page's categories, in order: the flow map, the sections, and everything marked advanced. */
 export const CATEGORIES = [{ id: 'home', title: 'Overview' }, ...SECTIONS.map((s) => ({ id: s.id, title: s.title })), { id: 'advanced', title: 'Advanced' }];

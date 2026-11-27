@@ -157,3 +157,17 @@ main:has(.settings-page) { max-width: 1120px; }
   .task-now { grid-template-columns: 1fr; }
   .task-now .btn { grid-column: 1; grid-row: auto; justify-self: start; }
 }
+
+/* A connection field: the cards, then Test for the picked one and what is recommended. */
+.route-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 8px; font-size: 12.5px; }
+.route-foot .route-note { color: var(--muted); }
+.route-advice { flex-basis: 100%; color: var(--muted); line-height: 1.45; }
+.route-advice b { color: var(--fg); font-weight: 600; }
+.route-advice .btn { margin-left: 8px; padding: 2px 10px; font-size: 12px; }
+.choice .rec { align-self: flex-start; display: inline-block; margin-top: 6px; padding: 1px 7px; border-radius: 999px; font-size: 10.5px; font-weight: 600; letter-spacing: .02em; color: var(--good, #0f7a4d); background: rgba(15, 122, 77, 0.10); }
+.choice.recommended:not([aria-checked="true"]) { border-style: dashed; }
+
+/* A subheading inside a section: who answers, how the screen is read, how things look. */
+.set-group { margin: 22px 0 2px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
+.set-sec > .set-group:first-of-type { border-top: 0; padding-top: 4px; margin-top: 10px; }
+.settings-page .btn[hidden] { display: none; }

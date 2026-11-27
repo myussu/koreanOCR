@@ -109,6 +109,10 @@ pub enum Event {
     Gloss { id: u64, side: Side, gloss: Gloss },
     /// A short grammar/nuance remark for the whole sentence.
     Note { id: u64, text: String },
+    /// Which connection and model answers this request (a capture's translation and meanings, or a deep dive), so
+    /// the panel can say who was slow or wrong. `connection` is `local` for this PC; `place` is `this_pc`,
+    /// `network` or `hosted`. Sent once the model is chosen, before its first word; a fallback sends another.
+    Answering { id: u64, connection: String, model: String, place: String },
 
     // ── deep dive (click on a word) ──
     DeepEntries { id: u64, entries: Vec<DictEntry>, conjugation: Vec<ConjugationStep> },
@@ -144,6 +148,7 @@ impl Event {
             | Event::TranslationDone { id, .. }
             | Event::Gloss { id, .. }
             | Event::Note { id, .. }
+            | Event::Answering { id, .. }
             | Event::DeepEntries { id, .. }
             | Event::DeepDelta { id, .. }
             | Event::WordState { id, .. }

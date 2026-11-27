@@ -298,6 +298,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
             let collected = Mutex::new(hit.clone());
             if missing.is_empty() { lock(&collected).glosses_complete = true; }
             else if let Some(llm) = await_llm(&inner, &em).await {
+                em.send(crate::answering::event(&inner, id, &llm, false));
                 let ctx = prompt_context(&inner, &capture, profile.as_ref());
                 run_glosses(&llm, &em, &collected, side, sentence, &missing, &ctx).await;
             }
@@ -320,6 +321,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
                 em.done();
                 return;
             };
+            em.send(crate::answering::event(&inner, id, &llm, native));
             let gloss_list = gloss_words(&eojeols, skip_known);
             let first_token = AtomicBool::new(false);
             let llm_started = Instant::now();
@@ -358,6 +360,7 @@ pub(crate) async fn translate(inner: Arc<Inner>, id: u64, capture: Capture, tx: 
                 em.done();
                 return;
             }
+            em.send(crate::answering::event(&inner, id, &llm, false));
             let primary = Variant::from_register(register);
             let (primary_tx, primary_rx) = oneshot::channel::<String>();
             let primary_tx = Mutex::new(Some(primary_tx));
@@ -702,6 +705,7 @@ pub(crate) async fn deep_dive(inner: Arc<Inner>, id: u64, req: DeepDiveRequest, 
         em.done();
         return;
     }
+    em.send(crate::answering::event(&inner, id, &llm, false));
     let ctx = PromptContext::default();
     let result = llm
         .deep_dive(

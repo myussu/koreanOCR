@@ -147,3 +147,23 @@ test('the read step says per task what reads and where it runs, and that the rea
   assert.deepEqual(readRows({ ocr: false, reading }).map((r) => r.uses), ['not installed'], 'no text reader at all');
   assert.deepEqual(readRows({ ocr: true, ocr_reader: 'off' }).map((r) => r.what), ['Text reader', 'Reading model'], 'an older shell without the field');
 });
+
+test('the Test under a connection field checks the picked card, saved or not, without saving or restarting', async () => {
+  const { routeTestPlan, needsRestart } = await import('../settings-flow-core.js');
+  const servers = [{ name: 'NAS', endpoint: 'http://192.168.1.20:11434', model_name: 'gemma4-12b', provider: 'openai', api_key: null }];
+  const page = { 'llm.servers': servers, 'tasks.live.model': '' };
+  const value = (path) => page[path];
+  const live = { path: 'tasks.live.connection' };
+  assert.deepEqual(routeTestPlan(live, 'local', value), { kind: 'local', label: 'This PC' });
+  assert.deepEqual(routeTestPlan(live, 'nas', value), { kind: 'server', label: 'NAS', server: servers[0] });
+  assert.equal(routeTestPlan(live, 'Claude', value).kind, 'none');
+  assert.equal(routeTestPlan({ path: 'tasks.card_sentence.connection', none: 'Keep the translation the line has' }, '', value).message, 'Keep the translation the line has: nothing to test.');
+  page['tasks.live.model'] = 'lfm';
+  assert.equal(routeTestPlan(live, 'local', value).kind, 'later', 'a translation-only model loads only with live subtitles');
+  assert.equal(routeTestPlan({ path: 'tasks.capture.connection' }, 'local', value).kind, 'local', 'only live subtitles have translation-only models');
+
+  const appliesLive = (p) => p.startsWith('tasks.card_') || p === 'llm.servers';
+  assert.equal(needsRestart({ 'tasks.card_meanings.connection': 'NAS' }, appliesLive), false);
+  assert.equal(needsRestart({ 'tasks.capture.connection': 'NAS', 'llm.servers': [] }, appliesLive), true);
+  assert.equal(needsRestart({}, appliesLive), false);
+});

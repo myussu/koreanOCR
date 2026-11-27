@@ -1421,6 +1421,35 @@ today's local readers read the same letters, so they list part of each screen's 
 cards' Add / Retry / sounds (Anki is off there), the restart button, and every window other than the launcher and the hub
 (panel, live band, scan labels, picker, wheel). Those stay for a person (M-42, M-43, M-46).
 
+## M-61 Test a picked connection, cards from a snapshot, who answered, the grouped controls
+
+**Needs:** Maru built from `main` with your real `config.toml`, Anki open in your normal profile, a game or video with
+Korean on screen.
+
+**Why it is unverified:** everything below was checked in Chromium with mocked commands and against a scripted model
+server; nobody has clicked it in the real app, and the tray menu and the panel's "Make cards" hand-over to History are
+shell code that only type-checks on Linux.
+
+1. **Settings → Captures**, click another card under *Translate captures with* (for example NAS), and press **Test NAS**
+   without saving. **Expect** an answer in a few seconds ("NAS answered in …. It is used once you save and restart.") and
+   no restart. Do the same for **This PC** (it loads this PC's model unless live subtitles are on). A *Recommended* tag and
+   a line of why sit under the cards; **Save and restart** appears in the bottom bar and restarts Maru with the change.
+2. **Snapshot a menu** in a game. **Expect** the panel's last line to name who translated it before the text arrives
+   ("Gemini · …" or "NAS · …"), and **＋ Make cards** and **✎ Fix the text** under the translation. Click a word:
+   its explanation ends with "Explained by …".
+3. Press **＋ Make cards**. **Expect** History to open with that line's cards sheet already open; tick a word and the
+   sentence card and add them. **Check in Anki** that the sentence card is in your sentence deck with the capture's
+   translation. Make a card from a word whose dictionary form is wrong: **✎**, type the right form, Enter; the card should be
+   for what you typed.
+4. **Fix the text** of a snapshot where two words were stuck together: add the space, apply. **Expect** the panel to split
+   them anew.
+5. Open the **마** floating controls: groups *Live subtitles*, *Capture*, *Saved game area*, *Models and memory*, the
+   row of windows; each button shows its shortcut; the live and capture groups say who translates. **Expect** it to fit
+   without scrolling on a 1080p screen. Right-click the tray icon: the same groups, shortcuts beside actions.
+6. **Status → Who answers** lists the four tasks with their connection and last state.
+
+**Bring:** a photo of anything that looks wrong, and the text of any message that does not say what to do.
+
 ## Results log
 
 Add a line per test run. An empty log means **nothing below has been checked on real hardware**.

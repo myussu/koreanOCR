@@ -1,18 +1,57 @@
-//! Making Anki cards from a live line in History: the shell adds the sounds (speech lives here) around the engine's
-//! mining steps, and reports each card separately so one failure does not hide the others. Cards that were added
-//! without sound get it later from `anki_fill_sounds`.
+//! Making Anki cards from a line in History (live or captured): the shell adds the sounds (speech lives here) around
+//! the engine's mining steps, and reports each card separately so one failure does not hide the others. Cards that
+//! were added without sound get it later from `anki_fill_sounds`. The panel's "Make cards" hands its line to History
+//! through `open_cards` / `take_pending_cards`.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use maru_core::config::ReverseMode;
 use maru_engine::anki_flow::{AnkiAdded, Media};
 use maru_engine::mining::{MineChoice, MineLine, MineSheet, MinedSentence};
 use serde::{Deserialize, Serialize};
-use tauri::State;
+use tauri::{AppHandle, State};
 
 use crate::state::AppState;
 
 type S<'a> = State<'a, Arc<AppState>>;
+
+/// A line the panel wants cards from: History opens its sheet when it next draws.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CardsLine {
+    /// The capture's request id, which is also its History item's id.
+    pub id: Option<u64>,
+    pub sentence: String,
+    pub translation: String,
+    pub app: Option<String>,
+}
+
+/// At most one line waits: a second "Make cards" replaces the first, which was never opened.
+static PENDING_CARDS: Mutex<Option<CardsLine>> = Mutex::new(None);
+
+fn put_pending(line: CardsLine) -> Result<(), String> {
+    if line.sentence.trim().is_empty() {
+        return Err("There is no Korean line here to make cards from.".into());
+    }
+    *PENDING_CARDS.lock().unwrap_or_else(|p| p.into_inner()) = Some(line);
+    Ok(())
+}
+
+fn take_pending() -> Option<CardsLine> {
+    PENDING_CARDS.lock().unwrap_or_else(|p| p.into_inner()).take()
+}
+
+/// The panel's "Make cards": open History with this line's cards sheet.
+#[tauri::command]
+pub async fn open_cards(app: AppHandle, line: CardsLine) -> Result<(), String> {
+    put_pending(line)?;
+    crate::windows::open_hub(&app, "history").map_err(|e| e.to_string())
+}
+
+/// The line the panel asked for, once (History calls it every time it draws).
+#[tauri::command]
+pub fn take_pending_cards() -> Option<CardsLine> {
+    take_pending()
+}
 
 /// The words of a line with their meaning in it, and what Anki already has.
 #[tauri::command]
@@ -42,6 +81,12 @@ pub async fn mine_queue(state: S<'_>, word_deck: String, sentence_deck: String) 
 #[tauri::command]
 pub async fn task_test(state: S<'_>, task: maru_core::tasks::Task) -> Result<maru_engine::routes::TaskStatus, String> {
     Ok(state.engine().test_task(task).await)
+}
+
+/// The settings' "Test your choice": the same question to a connection picked on the page but not saved yet.
+#[tauri::command]
+pub async fn connection_test(state: S<'_>, connection: String) -> Result<maru_engine::routes::ConnectionCheck, String> {
+    Ok(state.engine().test_connection(&connection).await)
 }
 
 #[derive(Debug, Deserialize)]
@@ -228,6 +273,16 @@ mod tests {
         assert_eq!(reverse_for(false, ReverseMode::Subdeck), ReverseMode::Off);
         assert_eq!(reverse_for(true, ReverseMode::SameDeck), ReverseMode::SameDeck);
         assert_eq!(reverse_for(true, ReverseMode::Off), ReverseMode::Subdeck);
+    }
+
+    #[test]
+    fn a_line_handed_to_history_is_taken_once_and_an_empty_one_is_refused() {
+        let line = |text: &str| CardsLine { id: Some(7), sentence: text.into(), translation: "t".into(), app: Some("game.exe".into()) };
+        assert!(put_pending(line("  ")).is_err());
+        put_pending(line("첫 줄")).unwrap();
+        put_pending(line("둘째 줄")).unwrap();
+        assert_eq!(take_pending().map(|l| l.sentence), Some("둘째 줄".to_string()), "the newer line replaces one never opened");
+        assert_eq!(take_pending(), None);
     }
 
     #[test]

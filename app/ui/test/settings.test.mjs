@@ -185,3 +185,21 @@ test('an API key is a secret, an empty one removes it, and tags are a comma list
   assert.deepEqual(fromEditor(tags, ''), []);
   assert.equal(fromEditor(field('learning.anki.api_key'), '  '), null, 'an empty key removes it');
 });
+
+test('the long sections read as a few short lists under subheadings, each group together', async () => {
+  const { GROUPS, otherUses } = await import('../settings-core.js');
+  for (const s of SECTIONS.filter((x) => GROUPS[x.id])) {
+    const shown = s.fields.filter((f) => !f.advanced);
+    const order = shown.map((f) => f.group);
+    for (const g of new Set(order)) {
+      const first = order.indexOf(g), last = order.lastIndexOf(g);
+      assert.ok(order.slice(first, last + 1).every((x) => x === g), `${s.id}: "${g}" is one block`);
+    }
+    for (const [, paths] of GROUPS[s.id]) for (const p of paths) assert.ok(s.fields.some((f) => f.path === p), `${p} is a field of ${s.id}`);
+  }
+  const captures = SECTIONS.find((s) => s.id === 'captures').fields.filter((f) => !f.advanced);
+  assert.equal(captures[0].path, 'tasks.capture.connection', 'who translates comes first');
+  assert.deepEqual([...new Set(captures.map((f) => f.group))], ['Who translates', 'Reading the screen', 'The panel', 'Floating controls']);
+  assert.deepEqual(otherUses({ ...field('captions.enabled'), section: 'live' }), [FEATURES.cards], 'a row names only the features of other sections');
+  assert.deepEqual(otherUses({ ...field('ui.theme'), section: 'captures' }), [FEATURES.all]);
+});

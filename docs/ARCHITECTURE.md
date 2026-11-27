@@ -148,9 +148,19 @@ For every feature: how it starts, where it flows, what it persists, how it is co
   `Cached::is_useful` keeps it out of the cache. The English-to-Korean follow-up sender is closed when translation
   finishes, including a missing register. Tests: `client.rs`, `tasks.rs`, `tests/pipeline.rs` (cut-off translation).
 * **UI:** `app/ui/panel.js` (+ `core.js`, pure state), `index.html`, `style.css`. `picker.js` draws the region rectangle.
+* **Who answers:** once the client is chosen (`snapshot_model` / `await_llm`), `pipeline::translate` and `deep_dive`
+  send additive `Event::Answering { connection, model, place }` (`maru-engine/src/answering.rs`: the client is matched to
+  this PC's route or a saved connection by address and model, `LlmClient::same_server_model`; an unknown server is named
+  by its host; the live translation-only model by its name). The panel's footer shows it before the first word
+  (`core.js::answeringText`), a deep dive ends with "Explained by …"; the CLI prints "answered by …".
+* **Line tools** (`panel.js::lineTools`): **＋ Make cards** once the Korean translation is done (`core.js::cardsLine`,
+  Anki on) calls `open_cards` (§4.4), and **✎ Fix the text** on an OCR snapshot opens the existing correction editor
+  (`correction_open_snapshot`), which was only on the right-click menu. Deep-dive Anki problems are now said in a
+  sentence (`panel.js::ankiProblem`; "not reachable" was shown even when Anki was off in Settings).
 * **Config:** `[hotkeys]`, `[ui]`, `[capture]`, `[learning].register`, `[llm].context_lines`.
-* **Tests:** `crates/maru-engine/tests/pipeline.rs` (event order, cancellation, cache, degraded modes), `app/ui/test/core.test.mjs`.
-* **Real-PC check:** M-5 (selection across apps), M-6 (overlay behaviour).
+* **Tests:** `crates/maru-engine/tests/pipeline.rs` (event order, cancellation, cache, degraded modes,
+  `a_capture_says_which_connection_answers_it_before_its_first_word`), `answering.rs`, `app/ui/test/core.test.mjs`.
+* **Real-PC check:** M-5 (selection across apps), M-6 (overlay behaviour), M-61 (who answered, the line tools).
 
 ### 4.1a Saved game reading areas (Read again / opt-in Auto-read)
 
@@ -227,6 +237,15 @@ read back every `refresh_minutes` by `watch::spawn_anki_refresh`).
   (sentence card against the fake AnkiConnect), `anki_sentence.rs`, `mining.rs`, `app/ui/test/mine.test.mjs`. Real Anki: M-39.
   With Anki off in Maru, the sheet's *Turn on Anki* saves `learning.anki.enabled` through `save_settings` and calls
   `restart_app` (the engine's Anki client and config are fixed at start-up); `anki_check` also ensures the sentence type.
+  **Captures too** (`app/ui/history-core.js`): History offers *Make cards* for every Korean line with a translation
+  (`canMine`), not only live ones; `mine_add` already took an optional `saved_id`, so a capture is marked nowhere. The
+  panel hands its line over with `open_cards(line)` (shell `mining.rs`: the line `{id, sentence, translation, app}` waits in
+  one slot and `windows::open_hub(…, "history")`); History calls `take_pending_cards` when it draws, finds the item by
+  request id or text (`sameLine`), or puts it first (`withPendingLine`), and opens its sheet. **A dictionary form typed by
+  hand:** ✎ on a word of the sheet edits `draft.key`; `begin_mine_word` records the lookup under the typed key, so the card
+  is made for it; `mine-core.js::typedFormNote` says the meanings were chosen for the splitter's form, and `mineBlocker`
+  refuses a picked word without one. Tests: `history.test.mjs`, `mine.test.mjs`, `mining.rs`
+  (`a_line_handed_to_history_is_taken_once…`). Real PC: M-61.
 * **Card meanings in English and Spanish** (`maru-dict/src/nikl.rs`, `maru-llm/src/senses.rs`, `maru-engine/src/senses.rs`,
   `tools/build_nikl.py`, `maru dict nikl|coverage`): the learner's dictionary (한국어기초사전, CC BY-SA 2.0 KR; not bundled) is
   a second dictionary file, `nikl.db`, opened at start-up if present (`Engine::open_learner_dictionary`; `Inner::nikl`).
@@ -656,6 +675,20 @@ has none. A link can open a section, a search or a connection's editor (`hub.htm
 (the sections, labels without internal names, one sentence of help, uses, the three controls, search by feature),
 `settings-flow.test.mjs`, `settings-live.test.mjs`, `settings-connection.test.mjs`. The model's own error text is no longer
 shown in the panel either: `maru_llm::problem::plain` (used by `pipeline.rs`) says what kind of refusal it was.
+
+**Testing a picked card, and advice** (run 5). Under every connection field (`route`, `route_optional`) is *Test <name>*:
+`settings-flow-core.js::routeTestPlan` asks this PC's model by name (`connection_test` → `Engine::test_connection`,
+which asks the route in `Routes::all` one fixed question, remembers the answer like `test_task` and never loads this PC's
+model beside live subtitles) and a saved connection with what the page holds for it, unsaved edits included
+(`connection_check`). A translation-only live model is only said to load with live subtitles. Before this the only Test
+asked the running route, so another card could be tried only after saving and restarting. `settings-advice-core.js`
+recommends a connection per step by model family and place (`recommendFor`, `MEASURED`: run 1's live and card-meaning
+benchmarks and blind review, run 2's sentence timings), marked *Recommended* with a sentence of why and **Use …**; choice
+options can carry `recommended` (the live line finder, PaddleOCR-VL 1.6). `settings-core.js::GROUPS` puts the longer
+sections under subheadings (fields reordered on the page only), and a row names only the features of other sections
+(`otherUses`, "Also changes …"; search lists all). The save bar adds **Save and restart** when a change waits for a
+restart (`needsRestart`). Tests: `settings-advice.test.mjs`, `settings-flow.test.mjs`, `settings.test.mjs`,
+`tests/pipeline.rs::a_connection_picked_in_settings_is_tested_by_its_name…`. Real PC: M-61.
 The paragraphs below describe pieces that page still uses (discovery, the bounded connection check) and the earlier layout
 of saved connections, whose storage (`[llm].servers`) is unchanged.
 
@@ -707,6 +740,13 @@ hidden launcher costs no main-thread round trips. The window is focusless,
 capture-protected and topmost. Drag position is stored separately from config; startup visibility and shortcut are additive
 settings. UI decisions: `launcher-core.js`, `settings-live-core.js`; tests: `settings-live.test.mjs`, shell geometry tests.
 Real Chromium and borderless-game verification: M-17.
+The menu is grouped (`launcher-core.js::GROUPS`: Live subtitles, Capture, Models and memory, Open; the saved game area
+between them; models and the area fold, the area's state kept in `localStorage`), each button shows its shortcut
+(`shortcutText`) and the live and capture groups name who translates (`routeLine`). `launcher_status` adds `hotkeys`
+(the whole table) and `tasks` (`Engine::task_status`); the expanded window is 350 × 840 logical pixels, clamped to the
+monitor. The tray menu (`main.rs::tray_menu`) follows the same groups, names a shortcut only when one is set and adds
+**History and cards…** (`history`). Hub → Status adds **Who answers** (from `task_status`) and every shortcut. Tests:
+`launcher.test.mjs`. Real PC: M-61.
 
 Window-opening commands are async, and tray/hotkey actions run on the async runtime: Windows WebView2 creation must
 not block its event thread. First opening of the hub/picker is covered by M-19.
@@ -783,8 +823,8 @@ not block its event thread. First opening of the hub/picker is covered by M-19.
 * **Status:** `Engine::task_status` (connection, model, where it runs, the last known state, the fallbacks) and
   `Engine::test_task` (one short fixed question; it loads this PC's model except beside live subtitles). States:
   `working`, `no_key`, `quota`, `unreachable`, `failed`, `unknown`, `not_loaded`, `off`.
-* **Commands:** `task_status`, `task_test(task)`, `mine_sentence_translation(sentence, app, ask?)`; `mine_sheet` takes an
-  optional `ask`. `tasks.card_*` and `llm.servers` apply without a restart (`Engine::reroute_cards`); the live and
+* **Commands:** `task_status`, `task_test(task)`, `connection_test(connection)` (a connection by name, saved or `local`,
+  for Settings' *Test <name>*), `mine_sentence_translation(sentence, app, ask?)`; `mine_sheet` takes an optional `ask`. `tasks.card_*` and `llm.servers` apply without a restart (`Engine::reroute_cards`); the live and
   capture connections hold models and servers and wait for one.
 * **Tests:** `tasks.rs` (derive, apply, the round trip, migration, backup, idempotence, a rewritten file, command-line
   overrides), `problem.rs`, `routes.rs`, `tests/pipeline.rs` (quota → plain message and fallback, every connection
@@ -947,9 +987,9 @@ request and drop events of older ids, which is how superseded requests are cance
 
 | Request | Order |
 |---|---|
-| translate | `Started` → `Breakdown` (offline) → `Translation`/`TranslationDone`/`Gloss` (streaming, interleaved) → `Note` → `Timing`s → `Done` |
+| translate | `Started` → `Breakdown` (offline) → `Answering` (who, once the model is chosen) → `Translation`/`TranslationDone`/`Gloss` (streaming, interleaved) → `Note` → `Timing`s → `Done` |
 | hover | `Started` → `Breakdown` → `Timing` → `Done` (no model) |
-| deep dive | `WordState` (the lookup was recorded) → `DeepEntries` → `DeepDelta`s → `Done` |
+| deep dive | `WordState` (the lookup was recorded) → `DeepEntries` → `Answering` → `DeepDelta`s → `Done` |
 | scan | `ScanStarted` → `ScanItems` → `ScanLabel`s / `ScanLabelsFinished` (per group, interleaved) → `Timing`s → `Done` |
 | scan join | `ScanItems` (the one new item, with the number the overlay chose) → `ScanLabel`? → `ScanLabelsFinished` → `Done`, all under the *scan's* id; or `Error` → `Done` |
 | scan correction | additive `ScanCorrection` (old item and replacement number) → `ScanItems` → `ScanLabel`? → `ScanLabelsFinished` → `Done`, under the scan's id |
@@ -1074,7 +1114,9 @@ live_running}`, `LlmClient::has_key`, `maru_llm::problem`.
   log path, queue counts and diagnostics; `resource_enable(enabled)` pauses/resumes, `resource_record(enabled)` starts/stops
   recording. These commands do not change persistent config. `resources` is an additive hub tab / launcher action ID.
 * **Tasks and connections (run 2):** `task_status` → `[{task, connection, model, place, state, message, fallbacks}]`;
-  `task_test(task)` → one of those after asking; `connection_check(name, endpoint, modelName, reasoningEffort?, provider?,
+  `task_test(task)` → one of those after asking; `connection_test(connection)` → `{connection, model, place, state,
+  message}` (run 5); `open_cards(line)` / `take_pending_cards()` hand a panel line `{id, sentence, translation, app}` to
+  History (run 5); `connection_check(name, endpoint, modelName, reasoningEffort?, provider?,
   apiKey?)` → `{state, message, endpoint}` with `state` one of `working`, `no_key`, `quota`, `unreachable`, `failed`,
   `input`; `mine_sentence_translation(sentence, app, ask?)`; `mine_sheet(…, ask?)` with `ask = {connection?, after_live?}`.
   `status` adds `learner_dictionary`. All additive.

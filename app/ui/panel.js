@@ -1,5 +1,5 @@
 import { invoke, listen, replayFromQuery, mockCommands, inTauri } from './bridge.js';
-import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, readableText, sentenceRanges, snapshotCorrectionId, VARIANT_LABEL } from './core.js';
+import { emptyState, reduce, openDeep, closeDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, readableText, sentenceRanges, snapshotCorrectionId, cardsLine, answeringText, VARIANT_LABEL } from './core.js';
 import { contextMenu } from './context-menu.js';
 import { readingPanel } from './reading.js';
 import { Reader } from './reader.js';
@@ -151,6 +151,28 @@ function translationBlock() {
   );
 }
 
+/**
+ * What can be done with the whole line: make Anki cards from it (History's sheet: the words you pick and the
+ * sentence), and fix the text a snapshot read (wrongly split words often come from a misread or a missing space).
+ */
+function lineTools() {
+  const line = cfg.anki ? cardsLine(state) : null;
+  const fixId = snapshotCorrectionId(state);
+  if (!line && (fixId == null || !state.finished)) return null;
+  return h(
+    'div',
+    { class: 'line-tools' },
+    line && h('button', { class: 'btn', title: 'Open the cards sheet for this line in History: pick words, check their meanings, and add the sentence card', onclick: () => invoke('open_cards', { line }).catch((e) => flashLine(String(e))), text: '＋ Make cards' }),
+    fixId != null && state.finished && h('button', { class: 'btn', title: 'Correct what was read (or add a missing space), then translate again', onclick: () => invoke('correction_open_snapshot', { requestId: fixId }).catch((e) => flashLine(String(e))), text: '✎ Fix the text' }),
+    lineMessage && h('span', { class: 'status', text: lineMessage }),
+  );
+}
+let lineMessage = null;
+function flashLine(message) {
+  lineMessage = message;
+  render();
+}
+
 /** A word as it should be said: without the punctuation stuck to it. */
 const spoken = (surface) => surface.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
 
@@ -178,7 +200,8 @@ function deepBlock() {
     d.sections.usage && [h('h4', { text: 'In this sentence' }), h('div', { class: 'text', text: d.sections.usage.trim() })],
     d.sections.examples && [h('h4', { text: 'Examples' }), h('div', { class: 'text ko', text: d.sections.examples.trim() })],
     d.sections.nuance && [h('h4', { text: 'Don’t confuse with' }), h('div', { class: 'text', text: d.sections.nuance.trim() })],
-    !d.finished && d.errors.length === 0 && h('div', { class: 'status', text: 'thinking…' }),
+    !d.finished && d.errors.length === 0 && h('div', { class: 'status', text: d.answering ? `${answeringText(d.answering).text} is thinking…` : 'thinking…' }),
+    d.finished && d.answering && h('div', { class: 'who', title: answeringText(d.answering).title, text: `Explained by ${answeringText(d.answering).text}` }),
     d.errors.map((m) => h('div', { class: 'err', text: m })),
     h(
       'div',
@@ -215,12 +238,15 @@ function render() {
     kids.push(readerStrip());
     if (s.direction === 'en_to_ko') kids.push(translationBlock(), s.target && h('div', { class: 'tr' }, wordsBlock('target')));
     else kids.push(wordsBlock('source') ?? h('div', { class: 'empty', text: 'Analysing…' }), translationBlock());
+    kids.push(lineTools());
     kids.push(deepBlock());
     if (s.deep) kids.push(...[ankiBlock()].flat());
     for (const m of s.errors) kids.push(h('div', { class: 'err', text: m }));
     const t = s.timings;
-    if (s.finished && Object.keys(t).length)
-      kids.push(h('div', { class: 'foot' }, [['analysis', t.morphology], ['first word', t.first_token], ['total', t.total]].filter(([, v]) => v != null).map(([k, v]) => h('span', { text: `${k} ${v} ms` }))));
+    // Who is answering shows from the moment it is chosen: when a capture is slow, this says which model to blame.
+    const who = answeringText(s.answering);
+    if (who || (s.finished && Object.keys(t).length))
+      kids.push(h('div', { class: 'foot' }, who && h('span', { class: 'who', title: who.title, text: who.text }), s.finished && [['analysis', t.morphology], ['first word', t.first_token], ['total', t.total]].filter(([, v]) => v != null).map(([k, v]) => h('span', { text: `${k} ${v} ms` }))));
   }
   card.replaceChildren(...kids.filter(Boolean));
   card.style.maxWidth = '';
@@ -231,7 +257,10 @@ function render() {
 // ───────────── actions ─────────────
 
 function update(next) {
-  if (next.id !== state.id) snapshotMenu.close();
+  if (next.id !== state.id) {
+    snapshotMenu.close();
+    lineMessage = null;
+  }
   state = next;
   render();
 }
@@ -388,8 +417,9 @@ function ankiBlock() {
   const bits = [];
   if (u.loading) bits.push(h('span', { class: 'status', text: 'asking Anki…' }));
   else if (u.error && !o?.connected) {
-    bits.push(h('button', { class: 'btn', title: u.error, onclick: () => state.deep && loadAnki(state.deep), text: 'Anki is not reachable · retry' }));
-    bits.push(h('span', { class: 'status', text: 'Open Anki (with the AnkiConnect add-on).' }));
+    // Say what Anki or Maru answered: "not reachable" was shown even when Anki was switched off in Settings.
+    bits.push(h('button', { class: 'btn', onclick: () => state.deep && loadAnki(state.deep), text: 'Try Anki again' }));
+    bits.push(h('span', { class: 'status err-text', text: ankiProblem(u.error) }));
   } else if (o?.existing) {
     bits.push(h('span', { class: 'chip level', title: 'this word is already a card', text: `✓ in Anki · ${o.existing.deck}${o.existing.interval_days ? ` · ${intervalText(o.existing.interval_days)}` : ''}` }));
     bits.push(h('button', { class: 'btn', disabled: u.busy, title: 'put the sentence you just met it in on its card', onclick: addExample, text: '＋ this sentence' }));
@@ -475,6 +505,14 @@ function ankiBlock() {
       ),
     ),
   ];
+}
+
+/** Why a word cannot go to Anki now, in a sentence that says what to do. */
+function ankiProblem(error) {
+  const text = String(error ?? '').replace(/^Error:\s*/, '');
+  if (/switched off/i.test(text)) return 'Anki is switched off in Maru: Settings → Making cards → Send cards to Anki.';
+  if (/connect|refused|unreachable|timed out|error sending/i.test(text)) return 'Anki is not reachable: open Anki with the AnkiConnect add-on, then try again.';
+  return text;
 }
 
 /** The text box that had the keyboard keeps it (and the cursor) when the panel redraws. */
@@ -636,6 +674,7 @@ if (!inTauri) {
     panel_drag: () => {},
     panel_typing: () => {},
     correction_open_snapshot: () => {location.href='correction.html?demo=snapshot';},
+    open_cards: ({ line }) => { location.href = `hub.html?cards#history`; return line; },
     anki_overview: ({ key }) => ({ connected: true, error: null, decks: ['Default', 'Korean', 'Korean::Games', 'Korean::Games::Elden Ring', 'Korean::YouTube'], suggestions: [{ deck: 'Korean::Games::Elden Ring', reason: 'what you chose last time in Elden Ring', exists: true }, { deck: 'Korean::Hades', reason: 'named after Hades', exists: false }, { deck: 'Korean', reason: 'your default deck', exists: true }], tags: ['maru', 'topik-1', 'pos::verb', 'app::elden-ring', 'added::2026-10'], existing: null, reverse: 'subdeck', app_name: 'Elden Ring', audio: true, key }),
     anki_add: ({ request }) => ({ result: 'added', deck: request.deck, reverse_deck: request.reverse === 'off' ? null : `${request.deck}::Reverse`, cards: request.reverse === 'off' ? 1 : 2, sync: true, note: null }),
     anki_add_example: () => true,

@@ -202,8 +202,8 @@ being translated is starred when it arrives, and a star given to a half-read lin
 are listed in **History → ★ Starred**, oldest first, and stay there after they leave the recent history; click ☆/★ next to
 any live line to star it or take the star off.
 
-**Make cards from a line:** in History, **Make cards** under a live line opens the line's words, each with its meaning *in
-that line* (one request to your snapshot model, or your main model when live subtitles are off; the dictionary's meaning,
+**Make cards from a line:** in History, **Make cards** under any Korean line (a live subtitle or a capture) opens the
+line's words, each with its meaning *in that line* (one request to your snapshot model, or your main model when live subtitles are off; the dictionary's meaning,
 marked as such, if neither answers). Words you know or Anki already has start unticked. Edit any meaning, then add:
 * a **word card** per ticked word, in the `Maru Korean` note type, with this line as its example sentence and, if *Reverse
   cards for words* is on, an English → Korean card for writing the word from its meaning;
@@ -401,16 +401,33 @@ unreachable), hollow has not been asked yet or is off. Clicking a line opens the
 
 The sections follow the same flow: **Live subtitles**, **Captures** (snapshot, hover and screen scan), **Making cards**,
 **Voice**, **Connections**, **Shortcuts** and **Advanced** (the settings that rarely change, grouped by section, and what
-is installed). Every setting has one sentence of help and a "Used by" line naming the features that read it; the search
-box finds settings by name, by what they do or by feature ("scan", "make cards", "hover"). There are three kinds of
-control, and they look different: cards when you pick one of several, a switch for on or off, an underlined box when
-you type.
+is installed). The longer sections are split under small headings (in Captures: *Who translates*, *Reading the
+screen*, *The panel*, *Floating controls*). Every setting has one sentence of help; a setting that also changes another
+feature says so ("Also changes Live subtitles"), and the search box finds settings by name, by what they do or by feature
+("scan", "make cards", "hover") and lists every feature each one changes. There are three kinds of control, and they
+look different: cards when you pick one of several, a switch for on or off, an underlined box when you type.
 
 **Each task picks its own model.** Live subtitles, captures, the meanings of card words and the sentence of a card each
 name a connection: **This PC** (the model in `[llm] hf_repo` / `model_path`) or one you saved. At the top of its
 section a task shows what the running app uses for it, with a **Test** button (one short question; this PC's model is
 not loaded by it while live subtitles run). Card meanings ask their connection first, then this PC's model, then use
 the dictionary, and the cards sheet says which of them answered. `maru config tasks` prints the same table.
+
+**Test the card you picked, before saving.** Under every connection choice there is **Test <name>**: it asks the card that
+is picked now one short question, whether you saved it or not, and answers in plain words ("Claude answered in 0.4 s.
+It is used once you save and restart."). Nothing is saved or restarted by it, so you can click through NAS, Claude and
+This PC and test each before deciding. A connection you are still editing is tested with what you typed. This PC's model
+is not loaded by it while live subtitles run, and a translation-only model for live subtitles can only be tried by
+turning them on.
+
+**Recommended, and why.** The connection the measurements favour for each step carries a green *Recommended* tag, and
+under the cards one line says why, from what was measured on your PC: live subtitles on the NAS (about 0.4 s a line, as
+fast as this PC, and the game keeps the graphics card), captures on This PC and on the NAS while live subtitles run (so
+this PC never swaps models mid-game), card meanings on the free Gemma (83 % right in your blind review; Claude Sonnet
+scored 88 %, a difference the review could not prove), and the sentence card keeping the line's own translation (how well
+models translate whole sentences was not scored yet). **Use <name>** picks it. The advice follows your connections by the
+kind of model and where it runs, so a renamed connection keeps it; resting the pointer on another card shows what it was
+measured at. The reading model PaddleOCR-VL 1.6 and the small line finder for live subtitles are marked the same way.
 
 **Connections are edited in one place.** Settings → Connections lists this PC's model and every server you added, with
 what uses each. **Add a connection** asks for a name, the kind of server (your own or Anthropic, Azure OpenAI, Google
@@ -435,7 +452,8 @@ try each one.
 
 Changes are collected and written with **Save**. Shortcuts, the panel's look, the list of connections and the two card
 tasks take effect at once; what holds a model or a server (the live and capture connections, the voice, this PC's
-model) waits for a restart, and one banner at the top lists what is waiting.
+model) waits for a restart, and one banner at the top lists what is waiting. When something you changed needs a
+restart, the bar at the bottom also offers **Save and restart**, which does both in one press.
 
 The first time this version starts, it writes the task table into your `config.toml` from what the file already did
 (the copy of the file as it was is kept beside it as `config.toml.before-tasks-<date>.bak`); the only change of
@@ -446,7 +464,10 @@ Captures and "While live subtitles are on, use".
 
 ## Making cards from a line
 
-History → **Make cards** on a live line opens a sheet with the words of the line. Each word has a short English and a
+History → **Make cards** on a line opens a sheet with the words of the line. Every Korean line has it: live subtitles and
+the captures you translate yourself (a snapshot of a menu, a selection). From the panel, **＋ Make cards** under a
+finished translation opens History at that line's sheet, so a sentence from a snapshot becomes a sentence card with its
+words, not only the words you click one at a time. The sheet says the translation was "made when you captured it". Each word has a short English and a
 short Spanish meaning (both can be typed over), the dictionary's other senses to pick from, and under the words a line
 saying which model chose the meanings ("Meanings chosen by This PC's model …"). If the connection you chose for card
 meanings could not answer, the sheet says why in plain words ("Gemini has no quota left. This PC's model answered
@@ -468,7 +489,10 @@ gloss in the definition is used when there is one, and otherwise the model words
 senses is asked about twice when the model says none of the first eight fits. If the word splitter (Kiwi) gets a word's
 dictionary form wrong, as it does with dialect and misread text, the model can propose the right one when **Let the
 model correct a word's dictionary form** is on (Settings → Advanced; off by default, it only worked well with Claude
-Sonnet in tests): the sheet then shows both forms and a button to use the model's.
+Sonnet in tests): the sheet then shows both forms and a button to use the model's. You can also fix it yourself: **✎**
+next to a word turns its dictionary form into a box; type the right one (주다 for a 주꾸마 the splitter read as 꾸다) and
+press Enter. The card is made for what you typed, and the sheet reminds you that the meanings were chosen for the old
+form, so check them. Esc puts the splitter's form back.
 
 A word added from the panel (**Add to Anki**) now gets its Spanish meaning also when the dictionary has several senses
 for it: the sense that fits the sentence you saw it in is chosen by the card-meanings connection.
@@ -713,9 +737,20 @@ a newer panel answer; overlapping live translations retain dialogue context in c
 
 See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and the extension points.
 
+## Who answered
+
+The panel's last line names the connection and model that translated the capture, as soon as it is chosen and before
+its first word ("NAS · gemma4-12b", with where it runs when you rest the pointer on it), followed by the timings. A word's
+explanation ends with "Explained by …". When the snapshot server cannot be reached and this PC's model answers instead,
+the line says so. **Status → Who answers** lists every task's connection and its last state; the floating controls show
+the same for live subtitles and captures. The tray menu is grouped the same way as the floating controls, with each
+shortcut beside its action, and has **History and cards…**.
+
 ## Correcting snapshot OCR
 
-In a region snapshot's translation panel or on a whole-screen scan label, **right-click → Correct Korean OCR…**.
+In a region snapshot's translation panel, **✎ Fix the text** under the translation (or right-click → **Correct Korean
+OCR…**); on a whole-screen scan label, right-click → **Correct Korean OCR…**. Words that come out split wrongly in the
+panel are often a misread letter or a missing space: fixing the text and translating again splits them anew.
 The editor shows what OCR originally read: replace `ㅅ컵` with `스킵`, for example, and press
 **Apply and retranslate**. It reuses the captured text and area; it does not capture a new screen or change the live watcher.
 Stale editors are refused after a newer snapshot/scan replaces their source. Old word boxes are discarded for corrected text.
@@ -870,8 +905,12 @@ With a configured external main model, a missing or failed local live translator
 screen labels or deep dives after a restart. Remote request failures keep the offline breakdown and can be retried;
 they do not ask you to install a local model just because the optional live model is unloaded.
 
-The floating **마** button opens the tray actions above a borderless game: live toggle, area selection, snapshots,
-hover, screen labels, speech, history/review/status/settings and Quit. Drag the button to move it; its position is
+The floating **마** button opens the tray actions above a borderless game, grouped by what you are doing: **Live
+subtitles** (on/off, choose the area, star this line), **Capture** (snapshot a region, translate the selection, hover,
+label the screen, read aloud), the **Saved game area**, **Models and memory** (folded: the VRAM bar, the live translator
+and OCR, prepare and release) and a row to open History, Review, Settings, Status or Resources. Every button shows its
+shortcut, and the live and capture groups say who translates for them now and whether it worked ("Translates with NAS ·
+gemma4-12b · another computer"), so a slow line can be blamed on the right model. Drag the button to move it; its position is
 remembered. **Ctrl+Alt+M** or the tray's **Show / hide floating controls** brings it back after Hide. You can change
 that shortcut or turn startup visibility off in Settings. Transparent space passes clicks through, and the controls
 are excluded from captures. Exclusive fullscreen and the new layout still need a real-PC check (M-17).

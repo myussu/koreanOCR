@@ -137,6 +137,11 @@ impl<W: Write> Renderer<W> {
                 let line = format!("  {} {text}\n", self.paint("33", "note:"));
                 self.pending.push(line);
             }
+            Event::Answering { connection, model, .. } => {
+                let name = if connection == "local" { "this PC" } else { connection.as_str() };
+                let line = format!("  {}\n", self.paint("2", &format!("answered by {name} · {model}")));
+                self.pending.push(line);
+            }
             Event::DeepEntries { entries, conjugation, .. } => {
                 self.close_line();
                 if !conjugation.is_empty() {

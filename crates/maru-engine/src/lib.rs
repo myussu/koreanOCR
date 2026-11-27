@@ -7,6 +7,7 @@
 //! * [`annotate`], [`cache`], [`memory`], [`change`] — the supporting pieces
 
 pub mod anki_flow;
+mod answering;
 pub mod annotate;
 pub mod bootstrap;
 mod deferred_models;

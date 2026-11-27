@@ -156,8 +156,9 @@ struct MenuPlacement {
 fn menu_placement(anchor: Point, monitor: Rect, scale: f32) -> MenuPlacement {
     let left = anchor.x < monitor.x + monitor.w / 2.0;
     let up = anchor.y > monitor.y + monitor.h / 2.0;
-    // Leave room for the placement helper's screen-edge margin even on high-DPI monitors.
-    let size = ((350.0 * scale).min((monitor.w - 16.0).max(1.0)), (620.0 * scale).min((monitor.h - 16.0).max(1.0)));
+    // Leave room for the placement helper's screen-edge margin even on high-DPI monitors. 840 high fits the grouped
+    // menu without scrolling on a 1080p screen; a shorter monitor scrolls it.
+    let size = ((350.0 * scale).min((monitor.w - 16.0).max(1.0)), (840.0 * scale).min((monitor.h - 16.0).max(1.0)));
     let offset = (if left { 0.0 } else { size.0 - 64.0 * scale }, if up { size.1 - 64.0 * scale } else { 0.0 });
     let at = logic::keep_on_screen(
         Point {
@@ -222,6 +223,10 @@ pub struct LauncherStatus {
     shortcut: String,
     live_setup: maru_engine::model_controls::LiveSetupStatus,
     reading: maru_engine::reading_areas::ReadingStatus,
+    /// Every shortcut, so each button shows its own.
+    hotkeys: maru_core::config::Hotkeys,
+    /// What each task asks now (connection, model, where, last state): the menu names who translates.
+    tasks: Vec<maru_engine::routes::TaskStatus>,
 }
 
 #[tauri::command]
@@ -272,6 +277,7 @@ pub fn launcher_status(app: AppHandle, state: State<'_, Arc<AppState>>) -> Launc
         let scan = state.scan();
         (scan.visible, scan.id, scan.visible && scan.join_mode)
     };
+    let hotkeys = state.cfg().hotkeys;
     LauncherStatus {
         live,
         hover,
@@ -284,9 +290,11 @@ pub fn launcher_status(app: AppHandle, state: State<'_, Arc<AppState>>) -> Launc
         queued,
         active,
         snapshot,
-        shortcut: state.cfg().hotkeys.launcher,
+        shortcut: hotkeys.launcher.clone(),
         live_setup: state.services.live_setup_status(),
         reading: { state.engine().reading_context(); state.engine().reading_status() },
+        hotkeys,
+        tasks: state.engine().task_status(),
     }
 }
 

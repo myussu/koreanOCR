@@ -9,8 +9,9 @@ import { invoke } from './bridge.js';
 import { ankiSettingsPending, soundsText } from './anki.js';
 import { modelEdits } from './settings-live-core.js';
 import { discoveryControls } from './settings-discovery.js';
-import { SECTIONS, CATEGORIES, ALL_FIELDS, controlKind, isVisible, appliesLive, labelFor, matchesSetting, toEditor, fromEditor, withEdit, withReset, shown, isDefault, splitKeys, joinKeys, comboFromEvent, keyRisk } from './settings-core.js';
-import { LOCAL, PLACES, connections, routeChoices, stateDot, flowSteps, usedBy, connectionProblem, saveConnection, removeConnection, pendingSummary, needsKey } from './settings-flow-core.js';
+import { SECTIONS, CATEGORIES, ALL_FIELDS, controlKind, isVisible, appliesLive, labelFor, matchesSetting, toEditor, fromEditor, withEdit, withReset, shown, isDefault, splitKeys, joinKeys, comboFromEvent, keyRisk, otherUses } from './settings-core.js';
+import { LOCAL, PLACES, connections, routeChoices, stateDot, flowSteps, usedBy, connectionProblem, saveConnection, removeConnection, pendingSummary, needsKey, routeTestPlan, needsRestart } from './settings-flow-core.js';
+import { recommendFor, adviceTask, measuredFor } from './settings-advice-core.js';
 
 function h(tag, props = {}, ...kids) {
   const el = document.createElement(tag);
@@ -75,10 +76,15 @@ export async function settingsView() {
 
   // ───────────── the three kinds of control ─────────────
 
-  /** Cards to pick one of: a visible list of every possibility, the chosen one outlined. */
+  /** Cards to pick one of: a visible list of every possibility, the chosen one outlined, the recommended one marked. */
   function choiceControl(field) {
+    const route = field.type === 'route' || field.type === 'route_optional';
     const box = h('div', { class: 'choices', role: 'radiogroup', 'aria-label': field.label });
-    const options = () => (field.type === 'route' || field.type === 'route_optional' ? routeChoices(field, live(), value(field.path)) : field.options);
+    const foot = h('div', { class: 'route-foot' });
+    const task = adviceTask(field.path);
+    const options = () => (route ? routeChoices(field, live(), value(field.path)) : field.options);
+    const advice = () => (route && task ? recommendFor(task, live()) : null);
+    const same = (a, b) => String(a ?? '').toLowerCase() === String(b ?? '').toLowerCase();
     const pick = (v) => {
       // Choosing a translation-only model also fills in the file Maru found for it.
       if (field.path === 'tasks.live.model') stage(modelEdits(v === '' ? 'main' : v, Object.fromEntries(ALL_FIELDS.map((f) => [f.path, value(f.path)])), data.live_models));
@@ -87,11 +93,49 @@ export async function settingsView() {
     };
     const draw = () => {
       const now = value(field.path) ?? '';
-      box.replaceChildren(...options().map((o) => h('button', { class: `choice${o.missing ? ' missing' : ''}`, type: 'button', role: 'radio', 'aria-checked': String(String(o.value ?? '').toLowerCase() === String(now).toLowerCase()), onclick: () => pick(o.value) },
-        h('strong', { text: o.label }), o.detail && h('small', { text: o.detail }))));
+      const rec = advice();
+      box.replaceChildren(...options().map((o) => {
+        const recommended = rec ? same(o.value, rec.value) : !!o.recommended;
+        const measured = route && task && o.value ? measuredFor(task, connections(live()).find((c) => same(c.name, o.value))?.model) : null;
+        return h('button', { class: `choice${o.missing ? ' missing' : ''}${recommended ? ' recommended' : ''}`, type: 'button', role: 'radio', title: measured ? `Measured: ${measured}` : (typeof o.recommended === 'string' ? o.recommended : null), 'aria-checked': String(same(o.value, now)), onclick: () => pick(o.value) },
+          h('strong', { text: o.label }), o.detail && h('small', { text: o.detail }), recommended && h('span', { class: 'rec', text: 'Recommended' }));
+      }));
+      if (route) drawFoot(now, rec);
+    };
+    // Under the cards: test the picked one right away (saved or not), and what is recommended and why.
+    const drawFoot = (now, rec) => {
+      const plan = routeTestPlan(field, now, value);
+      const result = routeTests.get(field.path);
+      const shown = result && same(result.for, now) ? result : null;
+      const label = plan.label || 'this choice';
+      foot.replaceChildren(...[
+        plan.kind !== 'none' && plan.kind !== 'later' && btn(shown?.busy ? 'Testing…' : `Test ${label}`, () => testRoute(field, now, plan)),
+        shown && h('span', { class: `task-state ${shown.busy ? 'idle' : stateDot(shown.state).kind}`, text: shown.busy ? `asking ${label}…` : shown.message }),
+        !shown && (plan.kind === 'later' || plan.kind === 'none') && plan.message && h('span', { class: 'route-note', text: plan.message }),
+        rec && h('div', { class: 'route-advice' }, h('b', { text: 'Recommended: ' }), `${rec.value === '' ? (field.none ?? 'none') : rec.value === LOCAL ? 'This PC' : rec.value} — ${rec.why}.`,
+          !same(rec.value, now) && btn(`Use ${rec.value === '' ? 'it' : rec.value === LOCAL ? 'This PC' : rec.value}`, () => pick(rec.value))),
+      ].filter(Boolean));
     };
     draw();
-    return { el: box, sync: draw, rebuild: draw };
+    return { el: route ? h('div', { class: 'route-wrap' }, box, foot) : box, sync: draw, rebuild: draw };
+  }
+
+  // The Test under a connection field: asks the picked card, saved or not; the result stays until another is picked.
+  const routeTests = new Map();
+  async function testRoute(field, chosen, plan) {
+    if (routeTests.get(field.path)?.busy) return;
+    routeTests.set(field.path, { for: chosen, busy: true });
+    refreshAll();
+    let r;
+    if (plan.kind === 'local') r = await invoke('connection_test', { connection: LOCAL }).catch((e) => ({ state: 'failed', message: String(e) }));
+    else r = await invoke('connection_check', { name: plan.server.name, endpoint: plan.server.endpoint, modelName: plan.server.model_name, reasoningEffort: value('llm.reasoning_effort'), provider: plan.server.provider ?? 'openai', apiKey: plan.server.api_key || null }).catch((e) => ({ state: 'failed', message: String(e) }));
+    const state = r.state === 'input' ? 'failed' : r.state;
+    const saved = Object.keys(draft).some((p) => p === field.path);
+    const note = state === 'working' && saved ? ` It is used once you save${appliesLive(field.path) ? '' : ' and restart'}.` : '';
+    routeTests.set(field.path, { for: chosen, busy: false, state, message: `${r.message}${note}` });
+    // The running tasks' dots may have changed with this answer.
+    tasks = await invoke('task_status').catch(() => tasks);
+    refreshAll();
   }
 
   /** A switch: on or off. */
@@ -159,11 +203,13 @@ export async function settingsView() {
   // ───────────── a setting: its name, one sentence, who uses it, its control ─────────────
 
   const rows = new Map();
-  function row(field) {
+  function row(field, { allUses = false } = {}) {
     const kind = controlKind(field);
     const ctl = field.type === 'keys' ? keysControl(field) : kind === 'switch' ? switchControl(field) : kind === 'choice' ? choiceControl(field) : typedControl(field);
     const reset = h('button', { class: 'reset', type: 'button', title: 'Back to the default', text: '↺', onclick: () => { draft = withReset(draft, data.values, data.defaults, field.path); message = null; ctl.rebuild(); refreshAll(); } });
-    const uses = field.uses?.length && h('div', { class: 'uses' }, 'Used by ', field.uses.map((u) => h('span', { class: 'use', text: u })));
+    // In its own section a row only names the other features it changes; search results name them all.
+    const names = allUses ? field.uses ?? [] : otherUses(field);
+    const uses = names.length > 0 && h('div', { class: 'uses' }, allUses ? 'Used by ' : 'Also changes ', names.map((u) => h('span', { class: 'use', text: u })));
     const holder = h('div', { class: `set-row kind-${kind}${field.type === 'keys' ? ' keysrow' : ''}`, 'data-path': field.path },
       h('div', { class: 'what' }, h('div', { class: 'name' }, field.label, reset), field.help && h('div', { class: 'help', text: field.help }), uses),
       ctl.el);
@@ -383,8 +429,10 @@ export async function settingsView() {
   const bar = h('div', { class: 'savebar' });
   const msg = h('div', { class: 'msg' });
   const saveBtn = btn('Save', () => save(), 'primary');
+  // Changes that wait for a restart (captures, live subtitles, models) can be saved and put in use in one press.
+  const restartBtn = btn('Save and restart', () => save({ restart: true }), 'primary');
   const discardBtn = btn('Discard', () => { draft = {}; message = null; editing = null; stopCapture(); rebuildAll(); });
-  bar.append(msg, discardBtn, saveBtn);
+  bar.append(msg, discardBtn, saveBtn, restartBtn);
 
   /** One banner for everything that waits for a restart, instead of a mark on every row. */
   function drawBanner() {
@@ -400,11 +448,14 @@ export async function settingsView() {
   function drawBar() {
     const n = Object.keys(draft).length;
     msg.className = `msg${message?.kind === 'bad' ? ' bad' : ''}`;
-    msg.textContent = message ? message.text : n ? `${n} unsaved change${n === 1 ? '' : 's'}` : 'All changes are saved';
-    saveBtn.disabled = discardBtn.disabled = n === 0 || saving;
+    const restart = needsRestart(draft, appliesLive);
+    msg.textContent = message ? message.text : n ? `${n} unsaved change${n === 1 ? '' : 's'}${restart ? ' · some need a restart' : ''}` : 'All changes are saved';
+    saveBtn.disabled = discardBtn.disabled = restartBtn.disabled = n === 0 || saving;
+    restartBtn.hidden = !restart;
+    saveBtn.classList.toggle('primary', !restart);
   }
 
-  async function save() {
+  async function save({ restart = false } = {}) {
     if (saving) return;
     saving = true; root.inert = true; message = { kind: 'ok', text: 'Saving…' }; refreshAll();
     try {
@@ -415,6 +466,12 @@ export async function settingsView() {
       draft = {};
       const warn = r.warnings?.length ? ` ${r.warnings.join(' ')}` : '';
       message = { kind: r.warnings?.length ? 'bad' : 'ok', text: (!r.changed.length ? 'Nothing changed.' : waits ? 'Saved. Some changes wait for a restart (see the top of the page).' : 'Saved. Everything is in effect now.') + warn };
+      if (restart && !r.warnings?.length) {
+        message = { kind: 'ok', text: 'Saved. Restarting Maru…' };
+        refreshAll();
+        await invoke('restart_app');
+        return;
+      }
       rebuildAll();
     } catch (e) {
       message = { kind: 'bad', text: String(e) };
@@ -432,10 +489,20 @@ export async function settingsView() {
       section.intro && h('p', { class: 'intro', text: section.intro }),
       (section.tasks ?? []).map(taskLine),
       section.custom === 'connections' && [connectionsView(), h('h4', { text: "This PC's model" })],
-      fieldsOf(section, false).map(row),
+      withSubheadings(fieldsOf(section, false)),
       section.action === 'tts-test' && ttsTest(),
       section.action === 'anki' && ankiActions(),
       section.fields.some((f) => f.advanced) && h('p', { class: 'more' }, 'Less common settings for this are in ', h('a', { href: '#', text: 'Advanced', onclick: (e) => { e.preventDefault(); go('advanced'); } }), '.'));
+  }
+
+  /** The rows of a section, with a subheading where its group changes (settings-core.js `GROUPS`). */
+  function withSubheadings(fields) {
+    let last = null;
+    return fields.flatMap((f) => {
+      const head = f.group && f.group !== last ? h('h4', { class: 'set-group', text: f.group }) : null;
+      last = f.group ?? last;
+      return [head, row(f)];
+    });
   }
 
   function advancedView() {
@@ -449,7 +516,7 @@ export async function settingsView() {
   function searchView() {
     const hits = SECTIONS.map((s) => [s, s.fields.map((f) => ({ ...f, section: s.id })).filter((f) => matchesSetting(f, query))]).filter(([, fields]) => fields.length);
     if (!hits.length) return h('p', { class: 'settings-empty', text: 'No setting or feature matches that. Try a feature name such as "scan", "cards" or "live".' });
-    return hits.map(([s, fields]) => h('section', { class: 'set-sec' }, h('h3', {}, s.title, h('small', { text: ` ${fields.length} match${fields.length === 1 ? '' : 'es'}` })), fields.map(row)));
+    return hits.map(([s, fields]) => h('section', { class: 'set-sec' }, h('h3', {}, s.title, h('small', { text: ` ${fields.length} match${fields.length === 1 ? '' : 'es'}` })), fields.map((f) => row(f, { allUses: true }))));
   }
 
   function rebuildAll() {

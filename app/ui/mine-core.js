@@ -23,6 +23,7 @@ export const ankiIsOff = (sheet) => /switched off/i.test(sheet.anki_error ?? '')
 /** Why the add button is off, or null when it can be pressed. */
 export function mineBlocker(draft, sheet) {
   if (sheet.anki_error) return /^anki/i.test(sheet.anki_error) ? sheet.anki_error : `Anki: ${sheet.anki_error}`;
+  if (picked(draft).some((w) => !String(w.key ?? '').trim())) return 'A picked word has no dictionary form.';
   if (picked(draft).length && !draft.deck.trim()) return 'Choose a deck for the words.';
   if (draft.sentenceCard && !(draft.sentenceDeck ?? draft.deck).trim()) return 'Choose a deck for the sentence.';
   if (!picked(draft).length && !draft.sentenceCard) return 'Tick a word or the sentence card.';
@@ -155,6 +156,17 @@ export function formChoice(word, draftWord) {
     button: usingModel ? `Use ${word.key}` : `Use ${word.corrected}`,
     next: usingModel ? word.key : word.corrected,
   };
+}
+
+/**
+ * A dictionary form typed by hand (the word splitter cut the word wrongly, as with dialect or a misread line): the
+ * card is made for the typed form, whose meanings the dictionary did not choose. `null` when nothing was typed.
+ */
+export function typedFormNote(word, draftWord) {
+  const typed = String(draftWord.key ?? '').trim();
+  if (!typed) return 'Type the dictionary form, or tick the word off.';
+  if (typed === word.key || typed === word.corrected) return null;
+  return `The card will ask ${typed}. The meanings were chosen for ${word.key}: check them.`;
 }
 
 /** A dictionary sense as an option: "ship; boat · barco". */

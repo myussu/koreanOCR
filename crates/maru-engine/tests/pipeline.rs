@@ -404,6 +404,7 @@ fn names(events: &[Event]) -> Vec<&'static str> {
             Event::TranslationDone { .. } => "translation_done",
             Event::Gloss { .. } => "gloss",
             Event::Note { .. } => "note",
+            Event::Answering { .. } => "answering",
             Event::DeepEntries { .. } => "deep_entries",
             Event::DeepDelta { .. } => "deep_delta",
             Event::WordState { .. } => "word_state",
@@ -435,6 +436,18 @@ fn text_of(events: &[Event], variant: Variant) -> String {
 }
 
 const SENTENCE: &str = "저는 학교에서 공부했어요";
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_capture_says_which_connection_answers_it_before_its_first_word() {
+    let h = harness().await;
+    let (_, rx) = h.engine.translate(Capture::typed(SENTENCE));
+    let events = collect(rx).await;
+    assert!(first_index(&events, "answering") < first_index(&events, "translation"), "{:?}", names(&events));
+    let Event::Answering { connection, model, place, .. } = &events[first_index(&events, "answering")] else { panic!() };
+    // The test's server is no saved connection: it is named by its address, on this PC.
+    assert_eq!((connection.as_str(), model.as_str(), place.as_str()), ("127.0.0.1", "maru", "this_pc"));
+    assert_eq!(names(&events).iter().filter(|n| **n == "answering").count(), 1);
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn korean_to_english_streams_breakdown_first_then_translation_and_meanings() {
@@ -2423,6 +2436,32 @@ async fn the_test_button_reports_a_working_connection_one_out_of_quota_and_one_t
     h.engine.set_live_active(true);
     let status = h.engine.test_task(Task::CardMeanings).await;
     assert_eq!(status.state, State::NotLoaded);
+    assert!(local.requests.lock().unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_connection_picked_in_settings_is_tested_by_its_name_without_saving_or_restarting() {
+    use maru_core::tasks::Task;
+    let working = spawn_mock(|_, _| MockResponse { status: 200, chunks: sse_answer(&["안녕하세요"]), delay_ms: 0 }).await;
+    let gemini = spawn_mock(out_of_quota).await;
+    let h = card_harness(spawn_mock(ankiconnect).await, vec![route_to("NAS", &working.url)]);
+    h.engine.set_routes(Routes { card_meanings: vec![route_to("NAS", &working.url)], all: vec![route_to("NAS", &working.url), route_to("Gemini", &gemini.url)], ..Default::default() });
+
+    let nas = h.engine.test_connection("nas").await;
+    assert_eq!((nas.connection.as_str(), nas.state), ("NAS", State::Working));
+    assert!(nas.message.starts_with("NAS answered in "), "{}", nas.message);
+    let quota = h.engine.test_connection("Gemini").await;
+    assert_eq!((quota.state, quota.message.as_str()), (State::Quota, "Gemini has no quota left."));
+    let missing = h.engine.test_connection("Claude").await;
+    assert_eq!(missing.state, State::Off);
+    assert!(missing.message.contains("save it first"), "{}", missing.message);
+    assert_eq!(h.engine.task_status().into_iter().find(|t| t.task == Task::CardMeanings).map(|t| t.connection), Some("NAS".to_string()), "the task keeps its connection");
+
+    // This PC's model is not loaded beside live subtitles by the button either.
+    let local = spawn_mock(model).await;
+    h.engine.set_routes(Routes { all: vec![unloaded_local(&local.url)], ..Default::default() });
+    h.engine.set_live_active(true);
+    assert_eq!(h.engine.test_connection("local").await.state, State::NotLoaded);
     assert!(local.requests.lock().unwrap().is_empty());
 }
 

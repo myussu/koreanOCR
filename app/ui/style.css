@@ -116,6 +116,7 @@ button.btn[disabled] { opacity: 0.5; cursor: default; }
 .flag { font-size: 12px; font-weight: 600; }
 .flag.on { color: var(--good); }
 .flag.off { color: var(--muted); font-weight: 400; }
+.flag.bad { color: var(--bad); }
 
 .foot { margin-top: 8px; display: flex; gap: 10px; color: var(--muted); font-size: 10.5px; flex-wrap: wrap; }
 .err { margin-top: 8px; padding: 6px 9px; border-radius: 8px; background: rgba(180, 35, 24, 0.10); color: var(--bad); font-size: 12px; }
@@ -156,3 +157,10 @@ body.dragging, body.dragging .bar { cursor: grabbing; }
 .tagchip button { all: unset; cursor: pointer; color: var(--muted); padding: 0 4px; }
 .tagchip button:hover { color: var(--bad); }
 .anki-opts { display: flex; gap: 14px; font-size: 12.5px; color: var(--muted); }
+
+/* What can be done with the whole line: make cards, fix what a snapshot read. */
+.line-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 8px; }
+.line-tools .btn { font-size: 12.5px; padding: 3px 10px; }
+.err-text { color: var(--bad); }
+.foot .who { color: var(--fg); opacity: 0.75; }
+.deep .who { margin-top: 6px; font-size: 11.5px; color: var(--muted); }

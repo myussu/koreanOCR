@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { emptyState, reduce, openDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, snapshotCorrectionId } from '../core.js';
+import { emptyState, reduce, openDeep, meaningFor, translationRows, sentenceOf, autoDeepTarget, snapshotCorrectionId, cardsLine, answeringText, shortModel } from '../core.js';
 
 const word = (over = {}) => ({ index: 0, surface: '학교에서', lemma: '학교', content: true, state: 'new', lookups: 0, dict_glosses: ['school'], morphs: [], ...over });
 const started = (id = 1, direction = 'ko_to_en') => ({ type: 'started', id, direction, capture: { text: '학교에서 공부해요' }, cached: false });
@@ -121,4 +121,30 @@ test('two content words are not a single word, so no deep dive opens by itself',
   let s = reduce(emptyState(), started(3));
   s = reduce(s, { type: 'breakdown', id: 3, side: 'source', eojeols: [word({ index: 0 }), word({ index: 1, surface: '공부' })], romanization: '', pronunciation: '' });
   assert.equal(autoDeepTarget(s, 3), null);
+});
+
+test('a Korean capture can become cards once its translation is done, with its request id and program', () => {
+  const ev = [
+    { type: 'started', id: 7, direction: 'ko_to_en', capture: { text: '상자를 열면 열쇠가 나옵니다', source: 'ocr', app: { exe: 'eden.exe' } }, cached: false },
+    { type: 'translation', id: 7, variant: 'primary', delta: 'If you open the box' },
+  ];
+  let s = ev.reduce(reduce, emptyState());
+  assert.equal(cardsLine(s), null, 'not while the translation streams');
+  s = reduce(s, { type: 'translation_done', id: 7, variant: 'primary', text: 'If you open the box, a key comes out.' });
+  assert.deepEqual(cardsLine(s), { id: 7, sentence: '상자를 열면 열쇠가 나옵니다', translation: 'If you open the box, a key comes out.', app: 'eden.exe' });
+  const english = reduce(emptyState(), { ...ev[0], id: 8, direction: 'en_to_ko' });
+  assert.equal(cardsLine(reduce(english, { type: 'translation_done', id: 8, variant: 'primary', text: '열쇠' })), null, 'English → Korean is not a Korean line to learn');
+});
+
+test('the panel names who answers a capture and a deep dive, the way Settings names connections', () => {
+  let s = reduce(emptyState(), { type: 'started', id: 3, direction: 'ko_to_en', capture: { text: '안녕' }, cached: false });
+  s = reduce(s, { type: 'answering', id: 3, connection: 'NAS', model: 'gemma4-12b', place: 'network' });
+  assert.deepEqual(answeringText(s.answering), { text: 'NAS · gemma4-12b', title: 'Answered by NAS (gemma4-12b), on another computer. Settings → Captures chooses it.' });
+  assert.equal(answeringText({ connection: 'local', model: 'unsloth/gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL', place: 'this_pc' }).text, 'This PC · gemma-4-12B-it-qat-GGUF:UD-Q4_K_XL');
+  assert.equal(shortModel('D:\\models\\Hy-MT2-1.8B-Q4_K_M.gguf'), 'Hy-MT2-1.8B-Q4_K_M');
+  assert.equal(answeringText(null), null);
+  s = openDeep(s, { id: 4, eojeol: { surface: '안녕' }, sentence: '안녕', translation: 'hi', meaning: null });
+  s = reduce(s, { type: 'answering', id: 4, connection: 'Claude', model: 'claude-sonnet-5-5', place: 'hosted' });
+  assert.equal(s.deep.answering.connection, 'Claude', 'a deep dive keeps its own');
+  assert.equal(s.answering.connection, 'NAS');
 });

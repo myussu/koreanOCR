@@ -1,9 +1,9 @@
-// "Make cards" in History: the words of a live line, each with its meaning in that line, become Anki word cards (with
+// "Make cards" in History: the words of a line (live or captured), each with its meaning in that line, become Anki word cards (with
 // a reverse card if wanted) and the line itself a sentence card. The decisions are in mine-core.js.
 
 import { invoke } from './bridge.js';
 import { soundsText } from './anki.js';
-import { addLabel, ankiIsOff, answeredText, applySense, askFor, deckOptions, formChoice, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, queueLines, redraft, retryChoices, senseIndex, senseLabel } from './mine-core.js';
+import { addLabel, ankiIsOff, answeredText, applySense, askFor, deckOptions, formChoice, meaningHint, mineBlocker, mineDraft, mineRequest, outcomeSummary, queueLines, redraft, retryChoices, senseIndex, senseLabel, typedFormNote } from './mine-core.js';
 
 let lists = 0;
 
@@ -108,7 +108,7 @@ export function mineSheet(h, item, { onClose, onAdded }) {
   const sentenceTools = () => {
     const choices = retryChoices(sheet).filter((c) => !c.afterLive);
     if (!choices.length) return null;
-    const out = h('span', { class: 'mine-by-who', text: sentenceBy ?? 'The translation made while you played.' });
+    const out = h('span', { class: 'mine-by-who', text: sentenceBy ?? (item.live ? 'The translation made while you played.' : 'The translation made when you captured it.') });
     return h('div', { class: 'mine-by' }, out, choices.map((c) => h('button', { class: 'btn', type: 'button', title: c.detail, text: c.label.replace('Retry with', 'Translate again with'), onclick: async (e) => {
       e.target.disabled = true;
       out.textContent = 'Translating…';
@@ -129,7 +129,8 @@ export function mineSheet(h, item, { onClose, onAdded }) {
     const facts = [w.pos, w.level, w.known ? 'known' : '', w.in_anki ? 'in Anki' : ''].filter(Boolean).join(' · ');
     return h('div', { class: d.picked ? 'mine-word on' : 'mine-word' },
       h('input', { type: 'checkbox', checked: d.picked, 'aria-label': `Make a card for ${w.key}`, onchange: (e) => { d.picked = e.target.checked; draw(); } }),
-      h('div', { class: 'mine-key' }, h('span', { class: 'ko', text: d.key }), w.surface !== d.key && h('small', { class: 'ko', text: w.surface }), forms(w, d)),
+      h('div', { class: 'mine-key' }, d.editing ? formInput(w, d) : [h('span', { class: 'ko', text: d.key }), h('button', { class: 'icon fix', type: 'button', title: 'Fix the dictionary form, when the word was split wrongly', 'aria-label': `Fix the dictionary form of ${d.key}`, text: '✎', onclick: () => { d.editing = true; draw(); root.querySelector(`[data-form="${i}"]`)?.focus(); } })],
+        w.surface !== d.key && h('small', { class: 'ko', text: w.surface }), forms(w, d), typedFormNote(w, d) && h('small', { class: 'typed-form', text: typedFormNote(w, d) })),
       h('div', { class: 'mine-meaning' },
         h('input', { type: 'text', value: d.meaning, list, placeholder: 'meaning', 'aria-label': `Meaning of ${w.key}`, oninput: (e) => { d.meaning = e.target.value; refresh(); } }),
         w.dictionary.length > 0 && h('datalist', { id: list }, w.dictionary.map((g) => h('option', { value: g }))),
@@ -138,6 +139,12 @@ export function mineSheet(h, item, { onClose, onAdded }) {
         (w.senses?.length ?? 0) > 1 && senses(w, d),
         h('small', { text: [meaningHint(w), facts].filter(Boolean).join(' · ') })));
   };
+
+  // The dictionary form typed by hand: the card is made for it (Enter or leaving the box keeps it).
+  const formInput = (w, d) => h('input', { type: 'text', class: 'ko form-edit', lang: 'ko', value: d.key, 'data-form': String(draft.words.indexOf(d)), 'aria-label': `Dictionary form of ${w.surface}`,
+    oninput: (e) => { d.key = e.target.value.trim(); refresh(); },
+    onkeydown: (e) => { if (e.key === 'Enter' || e.key === 'Escape') { if (e.key === 'Escape') d.key = w.key; d.editing = false; draw(); } },
+    onblur: () => { if (d.editing) { d.editing = false; draw(); } } });
 
   // The model reads another dictionary form than the word splitter: both are shown, and a button switches the card.
   const forms = (w, d) => {
