@@ -203,6 +203,7 @@ pub fn dismiss_all(app: &AppHandle, state: &Arc<AppState>) {
 }
 
 pub fn translate_region(app: AppHandle, state: Arc<AppState>, rect: Rect) {
+    reader_wait(&app, &state, Some(Point { x: rect.x, y: rect.y + rect.h }));
     tauri::async_runtime::spawn(async move {
         match state.engine().capture_region(rect).await {
             Ok(capture) => {
@@ -215,6 +216,14 @@ pub fn translate_region(app: AppHandle, state: Arc<AppState>, rect: Rect) {
             }
         }
     });
+}
+
+/// The first capture after start-up waits for the reading model to load; say so instead of seeming stuck.
+fn reader_wait(app: &AppHandle, state: &Arc<AppState>, anchor: Option<Point>) {
+    let uses = maru_engine::reading_engines::uses_reader(&state.cfg(), maru_core::reading::ReadTask::Capture);
+    if let Some(text) = maru_engine::reading_engines::reader_wait_notice(uses, state.services.vision_on_demand(), &state.services.vision_status()) {
+        notice(app, state, anchor, "info", text);
+    }
 }
 
 pub fn hover_at(app: AppHandle, state: Arc<AppState>, at: Point) {

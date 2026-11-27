@@ -363,6 +363,138 @@ pub async fn ocr(paths: &Paths, cfg: &Config, src: OcrSources) -> Result<()> {
             out.display()
         ),
     }
+    small_detector(paths).await?;
+    let mut small = pc.clone();
+    small.det_model = paths.models_dir.join(SMALL_DETECTOR.dest);
+    if let Err(e) = maru_ocr::paddle::PaddleOcr::load(&small) {
+        bail!("the small line finder was installed but does not load with the letter reader: {e}");
+    }
+    Ok(())
+}
+
+// ───────────────────────────── models with a known hash ─────────────────────────────
+
+/// A file from its official publisher whose size and SHA-256 are known (the Hub lists both), so what is installed is
+/// exactly what was measured. `reuse` names copies an earlier measuring run left below the models folder: one that
+/// hashes right is copied instead of downloaded (never moved; the candidate stays where it is).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pinned {
+    pub url: &'static str,
+    /// Below the models folder.
+    pub dest: &'static str,
+    pub bytes: u64,
+    pub sha256: &'static str,
+    pub reuse: &'static [&'static str],
+}
+
+/// PP-OCRv6 small, the line finder live subtitles read with (`[reading.live] detector = "pp-ocrv6-small"`).
+pub const SMALL_DETECTOR: Pinned = Pinned {
+    url: "https://huggingface.co/PaddlePaddle/PP-OCRv6_small_det_onnx/resolve/main/inference.onnx",
+    dest: "ocr/pp-ocrv6-small/det.onnx",
+    bytes: 9_880_512,
+    sha256: "d73e0058b7a8086bbd57f3d10b8bcd4ff95363f67e06e2762b5e814fe9c9410e",
+    reuse: &["ocr-candidates/pp-ocrv6-small-det/det.onnx"],
+};
+
+/// PaddleOCR-VL-1.6, PaddlePaddle's own GGUF: the model, its projector and its chat template. Run 3 left the same files in
+/// the same folder.
+pub const READER_16: [Pinned; 3] = [
+    Pinned {
+        url: "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/resolve/main/PaddleOCR-VL-1.6-GGUF.gguf",
+        dest: "vlm/paddleocr-vl-1.6/PaddleOCR-VL-1.6.gguf",
+        bytes: 935_769_056,
+        sha256: "f3ae46ec885050acf4b3d31944431e1fd90d50664fb09126af4a3c050ba14ee8",
+        reuse: &[],
+    },
+    Pinned {
+        url: "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/resolve/main/PaddleOCR-VL-1.6-GGUF-mmproj.gguf",
+        dest: "vlm/paddleocr-vl-1.6/PaddleOCR-VL-1.6-mmproj.gguf",
+        bytes: 881_770_560,
+        sha256: "204d757d7610d9b3faab10d506d69e5b244e32bf765e2bab2d0167e65e0a058a",
+        reuse: &[],
+    },
+    Pinned {
+        url: "https://huggingface.co/PaddlePaddle/PaddleOCR-VL-1.6-GGUF/resolve/main/chat_template.jinja",
+        dest: "vlm/paddleocr-vl-1.6/chat_template.jinja",
+        bytes: 1_831,
+        sha256: "1369e43952c7a84e834be95732d65111e96cbefe30aa32a4826eca344f5ef939",
+        reuse: &[],
+    },
+];
+
+/// The file's SHA-256 as lowercase hex.
+pub fn sha256_of(path: &Path) -> Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).with_context(|| format!("reading {}", path.display()))?;
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// The file at `path` is the pinned one: right size first (cheap), then right hash.
+pub fn is_pinned(path: &Path, pin: &Pinned) -> bool {
+    path.metadata().is_ok_and(|m| m.len() == pin.bytes) && sha256_of(path).is_ok_and(|h| h == pin.sha256)
+}
+
+/// What [`install_pinned`] did.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Installed {
+    AlreadyThere,
+    CopiedFrom(PathBuf),
+    Downloaded,
+}
+
+/// Put the pinned file in place: keep it if it is already there and right, else copy a right one an earlier run left,
+/// else download it. A download or copy that does not hash right is deleted and the install fails.
+pub async fn install_pinned(models: &Path, pin: &Pinned) -> Result<Installed> {
+    let dest = models.join(pin.dest);
+    if is_pinned(&dest, pin) {
+        return Ok(Installed::AlreadyThere);
+    }
+    if let Some(dir) = dest.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let part = dest.with_extension("part");
+    let how = match pin.reuse.iter().map(|r| models.join(r)).find(|p| is_pinned(p, pin)) {
+        Some(from) => {
+            std::fs::copy(&from, &part).with_context(|| format!("copying {}", from.display()))?;
+            Installed::CopiedFrom(from)
+        }
+        None => {
+            let label = dest.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            download(pin.url, &part, &label).await?;
+            Installed::Downloaded
+        }
+    };
+    if !is_pinned(&part, pin) {
+        let _ = std::fs::remove_file(&part);
+        bail!("{} did not match its published size and SHA-256 ({}); nothing was installed. Try again later.", pin.url, pin.sha256);
+    }
+    std::fs::rename(&part, &dest).with_context(|| format!("moving into {}", dest.display()))?;
+    Ok(how)
+}
+
+fn say_installed(what: &str, pin: &Pinned, how: &Installed) {
+    match how {
+        Installed::AlreadyThere => println!("  {what}: already installed (size and SHA-256 checked)."),
+        Installed::CopiedFrom(from) => println!("  {what}: copied from {} (size and SHA-256 checked).", from.display()),
+        Installed::Downloaded => println!("  {what}: downloaded from {} (size and SHA-256 checked).", pin.url),
+    }
+}
+
+/// The small line finder live subtitles use.
+pub async fn small_detector(paths: &Paths) -> Result<()> {
+    let how = install_pinned(&paths.models_dir, &SMALL_DETECTOR).await?;
+    say_installed("Small line finder for live subtitles (PP-OCRv6 small)", &SMALL_DETECTOR, &how);
+    Ok(())
+}
+
+/// PaddleOCR-VL-1.6.
+pub async fn reader_16(paths: &Paths) -> Result<()> {
+    for pin in &READER_16 {
+        let how = install_pinned(&paths.models_dir, pin).await?;
+        say_installed(pin.dest.rsplit('/').next().unwrap_or(pin.dest), pin, &how);
+    }
     Ok(())
 }
 
@@ -576,6 +708,57 @@ pub async fn llm(paths: &Paths, cfg: &Config, backend: LlamaBackend, cuda: Optio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn scratch(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("maru-pinned-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    // SHA-256 of the three bytes "abc" (FIPS 180-2's first example).
+    const ABC: &str = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+
+    #[test]
+    fn the_hash_is_the_published_sha_256() {
+        let dir = scratch("hash");
+        std::fs::write(dir.join("abc"), b"abc").unwrap();
+        assert_eq!(sha256_of(&dir.join("abc")).unwrap(), ABC);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[tokio::test]
+    async fn a_copy_an_earlier_run_left_is_reused_when_it_hashes_right_and_left_where_it_was() {
+        let models = scratch("reuse");
+        std::fs::create_dir_all(models.join("old")).unwrap();
+        std::fs::write(models.join("old/det.onnx"), b"abc").unwrap();
+        let pin = Pinned { url: "http://127.0.0.1:9/never", dest: "ocr/new/det.onnx", bytes: 3, sha256: ABC, reuse: &["old/det.onnx"] };
+        assert_eq!(install_pinned(&models, &pin).await.unwrap(), Installed::CopiedFrom(models.join("old/det.onnx")));
+        assert_eq!(std::fs::read(models.join("ocr/new/det.onnx")).unwrap(), b"abc");
+        assert!(models.join("old/det.onnx").exists(), "copied, not moved");
+        assert_eq!(install_pinned(&models, &pin).await.unwrap(), Installed::AlreadyThere, "a second run checks and does nothing");
+        std::fs::remove_dir_all(models).ok();
+    }
+
+    #[tokio::test]
+    async fn a_file_that_does_not_hash_right_is_never_installed() {
+        let models = scratch("wrong");
+        std::fs::create_dir_all(models.join("old")).unwrap();
+        std::fs::write(models.join("old/det.onnx"), b"abd").unwrap();
+        let pin = Pinned { url: "http://127.0.0.1:9/never", dest: "ocr/new/det.onnx", bytes: 3, sha256: ABC, reuse: &["old/det.onnx"] };
+        assert!(install_pinned(&models, &pin).await.is_err(), "the wrong copy is not reused and nothing can be downloaded");
+        assert!(!models.join("ocr/new/det.onnx").exists());
+        assert!(!models.join("ocr/new/det.part").exists());
+        std::fs::remove_dir_all(models).ok();
+    }
+
+    #[test]
+    fn the_pinned_files_are_where_the_reading_settings_look_for_them() {
+        assert_eq!(maru_core::reading::DETECTORS[1].files[0], SMALL_DETECTOR.dest);
+        assert_eq!(maru_core::reading::DETECTORS[1].files[1], SMALL_DETECTOR.reuse[0]);
+        assert!(READER_16.iter().all(|p| p.dest.starts_with(maru_core::reading::READERS[1].files[0])));
+        assert!(READER_16.iter().chain([&SMALL_DETECTOR]).all(|p| p.url.starts_with("https://huggingface.co/PaddlePaddle/")), "official publisher only");
+    }
 
     #[test]
     fn forcing_a_reinstall_removes_the_old_files_but_not_the_other_tools_folders() {
