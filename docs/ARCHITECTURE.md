@@ -684,7 +684,8 @@ model beside live subtitles) and a saved connection with what the page holds for
 asked the running route, so another card could be tried only after saving and restarting. `settings-advice-core.js`
 recommends a connection per step by model family and place (`recommendFor`, `MEASURED`: run 1's live and card-meaning
 benchmarks and blind review, run 2's sentence timings), marked *Recommended* with a sentence of why and **Use …**; choice
-options can carry `recommended` (the live line finder, PaddleOCR-VL 1.6). `settings-core.js::GROUPS` puts the longer
+options can carry `recommended` (the live line finder, PaddleOCR-VL 1.6); the overview's task rows carry their `task`
+and `connection` so a row off the advice says "Recommended: …". `settings-core.js::GROUPS` puts the longer
 sections under subheadings (fields reordered on the page only), and a row names only the features of other sections
 (`otherUses`, "Also changes …"; search lists all). The save bar adds **Save and restart** when a change waits for a
 restart (`needsRestart`). Tests: `settings-advice.test.mjs`, `settings-flow.test.mjs`, `settings.test.mjs`,

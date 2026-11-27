@@ -427,7 +427,8 @@ this PC never swaps models mid-game), card meanings on the free Gemma (83 % righ
 scored 88 %, a difference the review could not prove), and the sentence card keeping the line's own translation (how well
 models translate whole sentences was not scored yet). **Use <name>** picks it. The advice follows your connections by the
 kind of model and where it runs, so a renamed connection keeps it; resting the pointer on another card shows what it was
-measured at. The reading model PaddleOCR-VL 1.6 and the small line finder for live subtitles are marked the same way.
+measured at. The reading model PaddleOCR-VL 1.6 and the small line finder for live subtitles are marked the same way. On
+the overview, a step that is not on the recommended connection says which one is ("Recommended: This PC").
 
 **Connections are edited in one place.** Settings → Connections lists this PC's model and every server you added, with
 what uses each. **Add a connection** asks for a name, the kind of server (your own or Anthropic, Azure OpenAI, Google

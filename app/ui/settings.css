@@ -171,3 +171,4 @@ main:has(.settings-page) { max-width: 1120px; }
 .set-group { margin: 22px 0 2px; padding-top: 14px; border-top: 1px solid var(--line); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--muted); }
 .set-sec > .set-group:first-of-type { border-top: 0; padding-top: 4px; margin-top: 10px; }
 .settings-page .btn[hidden] { display: none; }
+.flow-rec { grid-column: 2 / -1; font-size: 11.5px; color: var(--good); }

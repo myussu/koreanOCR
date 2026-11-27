@@ -67,10 +67,11 @@ const taskOf = (statuses, task) => (statuses ?? []).find((s) => s.task === task)
 
 /** One line of a flow step: what it is, what it uses now, where that runs, and its dot. */
 function taskRow(what, status, open) {
+  const task = status?.task;
   if (!status) return { what, uses: 'not known yet', where: '', dot: stateDot('unknown'), open };
-  if (status.state === 'off') return { what, uses: status.message, where: '', dot: stateDot('off'), open };
+  if (status.state === 'off') return { what, uses: status.message, where: '', dot: stateDot('off'), open, task, connection: '' };
   const uses = status.connection === LOCAL ? `This PC · ${status.model}` : `${status.connection} · ${status.model}`;
-  return { what, uses, where: PLACES[status.place] ?? '', dot: stateDot(status.state), note: status.state === 'working' || status.state === 'unknown' || status.state === 'not_loaded' ? '' : status.message, open };
+  return { what, uses, where: PLACES[status.place] ?? '', dot: stateDot(status.state), note: status.state === 'working' || status.state === 'unknown' || status.state === 'not_loaded' ? '' : status.message, open, task, connection: status.connection };
 }
 
 /** A part of Maru as a state: installed or not (`true`/`false`), switched off (`null`), or a model's status word. */

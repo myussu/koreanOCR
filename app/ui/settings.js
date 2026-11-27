@@ -263,9 +263,15 @@ export async function settingsView() {
       h('ol', { class: 'flow-steps' }, steps.map((step, n) => h('li', { class: 'flow-step' },
         h('div', { class: 'flow-head' }, h('span', { class: 'flow-n', text: String(n + 1) }), h('h3', { text: step.title })),
         h('p', { class: 'flow-about', text: step.about }),
-        step.rows.map((r) => h('button', { class: 'flow-row', type: 'button', onclick: () => go(r.open) },
-          dot(r.dot), h('span', { class: 'flow-what', text: r.what }), h('span', { class: 'flow-uses', text: r.uses }), r.where && h('span', { class: 'place', text: r.where }),
-          r.note && h('span', { class: 'flow-note', text: r.note })))))),
+        step.rows.map((r) => {
+          // A step that is not on what was measured best says so, and the section explains why.
+          const rec = r.task ? recommendFor(r.task, data.values) : null;
+          const differs = rec && String(rec.value).toLowerCase() !== String(r.connection ?? '').toLowerCase();
+          return h('button', { class: 'flow-row', type: 'button', onclick: () => go(r.open) },
+            dot(r.dot), h('span', { class: 'flow-what', text: r.what }), h('span', { class: 'flow-uses', text: r.uses }), r.where && h('span', { class: 'place', text: r.where }),
+            r.note && h('span', { class: 'flow-note', text: r.note }),
+            differs && h('span', { class: 'flow-rec', title: rec.why, text: `Recommended: ${rec.value === LOCAL ? 'This PC' : rec.value || 'keep the line\'s translation'}` }));
+        })))),
       h('p', { class: 'flow-legend' }, dot(stateDot('working')), ' working ', dot(stateDot('quota')), ' needs attention ', dot(stateDot('unknown')), ' not checked yet, or off'));
   }
 
