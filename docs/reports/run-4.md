@@ -298,7 +298,7 @@ de texto (venía de antes).
    captura de región de un menú: aviso de espera la primera vez, rápida la segunda (M-56). Si Xenoblade lee peor, en su perfil:
    `[profile.reading.live]` `reader = true`.
 4. **Etiquetar las pantallas** (M-57): `tools\label_review.html` → `Documents\maru-run-4\scanset\raw`, todo el texto coreano,
-   una línea por texto (Shift+Enter). Después `python C:\Users\suiny\Documents\maru-run-4\scripts\task3_runs.py` (cambia
+   una línea por texto (Shift+Enter). Después `python %USERPROFILE%\Documents\maru-run-4\scripts\task3_runs.py` (cambia
    `provisional` por `all` en el script) y `python tools\scan_lines.py score x <las .json de maru-run-4\task3>`. Así se decide el
    detector del escaneo (v6 small, 6× más rápido).
 5. **Marcar la página de Kiwi** (M-59): `Documents\maru-run-4\kiwi-review\index.html`, 10 filas, «Save marks». Si con Gyeongsang

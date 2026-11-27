@@ -1368,7 +1368,7 @@ temporary home whose live area showed no Korean text, so the watcher read no lin
 
 ## M-57 Label the screen-scan set, then score captures and the scan on your labels
 
-**Needs:** `C:\Users\suiny\Documents\maru-run-4\scanset\raw` (73 full screens of the five games; 42 with only a channel
+**Needs:** `%USERPROFILE%\Documents\maru-run-4\scanset\raw` (73 full screens of the five games; 42 with only a channel
 watermark set aside in `scanset\set-aside`), Edge or Chrome.
 
 **Why it is unverified:** 70 screens carry *provisional* labels: only the lines (189) where the outside reader and one of
@@ -1378,7 +1378,7 @@ today's local readers read the same letters, so they list part of each screen's 
    (Shift+Enter), and Enter; **Alt+N** for a screen that has no game text worth reading.
 2. Run the engines again on your labels (from the repository folder):
    `python tools\scan_lines.py score <set> <saved runs…>` with the runs in `maru-run-4\task3\` refreshed by
-   `python C:\Users\suiny\Documents\maru-run-4\scripts\task3_runs.py` after deleting the old `.json` files (it uses
+   `python %USERPROFILE%\Documents\maru-run-4\scripts\task3_runs.py` after deleting the old `.json` files (it uses
    `--labels provisional`; change it to `all` once you have labels).
 3. **Expect** PaddleOCR-VL 1.6 not worse than 1.5 for captures; for the scan, whether the v6 small line finder (6x faster)
    still reads like today's.
@@ -1402,7 +1402,7 @@ today's local readers read the same letters, so they list part of each screen's 
 
 **Why it is unverified:** the dialect option was measured on run 2's 50 lines; nobody judged the changed forms.
 
-1. Open `C:\Users\suiny\Documents\maru-run-4\kiwi-review\index.html`; mark each of the 10 rows (today / with option /
+1. Open `%USERPROFILE%\Documents\maru-run-4\kiwi-review\index.html`; mark each of the 10 rows (today / with option /
    neither) and **Save marks**.
 2. If the option is right more often than not, add `dialects = ["gyeongsang"]` to that game's `[[profile]]`, restart,
    and make cards from a dialect line: the word's dictionary form should follow the review.
