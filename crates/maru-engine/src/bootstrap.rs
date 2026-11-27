@@ -510,6 +510,7 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     } else {
         (ocr, live_ocr)
     };
+    let live_ocr = live_ocr.map(|o| readers.live(o));
 
     // Language model: external endpoint, or our own supervised llama-server.
     let source = ModelSource::from_config(&cfg.llm);

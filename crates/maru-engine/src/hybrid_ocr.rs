@@ -23,12 +23,33 @@ use maru_ocr::{OcrEngine, OcrError, OcrOutput, Result, regroup_words, words_from
 pub struct HybridOcr {
     detector: Arc<dyn OcrEngine>,
     reader: Arc<dyn OcrEngine>,
+    /// A line PP-OCR read with at least this confidence keeps its text when the reader's differs by one syllable.
+    keep_sure: Option<f32>,
 }
 
 impl HybridOcr {
     pub fn new(detector: Arc<dyn OcrEngine>, reader: Arc<dyn OcrEngine>) -> Self {
-        Self { detector, reader }
+        Self { detector, reader, keep_sure: None }
     }
+
+    /// See `[ocr] keep_sure_lines`. Run 3 found the reader's typical mistake on clean subtitle lettering to be one
+    /// changed syllable in a line PP-OCR had right (`왜 울지?` → `왜 을지?`, `좋군그래` → `종군그래`).
+    pub fn keeping_sure_lines(mut self, confidence: Option<f32>) -> Self {
+        self.keep_sure = confidence;
+        self
+    }
+}
+
+/// The letters and digits of `a` and `b` are the same but for one Hangul syllable.
+pub(crate) fn one_syllable_apart(a: &str, b: &str) -> bool {
+    let letters = |s: &str| s.chars().filter(|c| c.is_alphanumeric()).collect::<Vec<char>>();
+    let (a, b) = (letters(a), letters(b));
+    let syllable = |c: char| ('\u{AC00}'..='\u{D7A3}').contains(&c);
+    if a.len() != b.len() {
+        return false;
+    }
+    let differ: Vec<(char, char)> = a.iter().zip(&b).filter(|(x, y)| x != y).map(|(x, y)| (*x, *y)).collect();
+    matches!(differ.as_slice(), [(x, y)] if syllable(*x) && syllable(*y))
 }
 
 impl OcrEngine for HybridOcr {
@@ -66,7 +87,7 @@ impl HybridOcr {
         });
         match (detected, read) {
             (Ok(mut out), Ok(read)) => {
-                merge(&mut out, &read);
+                merge(&mut out, &read, self.keep_sure);
                 Ok(out)
             }
             (Ok(out), Err(OcrError::NotReady(why))) => {
@@ -87,7 +108,7 @@ impl HybridOcr {
     }
 }
 
-fn merge(out: &mut OcrOutput, read: &OcrOutput) {
+fn merge(out: &mut OcrOutput, read: &OcrOutput, keep_sure: Option<f32>) {
     let reference = read.lines.iter().map(|l| l.text.as_str()).collect::<Vec<_>>().join("\n");
     if reference.trim().is_empty() {
         return;
@@ -97,6 +118,8 @@ fn merge(out: &mut OcrOutput, read: &OcrOutput) {
     let mut kept = Vec::with_capacity(out.lines.len());
     for (mut line, better) in std::mem::take(&mut out.lines).into_iter().zip(better) {
         match better {
+            // PP-OCR was sure of this line, and the reader changed a single syllable of it: PP-OCR's stays.
+            Some(text) if keep_sure.is_some_and(|t| line.confidence >= t) && one_syllable_apart(&line.text, &text) => kept.push(line),
             Some(text) => {
                 // Same number of letters: the old per-character positions still apply.
                 line.words = regroup_words(&line.words, &text).unwrap_or_else(|| words_from_chars(&text, line.rect, &[]));
@@ -163,6 +186,34 @@ mod tests {
             self.0.store((min_scale * 10.0) as u32, std::sync::atomic::Ordering::SeqCst);
             Ok(OcrOutput::default())
         }
+    }
+
+    fn sure(text: &str, confidence: f32) -> OcrLine {
+        OcrLine { confidence, ..line(text, 0.0) }
+    }
+
+    fn run_keeping(detector: OcrLine, reader: &str, keep: Option<f32>) -> String {
+        let hybrid = HybridOcr::new(Arc::new(Fixed(Ok(OcrOutput { lines: vec![detector] }))), Arc::new(Fixed(Ok(OcrOutput { lines: vec![line(reader, 0.0)] })))).keeping_sure_lines(keep);
+        hybrid.recognize(&RgbImage::new(1, 1)).unwrap().text()
+    }
+
+    #[test]
+    fn a_line_pp_ocr_was_sure_of_keeps_its_text_when_the_reader_changes_one_syllable() {
+        assert_eq!(run_keeping(sure("왜 울지?", 0.99), "왜 을지?", Some(0.95)), "왜 울지?");
+        assert_eq!(run_keeping(sure("왜 울지?", 0.99), "왜 을지?", None), "왜 을지?", "off: the reader's text, as before");
+        assert_eq!(run_keeping(sure("왜 울지?", 0.90), "왜 을지?", Some(0.95)), "왜 을지?", "PP-OCR was not sure enough");
+        assert_eq!(run_keeping(sure("늑대여, 잘 찾아주었다", 0.99), "느낌에, 잘 찾아주었다", Some(0.95)), "느낌에, 잘 찾아주었다", "two syllables apart: the reader decides");
+        assert_eq!(run_keeping(sure("아아 얘야", 0.99), "아아, 얘야…", Some(0.95)), "아아, 얘야…", "punctuation and spacing are the reader's");
+    }
+
+    #[test]
+    fn one_syllable_apart_counts_letters_only() {
+        assert!(one_syllable_apart("좋군그래", "종군그래"));
+        assert!(one_syllable_apart("하오나…", "하오니"));
+        assert!(!one_syllable_apart("좋군그래", "좋군그래"), "the same text");
+        assert!(!one_syllable_apart("늑대여", "느낌에"));
+        assert!(!one_syllable_apart("B32 가", "B33 가"), "a digit is not a syllable");
+        assert!(!one_syllable_apart("가나", "가나다"), "a missing syllable is not a changed one");
     }
 
     #[test]

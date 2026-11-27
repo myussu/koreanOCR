@@ -72,6 +72,8 @@ backend = "auto"      # auto | paddle | windows
 device  = "cpu"       # cpu | directml:0 (any DirectX 12 GPU; Windows builds include it) | cuda:0 (needs a CUDA build)
 threads = 0           # CPU threads per PP-OCR read; 0 = every core. 4 leaves the rest to the game during live subtitles
 vision_reader = true  # pair PP-OCR with PaddleOCR-VL when installed (`maru setup ocr-vl`); ~2 GB VRAM. Per task: [reading]
+# keep_sure_lines = 0.9  # in the hybrid, a line PP-OCR read at least this sure keeps its text when the reading model
+                         # changes one syllable of it; unset = the reading model always wins (docs/reports/run-4.md)
 # Other OCR pieces, all optional and off. Measure one on your own games before using it:
 # `python tools/compare_ocr.py <data folder>\evalset\raw` (docs/reports/run-3.md has the numbers so far).
 # det_model = "D:/maru-models/pp-ocrv5-mobile-det/det.onnx"   # another detector (ONNX)
@@ -126,6 +128,8 @@ launcher = true               # show floating controls at startup; tray/shortcut
 # Resource monitoring/recording controls are transient in the hub Resources tab, not config settings.
 
 [continuous]
+drop_stray_lines = false  # leave out lines with no Hangul read beside a subtitle (M, 0, FIRST); Latin and digits
+                          # inside a Korean line stay. 0 subtitles worse in 468; see docs/reports/run-4.md
 cpu_ocr = false       # older switch: live subtitles without the reading model, now [reading.live] reader; true still keeps live PP-OCR on the CPU
 max_in_flight = 0     # 0 = existing behavior, 1 = ordered translations, 2 = at most two active; pending lines are retained
 filter_ocr_jitter = false # experimental: compare changed OCR readings with subtitle lettering; save and restart
