@@ -29,8 +29,9 @@ pub const SMALL_DETECTOR: &str = "pp-ocrv6-small";
 pub const STANDARD: &str = "standard";
 pub const READER_15: &str = "paddleocr-vl-1.5";
 pub const READER_16: &str = "paddleocr-vl-1.6";
-/// The reading model captures use when the file names none.
-pub const CAPTURE_READER: &str = READER_15;
+/// The reading model captures use when the file names none. Run 4: on 73 full game screens 1.6 was not worse than 1.5
+/// (15 lines better, 12 worse), and on 468 subtitles better (38 to 12).
+pub const CAPTURE_READER: &str = READER_16;
 
 /// The tasks that read the screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -403,7 +404,7 @@ mod tests {
 
     #[test]
     fn a_file_with_nothing_of_its_own_reads_live_subtitles_with_the_small_finder_alone_and_captures_with_the_reading_model() {
-        let (_d, paths) = models(&[SMALL]);
+        let (_d, paths) = models(&[SMALL, VL16[0], VL16[1]]);
         let cfg = Config::default();
         let live = resolve(&cfg, &paths, ReadTask::Live, None);
         assert_eq!(live.ocr.det_model, Some(paths.models_dir.join(SMALL)));
@@ -413,9 +414,17 @@ mod tests {
         let capture = resolve(&cfg, &paths, ReadTask::Capture, None);
         assert_eq!(capture.ocr.det_model, None, "the installed finder, where it always was");
         assert!(capture.ocr.vision_reader);
-        assert_eq!(capture.ocr.reader_dir, None, "PaddleOCR-VL 1.5, installed where `vision::reader` looks by itself");
-        assert_eq!(capture.reader_label.as_deref(), Some("PaddleOCR-VL 1.5"));
+        assert_eq!(capture.ocr.reader_dir, Some(paths.models_dir.join("vlm/paddleocr-vl-1.6")));
+        assert_eq!(capture.reader_label.as_deref(), Some("PaddleOCR-VL 1.6"));
         assert!(live.notes.is_empty() && capture.notes.is_empty());
+    }
+
+    #[test]
+    fn captures_without_paddleocr_vl_1_6_installed_keep_1_5_and_say_how_to_get_it() {
+        let (_d, paths) = models(&[]);
+        let capture = resolve(&Config::default(), &paths, ReadTask::Capture, None);
+        assert_eq!((capture.ocr.reader_dir.clone(), capture.reader_label.as_deref()), (None, Some("PaddleOCR-VL 1.5")));
+        assert!(capture.notes.iter().any(|n| n.contains("maru setup ocr-vl")), "{:?}", capture.notes);
     }
 
     #[test]

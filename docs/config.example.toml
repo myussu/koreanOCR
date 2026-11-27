@@ -72,8 +72,8 @@ backend = "auto"      # auto | paddle | windows
 device  = "cpu"       # cpu | directml:0 (any DirectX 12 GPU; Windows builds include it) | cuda:0 (needs a CUDA build)
 threads = 0           # CPU threads per PP-OCR read; 0 = every core. 4 leaves the rest to the game during live subtitles
 vision_reader = true  # pair PP-OCR with PaddleOCR-VL when installed (`maru setup ocr-vl`); ~2 GB VRAM. Per task: [reading]
-# keep_sure_lines = 0.9  # in the hybrid, a line PP-OCR read at least this sure keeps its text when the reading model
-                         # changes one syllable of it; unset = the reading model always wins (docs/reports/run-4.md)
+keep_sure_lines = 0.9  # in the hybrid, a line PP-OCR read at least this sure keeps its text when the reading model
+                       # changes one syllable of it; 1.01 = the reading model always wins (docs/reports/run-4.md)
 # Other OCR pieces, all optional and off. Measure one on your own games before using it:
 # `python tools/compare_ocr.py <data folder>\evalset\raw` (docs/reports/run-3.md has the numbers so far).
 # det_model = "D:/maru-models/pp-ocrv5-mobile-det/det.onnx"   # another detector (ONNX)
@@ -221,13 +221,14 @@ detector = "pp-ocrv6-small"   # the line finder: standard | pp-ocrv6-small (`mar
 recogniser = "standard"       # the letter reader: standard | qota-ocr (a community model, not installed by Maru) | a path
 reader = false                # check the letters with the reading model; off read game subtitles better and faster,
                               # and the reading model then never takes video memory for live subtitles
-reader_model = "paddleocr-vl-1.5"   # paddleocr-vl-1.5 | paddleocr-vl-1.6 (`maru setup ocr-vl`) | a folder (as [ocr] reader_dir)
+reader_model = "paddleocr-vl-1.6"   # paddleocr-vl-1.5 | paddleocr-vl-1.6 (`maru setup ocr-vl`) | a folder (as [ocr] reader_dir)
 
 [reading.capture]             # selection fallback, region, hover; the screen scan uses its detector and recogniser
 detector = "standard"         # at full screen size and never the reading model
 recogniser = "standard"
 reader = true                 # loads with the first capture that needs it (that capture waits a few seconds)
-reader_model = "paddleocr-vl-1.5"   # only one reading model runs at a time; live subtitles use this one too
+reader_model = "paddleocr-vl-1.6"   # only one reading model runs at a time; live subtitles use this one too.
+                              # Not installed: 1.5, with a note (`maru setup ocr-vl` installs both)
 
 # Per-application behaviour. `exe` is the program's file name.
 [[profile]]
