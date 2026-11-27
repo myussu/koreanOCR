@@ -104,7 +104,12 @@ fn to_toml(value: &Value, tables: bool) -> Option<toml_edit::Value> {
 
 /// The config as JSON, for the settings page.
 pub fn snapshot(cfg: &Config) -> Value {
-    serde_json::to_value(cfg).unwrap_or(Value::Null)
+    let mut value = serde_json::to_value(cfg).unwrap_or(Value::Null);
+    // How each task reads the screen as it is in effect, also before the file has the table.
+    if let (Some(fields), Ok(reading)) = (value.as_object_mut(), serde_json::to_value(crate::reading::table(cfg))) {
+        fields.insert("reading".into(), reading);
+    }
+    value
 }
 
 /// Dotted paths of every setting whose value differs between `old` and `new`.

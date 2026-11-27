@@ -14,6 +14,7 @@ pub mod resources;
 pub mod external_servers;
 pub mod tasks;
 pub mod captions;
+pub mod reading;
 
 pub use config::Config;
 pub use error::{Error, Result};

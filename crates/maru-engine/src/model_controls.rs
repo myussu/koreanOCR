@@ -125,14 +125,11 @@ impl Services {
         {
             model_status = LlmStatus::Disabled;
         }
-        let ocr_engine = if cfg.continuous.cpu_ocr {
-            &self.engine.inner.live_ocr
-        } else {
-            &self.engine.inner.ocr
-        };
-        let uses_reader = !cfg.continuous.cpu_ocr && self.deferred_vision.is_some();
-        let ocr = if cfg.continuous.cpu_ocr {
-            "CPU PP-OCR".into()
+        let live_alone = !crate::reading_engines::uses_reader(cfg, maru_core::reading::ReadTask::Live);
+        let ocr_engine = if self.engine.inner.live_ocr.is_some() { &self.engine.inner.live_ocr } else { &self.engine.inner.ocr };
+        let uses_reader = !live_alone && self.deferred_vision.is_some();
+        let ocr = if live_alone && ocr_engine.as_ref().is_some_and(|o| o.name() == "paddle") {
+            "PP-OCR alone".into()
         } else if uses_reader {
             format!(
                 "Hybrid · {} detector + PaddleOCR-VL",
@@ -183,7 +180,7 @@ impl Services {
                 state.phase,
                 Phase::Translator | Phase::Ocr | Phase::Releasing
             ),
-            idle_reader_loaded: cfg.continuous.cpu_ocr && self.vision_server_running(),
+            idle_reader_loaded: live_alone && self.vision_server_running(),
         }
     }
 
@@ -262,7 +259,7 @@ impl Services {
         let image = image::load_from_memory(include_bytes!("../assets/live-warmup.png"))
             .map_err(|e| e.to_string())?
             .to_rgb8();
-        if !cfg.continuous.cpu_ocr
+        if crate::reading_engines::uses_reader(cfg, maru_core::reading::ReadTask::Live)
             && let Some(model) = &self.deferred_vision
         {
             let reader_lease = model.acquire().await?;
@@ -281,7 +278,7 @@ impl Services {
             .map_err(|e| format!("OCR preparation stopped: {e}"))?
             .map_err(|e| format!("OCR reader preparation failed: {e}"))?;
         }
-        let ocr = if cfg.continuous.cpu_ocr { self.engine.inner.live_ocr.clone() } else { self.engine.inner.ocr.clone() }
+        let ocr = self.engine.inner.live_ocr.clone().or_else(|| self.engine.inner.ocr.clone())
             .ok_or("The selected live OCR is unavailable. Check Reading the screen and Live subtitles in Settings.")?;
         tokio::task::spawn_blocking(move || ocr.recognize(&image))
             .await
@@ -343,7 +340,7 @@ impl Services {
             }
         }
         if let Some(model) = &self.deferred_vision {
-            if live && !self.engine.config().continuous.cpu_ocr {
+            if live && crate::reading_engines::uses_reader(self.engine.config(), maru_core::reading::ReadTask::Live) {
                 kept.push("OCR reader (live subtitles on)");
             } else {
                 record_release(

@@ -10,6 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use maru_core::config::OcrBackend;
+use maru_core::reading::ReadTask;
 use maru_core::{Config, Paths};
 use maru_dict::Dictionary;
 use maru_lang::Analyzer;
@@ -20,7 +21,6 @@ use maru_srs::{SrsConfig, Vocab};
 use tokio::sync::watch;
 
 use crate::engine::{Engine, EngineParts};
-use crate::hybrid_ocr::HybridOcr;
 use crate::vision;
 use crate::vlm_ocr::{PADDLE_VL_PROMPT, VlmOcr};
 
@@ -382,8 +382,21 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         blocking.unwrap_or_else(|_| Platform::native())
     };
     tracing::info!("boot: loading OCR");
+    // Each task reads with its own pieces (`[reading]`, `reading_engines.rs`); captures' PP-OCR is the one chosen here.
+    let capture_read = maru_core::reading::resolve(&cfg, &paths, ReadTask::Capture, None);
+    let capture_cfg = Config { ocr: capture_read.ocr.clone(), ..cfg.clone() };
+    let readers = {
+        let (load_cfg, load_paths, analyzer) = (cfg.clone(), paths.clone(), analyzer.clone());
+        let load: crate::reading_engines::Loader = Arc::new(move |ocr: &maru_core::config::OcrConfig| {
+            let task_cfg = Config { ocr: ocr.clone(), ..load_cfg.clone() };
+            load_paddle(&task_cfg, &load_paths, None).map(|o| crate::respace::RespacingOcr::wrap(o, &analyzer))
+        });
+        Arc::new(crate::reading_engines::ReadingEngines::new(cfg.clone(), paths.clone(), load))
+    };
+    let live_read = readers.settings(ReadTask::Live, None);
+    notes.extend(capture_read.notes.iter().chain(&live_read.notes).cloned());
     let (ocr, scan_ocr) = {
-        let (blocking_cfg, blocking_paths) = (cfg.clone(), paths.clone());
+        let (blocking_cfg, blocking_paths) = (capture_cfg.clone(), paths.clone());
         let platform = platform.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut n = Vec::new();
@@ -402,29 +415,28 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         // built on first use, so sessions that never scan pay nothing. (With Windows OCR as the
         // engine there is nothing to tune: scans simply use it.)
         let scan = chosen.as_ref().filter(|o| o.name() == "paddle").map(|_| {
-            let (cfg, paths) = (cfg.clone(), paths.clone());
+            let (cfg, paths) = (capture_cfg.clone(), paths.clone());
             Arc::new(maru_ocr::LazyOcr::new(move || load_paddle(&cfg, &paths, Some(SCAN_DETECT_SIDE)))) as Arc<dyn OcrEngine>
         });
         (chosen.map(|o| crate::respace::RespacingOcr::wrap(o, &analyzer)), scan)
     };
 
-    let live_ocr = if cfg.continuous.cpu_ocr {
-        if cfg.ocr.device == "cpu" && ocr.as_ref().is_some_and(|o| o.name() == "paddle") {
-            ocr.clone()
-        } else {
-            let (mut live_cfg, live_paths) = (cfg.clone(), paths.clone());
-            live_cfg.ocr.device = "cpu".into();
-            let loaded = tokio::task::spawn_blocking(move || load_paddle(&live_cfg, &live_paths, None)).await.unwrap_or_else(|e| Err(e.to_string()));
-            match loaded {
-                Ok(o) => Some(crate::respace::RespacingOcr::wrap(o, &analyzer)),
+    // Live subtitles: their own PP-OCR when they name other pieces than captures, else the same one. Windows OCR (no
+    // PP-OCR) is the same engine for both.
+    let paddle = scan_ocr.is_some();
+    let live_ocr = match &ocr {
+        Some(base) if paddle => {
+            readers.remember(&capture_read.ocr, base.clone());
+            let (readers2, live_cfg) = (readers.clone(), live_read.ocr.clone());
+            match tokio::task::spawn_blocking(move || readers2.detector(&live_cfg, false)).await.unwrap_or_else(|e| Err(e.to_string())) {
+                Ok(o) => Some(o),
                 Err(why) => {
-                    notes.push(format!("Live CPU PP-OCR is unavailable ({why}); turn off continuous.cpu_ocr or run `maru setup ocr`."));
-                    None
+                    notes.push(format!("OCR: the line finder for live subtitles could not start ({why}); live subtitles use the captures' one, without the reading model."));
+                    Some(base.clone())
                 }
             }
         }
-    } else {
-        None
+        other => other.clone(),
     };
 
     // Screen-scan labels are remembered between sessions.
@@ -436,14 +448,21 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         }
     };
 
-    // Vision reader: interactive boot waits until snapshot OCR needs it; CLI boot stays eager.
+    // The reading model: one server for every task that uses it. The app starts it on the first request that needs it
+    // (live subtitles on PP-OCR alone never do); the command line starts it at once.
     let (vision_tx, vision_rx) = watch::channel(LlmStatus::Disabled);
     let vision_server: Arc<Mutex<Option<LlamaServer>>> = Arc::new(Mutex::new(None));
     let vision_ready = Arc::new(AtomicBool::new(false));
-    let reader_installed = vision::reader(&paths, &cfg.ocr).is_some();
-    let use_vision = opts.start_llm && cfg.ocr.vision_reader && ocr.is_some() && reader_installed;
+    let profiles_want_reader = cfg.profiles.iter().any(|p| p.reading.live.reader == Some(true) || p.reading.capture.reader == Some(true));
+    let reader_ocr = if capture_read.ocr.vision_reader || !live_read.ocr.vision_reader { capture_read.ocr.clone() } else { live_read.ocr.clone() };
+    if capture_read.ocr.vision_reader && live_read.ocr.vision_reader && capture_read.ocr.reader_dir != live_read.ocr.reader_dir {
+        notes.push("OCR: live subtitles and captures name different reading models; only one runs at a time, so both use the captures' one.".into());
+    }
+    let reader_wanted = capture_read.ocr.vision_reader || live_read.ocr.vision_reader || profiles_want_reader;
+    let reader_installed = vision::reader(&paths, &reader_ocr).is_some();
+    let use_vision = opts.start_llm && reader_wanted && ocr.is_some() && reader_installed;
     let deferred_vision = (use_vision && opts.defer_models).then(|| {
-        let (paths, llm, reader_cfg, server) = (paths.clone(), cfg.llm.clone(), cfg.ocr.clone(), vision_server.clone());
+        let (paths, llm, reader_cfg, server) = (paths.clone(), cfg.llm.clone(), reader_ocr.clone(), vision_server.clone());
         let stop_server = server.clone();
         crate::deferred_models::DeferredModel::restartable(vision_tx.clone(), move || {
             let (paths, llm, reader_cfg, server) = (paths.clone(), llm.clone(), reader_cfg.clone(), server.clone());
@@ -465,30 +484,31 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
             }
         })
     });
-    if cfg.ocr.vision_reader && ocr.is_some() && !reader_installed && opts.start_llm {
-        notes.push(match &cfg.ocr.reader_dir {
+    if reader_wanted && ocr.is_some() && !reader_installed && opts.start_llm {
+        notes.push(match &reader_ocr.reader_dir {
             Some(dir) => format!("OCR: no reading model in {} (it needs one .gguf and its mmproj .gguf); PP-OCR reads alone.", dir.display()),
             None => "OCR: PaddleOCR-VL is not installed; run `maru setup ocr-vl` for noticeably more accurate letters.".into(),
         });
     }
-    let ocr = if use_vision {
-        if opts.defer_models {
-            notes.push("OCR: PaddleOCR-VL loads on the first OCR request; the optional CPU live reader bypasses it.".into());
-        } else {
-            let _ = vision_tx.send(LlmStatus::Starting);
-            notes.push("OCR: PaddleOCR-VL reader is loading in the background (PP-OCR alone until it is ready)".into());
-        }
-        ocr.map(|detector| {
-            let url = format!("http://127.0.0.1:{}", vision::PORT);
-            let reader = Arc::new(VlmOcr::new(&url, &vision::base_config(&cfg.llm), cfg.ocr.reader_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT)).answering_html(cfg.ocr.reader_html));
-            let gated: Arc<dyn OcrEngine> = match &deferred_vision {
-                Some(model) => Arc::new(crate::deferred_models::DeferredOcr { inner: reader, model: model.clone() }),
-                None => Arc::new(vision::GatedOcr::new(reader, vision_ready.clone())),
-            };
-            Arc::new(HybridOcr::new(detector, gated)) as Arc<dyn OcrEngine>
-        })
+    let (ocr, live_ocr) = if use_vision {
+        notes.push(match (opts.defer_models, live_read.ocr.vision_reader) {
+            (true, false) => "OCR: the reading model (PaddleOCR-VL) loads on the first capture that needs it; live subtitles read with PP-OCR alone and never load it.".into(),
+            (true, true) => "OCR: the reading model (PaddleOCR-VL) loads on the first OCR request.".into(),
+            (false, _) => {
+                let _ = vision_tx.send(LlmStatus::Starting);
+                "OCR: PaddleOCR-VL reader is loading in the background (PP-OCR alone until it is ready)".to_string()
+            }
+        });
+        let url = format!("http://127.0.0.1:{}", vision::PORT);
+        let reader = Arc::new(VlmOcr::new(&url, &vision::base_config(&cfg.llm), reader_ocr.reader_prompt.as_deref().unwrap_or(PADDLE_VL_PROMPT)).answering_html(reader_ocr.reader_html));
+        let gated: Arc<dyn OcrEngine> = match &deferred_vision {
+            Some(model) => Arc::new(crate::deferred_models::DeferredOcr { inner: reader, model: model.clone() }),
+            None => Arc::new(vision::GatedOcr::new(reader, vision_ready.clone())),
+        };
+        readers.set_reader(gated);
+        (ocr.map(|d| readers.with_reader(d, &capture_read.ocr)), live_ocr.map(|d| readers.with_reader(d, &live_read.ocr)))
     } else {
-        ocr
+        (ocr, live_ocr)
     };
 
     // Language model: external endpoint, or our own supervised llama-server.
@@ -599,6 +619,9 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
         labels: Some(labels),
     });
     engine.set_routes(routes);
+    if paddle {
+        engine.set_reading_engines(readers);
+    }
     if opts.read_only {
         notes.push("Read-only run: the history, reading areas and screen labels are not saved.".into());
     } else {
@@ -640,7 +663,7 @@ pub(crate) async fn boot_with_platform(paths: Paths, cfg: Config, opts: BootOpti
     }
 
     if use_vision && !opts.defer_models {
-        let (paths, llm, reader_cfg, server, ready) = (paths.clone(), cfg.llm.clone(), cfg.ocr.clone(), vision_server.clone(), vision_ready.clone());
+        let (paths, llm, reader_cfg, server, ready) = (paths.clone(), cfg.llm.clone(), reader_ocr.clone(), vision_server.clone(), vision_ready.clone());
         tokio::spawn(async move {
             let plans = vision::configured_plans(&paths, &reader_cfg, &llm);
             match vision::start(&paths, plans, |_, _| {}).await {

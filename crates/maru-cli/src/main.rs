@@ -388,7 +388,7 @@ enum ConfigCommand {
         #[arg(long)]
         force: bool,
     },
-    /// Write "one model per task" ([tasks]) into an older config file. A copy of the file is kept beside it
+    /// Write "one model per task" ([tasks]) and how each task reads the screen ([reading]) into an older config file. A copy of the file is kept beside it
     /// first; a file that already has the table is left alone. The app does the same when it starts.
     Migrate {
         /// Show what would be written without changing the file.
@@ -400,6 +400,18 @@ enum ConfigCommand {
 }
 
 /// The task table in words. Connection names and model names only: never an address or a key.
+fn print_reading(table: &maru_core::reading::ReadingConfig) {
+    let or = |v: &str| if v.trim().is_empty() { "as [ocr] says".to_string() } else { v.to_string() };
+    for (what, r) in [("Live subtitles", &table.live), ("Captures (scan: finder and letters)", &table.capture)] {
+        let reader = match r.reader {
+            Some(true) => format!("reading model {}", or(&r.reader_model)),
+            Some(false) => "no reading model".to_string(),
+            None => "reading model as [ocr] says".to_string(),
+        };
+        println!("  {what:<37} line finder {}, letters {}, {reader}", or(&r.detector), or(&r.recogniser));
+    }
+}
+
 fn print_tasks(tasks: &maru_core::tasks::TasksConfig) {
     let route = |connection: &str, model: &str| match (connection.trim(), model.trim()) {
         ("", _) => "none".to_string(),
@@ -513,13 +525,14 @@ fn load_pp_ocr(s: &Services, paths: &Paths) -> Option<(String, Arc<dyn maru_ocr:
     }
 }
 
-/// Download PaddleOCR-VL's files (skipping any already there).
+/// Download PaddleOCR-VL's files (skipping any already there): 1.5, and 1.6 checked against its published hashes.
 async fn fetch_paddle_vl(paths: &Paths) -> Result<()> {
     let dir = maru_engine::vision::model_dir(paths);
     for file in maru_engine::vision::FILES {
         fetch_hf(maru_engine::vision::REPO, file, &dir).await.with_context(|| format!("downloading {file}"))?;
     }
-    Ok(())
+    println!("PaddleOCR-VL 1.6:");
+    setup::reader_16(paths).await
 }
 
 fn with_args(base: &maru_core::config::LlmConfig, args: &[String], extra: &[String]) -> maru_core::config::LlmConfig {
@@ -1144,6 +1157,17 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                             }
                             None => println!("There is no config file at {}; defaults are in use.", paths.config_file.display()),
                         }
+                    }
+                    // How each task reads the screen, from the file as written (not as lite mode would change it).
+                    let written = Config::load(&paths.config_file)?;
+                    if written.reading.version >= maru_core::reading::VERSION {
+                        println!("{} already says how each task reads the screen; nothing to do.", paths.config_file.display());
+                    } else if dry_run {
+                        println!("Would also write how each task reads the screen:");
+                        print_reading(&maru_core::reading::derive(&written));
+                    } else if let Some(done) = maru_core::reading::migrate_file(&paths.config_file, maru_srs::now_secs())? {
+                        println!("Wrote how each task reads the screen.\nThe file as it was: {}", done.backup.display());
+                        print_reading(&done.reading);
                     }
                 }
                 ConfigCommand::Tasks => print_tasks(&maru_core::tasks::effective(&cfg)),

@@ -28,6 +28,8 @@ pub struct Config {
     pub tasks: crate::tasks::TasksConfig,
     /// Captions sent by the browser extension (`captions.rs`). Off unless switched on.
     pub captions: crate::captions::CaptionsConfig,
+    /// How live subtitles and captures each read the screen (`reading.rs`). Without it the older `[ocr]` keys decide.
+    pub reading: crate::reading::ReadingConfig,
     #[serde(rename = "profile")]
     pub profiles: Vec<AppProfile>,
 }
@@ -66,6 +68,13 @@ impl Config {
         }
         let lite = self.lite_profile.clone();
         self.ocr.vision_reader = false;
+        // The per-task table and the programs' overrides may name the reading model too.
+        self.reading.live.reader = Some(false);
+        self.reading.capture.reader = Some(false);
+        for p in &mut self.profiles {
+            p.reading.live.reader = None;
+            p.reading.capture.reader = None;
+        }
         self.llm.parallel = lite.parallel.max(1);
         self.llm.ctx_size = lite.ctx_size.max(512);
         let own_model = self.llm.model_path.is_some() || self.llm.endpoint.is_some();
@@ -646,6 +655,8 @@ pub struct AppProfile {
     pub anki_deck: Option<String>,
     /// Extra Anki tags for words met in this program.
     pub anki_tags: Vec<String>,
+    /// How this program's live subtitles and captures read the screen, where it differs from `[reading]`.
+    pub reading: crate::reading::ProfileReading,
 }
 
 #[cfg(test)]
