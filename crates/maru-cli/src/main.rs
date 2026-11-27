@@ -190,6 +190,9 @@ enum Command {
         /// Compare this run, subtitle by subtitle, with a report saved earlier by `--save-report` (before and after a change).
         #[arg(long)]
         compare: Option<PathBuf>,
+        /// `paddle`: read each picture as the screen scan reads a whole screen (the detector looks at up to 2048 pixels).
+        #[arg(long)]
+        scan: bool,
         /// Drop lines with no Hangul read beside the subtitle, as live subtitles do with `[continuous] drop_stray_lines`.
         #[arg(long)]
         drop_stray_lines: bool,
@@ -488,7 +491,7 @@ enum EngineArg {
 /// What a hosted model is asked when it reads a subtitle picture for `--engine connection`.
 const HOSTED_READER_PROMPT: &str = "This picture is a strip cut from a video game's screen. Transcribe the Korean subtitle text in it exactly as it is written, \
 character for character, keeping its punctuation; put a two-line subtitle on two lines. Do not translate, correct, complete or explain anything. \
-Leave out interface labels and button hints that are not part of the subtitle. If there is no readable text, answer with nothing at all.";
+Leave out interface labels and button hints that are not part of the subtitle.";
 
 /// The reading model for `hybrid` and `paddle-vl`: the folder given with --reader-dir, else PaddleOCR-VL-1.5 (fetched if needed).
 async fn reader_attempts(reader_dir: Option<&std::path::Path>, paths: &Paths, llm: &maru_core::config::LlmConfig, extra: &[String]) -> Option<(String, Vec<maru_core::config::LlmConfig>)> {
@@ -518,7 +521,13 @@ fn parse_det_tuning(text: &str) -> Result<(f32, f32, f32)> {
 
 /// PP-OCR with the spacing repair the overlay applies, so scores reflect real use.
 fn load_pp_ocr(s: &Services, paths: &Paths) -> Option<(String, Arc<dyn maru_ocr::OcrEngine>)> {
-    let pc = maru_ocr::paddle::PaddleConfig::resolve(&s.engine.config().ocr, paths);
+    load_pp_ocr_at(s, paths, None)
+}
+
+/// PP-OCR as configured; `detect_side` lets the detector look at that many pixels on the longest side (the screen scan's 2048).
+fn load_pp_ocr_at(s: &Services, paths: &Paths, detect_side: Option<u32>) -> Option<(String, Arc<dyn maru_ocr::OcrEngine>)> {
+    let mut pc = maru_ocr::paddle::PaddleConfig::resolve(&s.engine.config().ocr, paths);
+    pc.detect_side = detect_side;
     match maru_ocr::paddle::PaddleOcr::load(&pc) {
         Ok(o) => {
             let o: Arc<dyn maru_ocr::OcrEngine> = Arc::new(o);
@@ -760,7 +769,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
             // Nothing read *because* something is wrong is a failure; an honestly empty screen is not.
             Ok(if report.items.is_empty() && !report.errors.is_empty() { 1 } else { 0 })
         }
-        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, det, rec, dict, det_tuning, device, reader_dir, reader_html, connection, name: run_name, labels, scale, write_drafts, draft_tag, draft_labelled, keep_drafts, split, save_report, compare, drop_stray_lines, keep_sure } => {
+        Command::EvalOcr { dir, engine, gemma_repo, vlm_args, vlm_endpoint, vlm_prompt, det, rec, dict, det_tuning, device, reader_dir, reader_html, connection, name: run_name, labels, scale, write_drafts, draft_tag, draft_labelled, keep_drafts, split, save_report, compare, scan, drop_stray_lines, keep_sure } => {
             use maru_engine::vlm_ocr::{GENERAL_VLM_PROMPT, PADDLE_VL_PROMPT, SERVER_READY, VlmOcr};
             if (run_name.is_some() || draft_tag.is_some()) && engine.len() != 1 {
                 bail!("--name and --draft-tag name one engine: give a single --engine");
@@ -786,7 +795,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                 "det": cfg.ocr.det_model.as_ref().map(|p| p.display().to_string()), "rec": cfg.ocr.rec_model.as_ref().map(|p| p.display().to_string()),
                 "dict": cfg.ocr.dict_path.as_ref().map(|p| p.display().to_string()), "det_tuning": det_tuning, "device": cfg.ocr.device,
                 "reader_dir": reader_dir.as_ref().map(|p| p.display().to_string()), "reader_html": reader_html, "vlm_prompt": vlm_prompt, "vlm_args": vlm_args,
-                "drop_stray_lines": drop_stray_lines, "keep_sure": keep_sure,
+                "drop_stray_lines": drop_stray_lines, "keep_sure": keep_sure, "scan": scan,
             });
             let config = cfg.clone();
             // A hosted reader needs no engine on this PC; everything else does. Scoring must leave nothing behind in the data folder.
@@ -833,7 +842,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                     let (saved, llm) = connections::resolve(&config, &connections::Target::parse(target))?;
                     let Some(url) = llm.endpoint.clone() else { bail!("--connection names a saved connection to a server; the model on this PC is read with --engine endpoint") };
                     println!("The pictures are sent to {saved} ({}).\n", llm.model_name);
-                    let reader = Arc::new(VlmOcr::new(&url, &llm, vlm_prompt.as_deref().unwrap_or(HOSTED_READER_PROMPT)).counting_tokens());
+                    let reader = Arc::new(VlmOcr::new(&url, &llm, vlm_prompt.as_deref().unwrap_or(HOSTED_READER_PROMPT)).counting_tokens().fenced());
                     hosted = Some(reader.clone());
                     (format!("{saved} · {}", llm.model_name), reader as Arc<dyn maru_ocr::OcrEngine>, None)
                 } else {
@@ -846,7 +855,7 @@ async fn run(cli: Cli, paths: Paths) -> Result<i32> {
                             continue;
                         }
                     },
-                    EngineArg::Paddle => match load_pp_ocr(s, &paths) {
+                    EngineArg::Paddle => match load_pp_ocr_at(s, &paths, scan.then_some(maru_engine::bootstrap::SCAN_DETECT_SIDE)) {
                         Some(pair) => (pair.0, pair.1, None),
                         None => continue,
                     },

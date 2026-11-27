@@ -202,7 +202,7 @@ if (!inTauri) {
   Object.assign(flat, { 'tasks.version': 1, 'tasks.live.connection': 'local', 'tasks.live.model': '', 'tasks.capture.connection': 'local', 'tasks.capture.model': '', 'tasks.capture.while_live': '', 'tasks.capture.while_live_model': '', 'tasks.card_meanings.connection': 'local', 'tasks.card_meanings.model': '', 'tasks.card_sentence.connection': '', 'tasks.card_sentence.model': '', 'tasks.voice_reading.voice': '', 'tasks.voice_reading.endpoint': '', 'tasks.voice_reading.model': '', 'tasks.voice_cards.voice': '',
     'learning.anki.sentence_deck': '', 'learning.anki.new_words_per_day': 3, 'learning.anki.new_sentences_per_day': 1, 'learning.anki.suggest_app_decks': false, 'learning.anki.correct_forms': false, 'continuous.translation.backup_model': null, 'continuous.translation.backup_after_ms': 2500, 'llm.server_keep_minutes': 0 });
   Object.assign(flat, { 'captions.enabled': false, 'captions.port': 18098, 'captions.token': null, 'captions.allowed_origin': '' });
-  Object.assign(flat, { 'reading.version': 1, 'reading.live.detector': 'pp-ocrv6-small', 'reading.live.recogniser': 'standard', 'reading.live.reader': false, 'reading.live.reader_model': 'paddleocr-vl-1.5', 'reading.capture.detector': 'standard', 'reading.capture.recogniser': 'standard', 'reading.capture.reader': true, 'reading.capture.reader_model': 'paddleocr-vl-1.5', 'continuous.drop_stray_lines': false });
+  Object.assign(flat, { 'reading.version': 1, 'reading.live.detector': 'pp-ocrv6-small', 'reading.live.recogniser': 'standard', 'reading.live.reader': false, 'reading.live.reader_model': 'paddleocr-vl-1.6', 'reading.capture.detector': 'standard', 'reading.capture.recogniser': 'standard', 'reading.capture.reader': true, 'reading.capture.reader_model': 'paddleocr-vl-1.6', 'continuous.drop_stray_lines': false });
   const mockDefaults = nest(flat);
   const demoServers = [
     { name: 'NAS', endpoint: 'http://192.168.1.20:11434', model_name: 'gemma4-12b', provider: 'openai', api_key: null },
@@ -284,7 +284,7 @@ if (!inTauri) {
     status: () => ({ notes: ['Korean analyser: Kiwi', 'OCR: PP-OCR on cpu'], llm: 'loads on demand', analyser: 'kiwi', ocr: true, dictionary: true, learner_dictionary: true, hotkeys: { translate: 'Ctrl+Alt+T | F6', region: 'Ctrl+Alt+R', hover: 'Ctrl+Alt+H | F8', continuous: 'Ctrl+Alt+C', continuous_area: 'Ctrl+Alt+Shift+C', scan: 'Ctrl+Alt+S', speak: 'Ctrl+Alt+P', history: 'Ctrl+Alt+L', dismiss: 'Ctrl+Alt+Escape', star: 'Ctrl+Alt+B' }, vocab: { total: 42, saved: 12, known: 20, due_now: 2 }, anki: false, hover_mode: true, live_mode: true, scan_visible: false, lite: false, live_area: { x: 320, y: 880, w: 1280, h: 120 }, ocr_reader: 'loads on demand', tts: 'loads on demand', tts_source: 'local',
       reading: [
         { task: 'live', what: 'Live subtitles', uses: 'Line finder: Small and quick · letters: Standard', reader: null, place: 'This PC · processor' },
-        { task: 'capture', what: 'Captures', uses: 'Line finder: Standard · letters: Standard', reader: 'PaddleOCR-VL 1.5', place: 'This PC · processor and graphics card' },
+        { task: 'capture', what: 'Captures', uses: 'Line finder: Standard · letters: Standard', reader: 'PaddleOCR-VL 1.6', place: 'This PC · processor and graphics card' },
         { task: 'scan', what: 'Screen scan', uses: 'Line finder: Standard · letters: Standard', reader: null, place: 'This PC · processor' },
       ] }),
   });

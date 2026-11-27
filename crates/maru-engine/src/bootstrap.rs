@@ -259,7 +259,7 @@ fn open_dictionary(paths: &Paths, notes: &mut Vec<String>) -> Option<Arc<Diction
 }
 
 /// Longest image side the screen-scan detector sees at full size: a 1080p screen plus padding.
-const SCAN_DETECT_SIDE: u32 = 2048;
+pub const SCAN_DETECT_SIDE: u32 = 2048;
 
 #[cfg(feature = "paddle")]
 fn load_paddle(cfg: &Config, paths: &Paths, detect_side: Option<u32>) -> Result<Arc<dyn OcrEngine>, String> {

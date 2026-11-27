@@ -296,7 +296,8 @@ pub struct OcrConfig {
     /// That model answers in HTML (Surya does): Maru takes the tags out.
     pub reader_html: bool,
     /// In the hybrid, a line PP-OCR read with at least this confidence (0..1) keeps its own text when the reading
-    /// model's differs from it by a single syllable. Unset: the reading model's text always wins.
+    /// model's differs from it by a single syllable; above 1, the reading model's text always wins. Run 4: 0.90 was
+    /// better on 16 subtitles and worse on 4 of the held-out half, and not worse on full game screens.
     pub keep_sure_lines: Option<f32>,
 }
 
@@ -318,7 +319,7 @@ impl Default for OcrConfig {
             reader_prompt: None,
             reader_args: Vec::new(),
             reader_html: false,
-            keep_sure_lines: None,
+            keep_sure_lines: Some(0.90),
         }
     }
 }

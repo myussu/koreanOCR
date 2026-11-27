@@ -497,7 +497,8 @@ pub fn write_drafts_with(tag: &str, engine: &dyn maru_ocr::OcrEngine, images: &[
     for (i, path) in todo.iter().enumerate() {
         let img = image::open(path)?.to_rgb8();
         let out = engine.recognize_scaled(&img, scale).map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
-        let text = out.lines.iter().map(|l| l.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join(" ");
+        // One line per line read: a two-line subtitle stays two lines, and a whole screen keeps its pieces apart.
+        let text = out.lines.iter().map(|l| l.text.trim()).filter(|t| !t.is_empty()).collect::<Vec<_>>().join("\n");
         std::fs::write(path.with_extension(format!("{tag}.txt")), format!("{text}\n"))?;
         written += 1;
         if (i + 1) % 25 == 0 {

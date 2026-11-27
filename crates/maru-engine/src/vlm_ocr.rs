@@ -22,6 +22,21 @@ pub const PADDLE_VL_PROMPT: &str = "OCR:";
 pub const GENERAL_VLM_PROMPT: &str = "Transcribe all the text in this image exactly as written, in natural reading order. \
 Write one line per line of text. Do not translate, explain, correct or add anything, and do not use markdown.";
 
+/// Added to a hosted reader's instruction so its answer can be told from a comment about the picture (run 3: in eleven
+/// pictures Claude explained why there was nothing to read instead of answering with nothing).
+pub const FENCE_RULE: &str = "Write the text between a line that is only <<< and a line that is only >>>, one line of the picture per line, \
+and write nothing before or after them. If there is no Korean text, write the two marker lines with nothing between them.";
+
+/// The text between `<<<` and `>>>`, or nothing when the reply has no such frame or no Hangul inside it: a comment, a
+/// refusal or an English description must never become a draft label.
+pub fn fenced_answer(reply: &str) -> String {
+    let Some(start) = reply.find("<<<") else { return String::new() };
+    let rest = &reply[start + 3..];
+    let Some(end) = rest.find(">>>") else { return String::new() };
+    let text = rest[..end].trim();
+    if text.chars().any(|c| ('\u{AC00}'..='\u{D7A3}').contains(&c)) { text.to_string() } else { String::new() }
+}
+
 /// Larger images are shrunk first: more pixels only cost time (and the model downsamples anyway).
 const MAX_SIDE: u32 = 1600;
 
@@ -33,6 +48,8 @@ pub struct VlmOcr {
     used: Option<std::sync::Mutex<(u64, u64, u64)>>,
     /// The model answers in HTML (`<p>…<br/>…</p>`): its tags are taken out before the text is used.
     html: bool,
+    /// The answer comes inside `<<<` … `>>>` ([`FENCE_RULE`]); anything else counts as nothing read.
+    fenced: bool,
 }
 
 impl VlmOcr {
@@ -42,12 +59,19 @@ impl VlmOcr {
         cfg.temperature = 0.0;
         cfg.max_tokens = cfg.max_tokens.max(1024);
         cfg.request_timeout_secs = cfg.request_timeout_secs.max(120);
-        Self { root: root.to_string(), cfg, prompt: prompt.to_string(), used: None, html: false }
+        Self { root: root.to_string(), cfg, prompt: prompt.to_string(), used: None, html: false, fenced: false }
     }
 
     /// For a model that answers in HTML (Surya): read its `<br>` as line breaks and drop the other tags.
     pub fn answering_html(mut self, html: bool) -> Self {
         self.html = html;
+        self
+    }
+
+    /// For a hosted reader: ask for the answer inside a fixed frame and keep only that, and only when it has Hangul.
+    pub fn fenced(mut self) -> Self {
+        self.prompt = format!("{} {FENCE_RULE}", self.prompt.trim_end());
+        self.fenced = true;
         self
     }
 
@@ -96,6 +120,7 @@ impl OcrEngine for VlmOcr {
             *total = (total.0 + spent.0, total.1 + spent.1, total.2 + spent.2);
         }
         let text = if self.html { strip_markup(&text) } else { text };
+        let text = if self.fenced { fenced_answer(&text) } else { text };
         Ok(output_from_text(&text, image.width() as f32, image.height() as f32))
     }
 }
@@ -191,7 +216,17 @@ pub const SERVER_READY: Duration = Duration::from_secs(900);
 
 #[cfg(test)]
 mod markup_tests {
-    use super::strip_markup;
+    use super::{fenced_answer, strip_markup};
+
+    #[test]
+    fn only_korean_text_inside_the_frame_counts_as_a_hosted_readers_answer() {
+        assert_eq!(fenced_answer("<<<\n폐하? 왜 그러시죠?\n>>>"), "폐하? 왜 그러시죠?");
+        assert_eq!(fenced_answer("Here it is:\n<<<\n체력 100\n장비\n>>>\nHope this helps."), "체력 100\n장비", "what is outside the frame goes");
+        assert_eq!(fenced_answer("<<<\n>>>"), "", "nothing to read");
+        assert_eq!(fenced_answer("The strip shows only a dark background with no subtitle."), "", "a comment without the frame");
+        assert_eq!(fenced_answer("<<<\nThe strip cuts off the subtitle.\n>>>"), "", "a comment inside the frame has no Hangul");
+        assert_eq!(fenced_answer("<<<\n폐하"), "", "an unfinished frame");
+    }
 
     #[test]
     fn html_from_a_reading_model_becomes_plain_lines() {
